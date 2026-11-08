@@ -2,6 +2,15 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [Tiếng Việt](README.vi.md) | [Italiano](README.it.md)
 
+> **Personal fork `o2a-v2`** — based on upstream 1.4.7 (MIT).
+> Highlights: Vietnamese-first WebUI, **per-API-key limits** (model allow-list,
+> concurrent requests, requests per day), per-model timeouts, WARP registrations
+> kept across restarts, detection of the free tier's "HTTP 200 + quota error"
+> response, and API port **6363** as the default.
+> See [FORK.vi.md](FORK.vi.md) (Vietnamese), [docs/CONFIG.vi.md](docs/CONFIG.vi.md)
+> for every configuration field, and [docs/ROADMAP.vi.md](docs/ROADMAP.vi.md) for
+> the next steps.
+
 A Go gateway for **OpenCode Zen and Zen Go**. It exposes Chat Completions, Responses, and Anthropic Messages endpoints, translates between their native protocols, and manages upstream keys and proxies.
 
 The executable includes the WebUI. Running the service requires no Node.js runtime or database.

@@ -3,7 +3,7 @@ import { api, derivedAPIBase, hasSession } from "../api.js";
 import { loadConfig } from "../data.js";
 import * as store from "../store.js";
 import { t, onChange } from "../i18n.js";
-import { $, el, emptyRow, formatNumber, localTime, confirmDialog, copyText, promptDialog, toast } from "../ui.js";
+import { $, el, emptyRow, formatNumber, localTime, confirmDialog, copyText, promptDialog, openDialog, toast } from "../ui.js";
 
 let keysLoading = false;
 let createdKey = "";
@@ -50,6 +50,93 @@ async function mutate(id, method, body, button) {
   }
 }
 
+function policySummary(key) {
+  const parts = [];
+  const models = key.allow_models || [];
+  if (models.length) {
+    parts.push(t(`允许 {0} 个模型`, "apikeys.policy.models", models.length));
+  }
+  if (key.max_concurrency) {
+    parts.push(t(`并发 {0}`, "apikeys.policy.concurrency", key.max_concurrency));
+  }
+  if (key.daily_requests) {
+    parts.push(t(`每天 {0} 次`, "apikeys.policy.daily", key.daily_requests));
+  }
+  return parts.length ? parts.join(" · ") : t("不限", "apikeys.policy.none");
+}
+
+// editPolicy opens the per-key limit dialog: allowed models, concurrent
+// requests and requests per day. Empty or zero means no limit, which is what
+// the gateway treats as unlimited too.
+function editPolicy(key, button) {
+  const models = el("input", {
+    value: (key.allow_models || []).join(", "),
+    placeholder: "deepseek-v4.1-flash-free, iceman-free",
+  });
+  const concurrency = el("input", {
+    type: "number",
+    min: "0",
+    max: "256",
+    value: String(key.max_concurrency || 0),
+  });
+  const daily = el("input", {
+    type: "number",
+    min: "0",
+    max: "1000000",
+    value: String(key.daily_requests || 0),
+  });
+  const body = el("div", { class: "stack" }, [
+    el("div", { class: "field" }, [
+      el("label", { text: t("允许的模型", "apikeys.policy.modelsLabel") }),
+      models,
+    ]),
+    el("div", { class: "field" }, [
+      el("label", { text: t("并发请求数", "apikeys.policy.concurrencyLabel") }),
+      concurrency,
+    ]),
+    el("div", { class: "field" }, [
+      el("label", { text: t("每天请求数", "apikeys.policy.dailyLabel") }),
+      daily,
+    ]),
+    el("p", { class: "section-caption", text: t("限额只作用于这个密钥，保存后立即生效。", "apikeys.policy.hint") }),
+  ]);
+  openDialog({
+    title: t("使用限额", "apikeys.policy.title"),
+    body,
+    actions: [
+      { label: t("取消", "common.cancel") },
+      {
+        label: t("保存", "common.save"),
+        kind: "btn-primary",
+        onClick: (close) => {
+          const maxConcurrency = Number(String(concurrency.value).trim() || "0");
+          const dailyRequests = Number(String(daily.value).trim() || "0");
+          if (
+            !Number.isInteger(maxConcurrency) ||
+            maxConcurrency < 0 ||
+            !Number.isInteger(dailyRequests) ||
+            dailyRequests < 0
+          ) {
+            toast(t("请输入 0 或更大的整数", "apikeys.policy.invalid"), true);
+            return;
+          }
+          const allowModels = String(models.value)
+            .split(",")
+            .map((value) => value.trim())
+            .filter(Boolean);
+          close();
+          mutate(
+            key.id,
+            "PATCH",
+            { allow_models: allowModels, max_concurrency: maxConcurrency, daily_requests: dailyRequests },
+            button,
+          );
+        },
+      },
+    ],
+  });
+}
+
 function render(keys) {
   keys = keys || [];
   $("#api-key-count").textContent = t(`${keys.length} 个`, "apikeys.count", keys.length);
@@ -80,6 +167,8 @@ function render(keys) {
       text: key.enabled ? t("停用", "apikeys.disable") : t("启用", "apikeys.enable"),
     });
     toggle.addEventListener("click", () => mutate(key.id, "PATCH", { enabled: !key.enabled }, toggle));
+    const policy = el("button", { type: "button", class: "btn btn-sm btn-ghost", text: t("限额", "apikeys.policy.action") });
+    policy.addEventListener("click", () => editPolicy(key, policy));
     const remove = el("button", { type: "button", class: "btn btn-sm btn-danger", text: t("删除", "common.delete") });
     remove.addEventListener("click", async () => {
       const ok = await confirmDialog({
@@ -103,12 +192,13 @@ function render(keys) {
           text: key.enabled ? t("已启用", "state.enabled") : t("已停用", "state.disabled"),
         }),
         el("td", { text: `${summary(usage.last_hour)} / ${summary(usage.lifetime)}` }),
+        el("td", { text: policySummary(key) }),
         el("td", { text: key.created_at ? localTime(key.created_at) : t("已有配置", "apikeys.col.legacy") }),
-        el("td", {}, [el("div", { class: "key-actions" }, [rename, toggle, remove])]),
+        el("td", {}, [el("div", { class: "key-actions" }, [rename, policy, toggle, remove])]),
       ]),
     );
   }
-  if (!keys.length) emptyRow(host, 6, t("暂无 API Key", "apikeys.empty"));
+  if (!keys.length) emptyRow(host, 7, t("暂无 API Key", "apikeys.empty"));
 }
 
 async function create(event) {

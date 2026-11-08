@@ -13,7 +13,7 @@
 //   t("配置已保存", "toast.config.saved")
 //   t(`${n} 个`, "apikeys.count", n)
 const STORAGE_KEY = "opencode2api.ui.lang";
-const DEFAULT_LOCALE = "zh-CN";
+const DEFAULT_LOCALE = "vi";
 const FLAGS = { "zh-CN": "🇨🇳", en: "🇺🇸", vi: "🇻🇳", it: "🇮🇹" };
 const SUPPORTED = ["zh-CN", "en", "vi", "it"];
 const LABELS = { "zh-CN": "简体中文", en: "English", vi: "Tiếng Việt", it: "Italiano" };
@@ -390,6 +390,18 @@ const DICTIONARY = {
       "apikeys.col.created": "Created at",
       "apikeys.col.action": "Action",
       "apikeys.col.legacy": "Already in configuration",
+      "apikeys.col.policy": "Limits",
+      "apikeys.policy.action": "Limits",
+      "apikeys.policy.title": "Usage limits",
+      "apikeys.policy.modelsLabel": "Allowed models (comma separated IDs; empty = all)",
+      "apikeys.policy.concurrencyLabel": "Concurrent requests (0 = unlimited)",
+      "apikeys.policy.dailyLabel": "Requests per day (0 = unlimited)",
+      "apikeys.policy.hint": "Limits apply to this key only and take effect immediately.",
+      "apikeys.policy.invalid": "Enter a whole number of 0 or more",
+      "apikeys.policy.none": "Unlimited",
+      "apikeys.policy.models": "{0} models",
+      "apikeys.policy.concurrency": "{0} concurrent",
+      "apikeys.policy.daily": "{0}/day",
       "apikeys.note":
         "Disabling and deleting makes new requests from the matching applications return 401. At least one enabled key must remain.",
 
@@ -600,7 +612,7 @@ const DICTIONARY = {
     },
 
     vi: {
-      "doc.title": "opencode2api · Sổ tay vận hành",
+      "doc.title": "o2a-v2 · Sổ tay vận hành",
       "lang.label": "Ngôn ngữ",
       "a11y.skip": "Bỏ qua đến nội dung chính",
 
@@ -968,6 +980,18 @@ const DICTIONARY = {
       "apikeys.col.created": "Thời điểm tạo",
       "apikeys.col.action": "Thao tác",
       "apikeys.col.legacy": "Đã có trong cấu hình",
+      "apikeys.col.policy": "Hạn mức",
+      "apikeys.policy.action": "Hạn mức",
+      "apikeys.policy.title": "Hạn mức sử dụng",
+      "apikeys.policy.modelsLabel": "Mô hình được phép (ID cách nhau bằng dấu phẩy; trống = tất cả)",
+      "apikeys.policy.concurrencyLabel": "Số yêu cầu song song (0 = không giới hạn)",
+      "apikeys.policy.dailyLabel": "Số yêu cầu mỗi ngày (0 = không giới hạn)",
+      "apikeys.policy.hint": "Hạn mức chỉ áp dụng cho khoá này và có hiệu lực ngay.",
+      "apikeys.policy.invalid": "Vui lòng nhập số nguyên từ 0 trở lên",
+      "apikeys.policy.none": "Không giới hạn",
+      "apikeys.policy.models": "{0} mô hình",
+      "apikeys.policy.concurrency": "{0} song song",
+      "apikeys.policy.daily": "{0} lượt/ngày",
       "apikeys.note":
         "Tắt và xoá sẽ khiến các request mới của ứng dụng tương ứng trả về 401. Phải giữ lại ít nhất một Key đang bật.",
 
@@ -1558,6 +1582,18 @@ const DICTIONARY = {
       "apikeys.col.created": "Creata il",
       "apikeys.col.action": "Azione",
       "apikeys.col.legacy": "Già in configurazione",
+      "apikeys.col.policy": "Limiti",
+      "apikeys.policy.action": "Limiti",
+      "apikeys.policy.title": "Limiti di utilizzo",
+      "apikeys.policy.modelsLabel": "Modelli consentiti (ID separati da virgola; vuoto = tutti)",
+      "apikeys.policy.concurrencyLabel": "Richieste parallele (0 = illimitato)",
+      "apikeys.policy.dailyLabel": "Richieste al giorno (0 = illimitato)",
+      "apikeys.policy.hint": "I limiti valgono solo per questa chiave e sono immediati.",
+      "apikeys.policy.invalid": "Inserisci un numero intero maggiore o uguale a 0",
+      "apikeys.policy.none": "Nessun limite",
+      "apikeys.policy.models": "{0} modelli",
+      "apikeys.policy.concurrency": "{0} in parallelo",
+      "apikeys.policy.daily": "{0}/giorno",
       "apikeys.note":
         "Disabilitare ed eliminare fa sì che le nuove richieste dalle applicazioni corrispondenti restituiscano 401. Deve rimanere almeno una chiave abilitata.",
 

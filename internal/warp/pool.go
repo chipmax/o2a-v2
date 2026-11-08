@@ -147,6 +147,10 @@ type Options struct {
 	// replacement reaches Cloudflare from a new source and receives a new
 	// public egress — the only way past an egress-scoped free usage limit.
 	SourceIPv6 netip.Prefix
+	// StatePath is where successful registrations are saved so a restart can
+	// rebuild the pool without registering every exit again. An empty path
+	// keeps registrations in memory only.
+	StatePath string
 }
 
 // NewWithOptions creates a WARP pool whose exits use the selected IP stack and,
@@ -164,25 +168,67 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 		size = DefaultPoolSize
 	}
 	r := newRegistrar()
+	store := newRegistrationStore(opts.StatePath, size)
 	pool, err := newPool(ctx, slogLogger{log: log}, size, func(ctx context.Context) (*exit, error) {
+		// Prefer a registration saved by an earlier process: it is ready to
+		// use, so the pool stays warm across restarts. A saved registration
+		// that no longer builds a working exit is dropped.
+		for {
+			reg, ok := store.pop()
+			if !ok {
+				break
+			}
+			source, err := opts.sampleSource()
+			if err != nil {
+				store.remember(reg)
+				return nil, err
+			}
+			// Bound every probe: a dead registration should not eat the whole
+			// startup budget before the next candidate is tried.
+			probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+			reused, err := newExitWithStack(probeCtx, reg, normalized, source)
+			cancel()
+			if err == nil {
+				store.remember(reg)
+				return reused, nil
+			}
+			// A probe cut short by the startup deadline says nothing about the
+			// registration: keep it for the next process instead of spending a
+			// fresh Cloudflare registration on every boot.
+			if ctx.Err() != nil {
+				store.remember(reg)
+				return nil, err
+			}
+			slogLogger{log: log}.Warnf("saved WARP registration %s unusable (%v); registering a fresh exit", reg.ID, err)
+		}
 		reg, err := r.register(ctx)
 		if err != nil {
 			return nil, err
 		}
-		var source netip.Addr
-		if opts.SourceIPv6.IsValid() {
-			source, err = randomSource(opts.SourceIPv6)
-			if err != nil {
-				return nil, err
-			}
+		source, err := opts.sampleSource()
+		if err != nil {
+			return nil, err
 		}
-		return newExitWithStack(ctx, reg, normalized, source)
+		fresh, err := newExitWithStack(ctx, reg, normalized, source)
+		if err != nil {
+			return nil, err
+		}
+		store.remember(reg)
+		return fresh, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	pool.stack = normalized
 	return pool, nil
+}
+
+// sampleSource draws the outer source address for one exit.
+func (o Options) sampleSource() (netip.Addr, error) {
+	if !o.SourceIPv6.IsValid() {
+		return netip.Addr{}, nil
+	}
+	return randomSource(o.SourceIPv6)
 }
 
 // randomSource draws one host address from prefix. The bits above the prefix

@@ -401,6 +401,11 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		return nil, effectiveRoute, attempts, errFreeTierIPBlocked
 	}
 	if lastResponse != nil {
+		if lastResponse.StatusCode/100 == 2 && isQuotaErrorDocument(lastResponse) {
+			// Every tier answered with the quota error document: report the
+			// quota itself instead of forwarding a 200 the client cannot use.
+			return lastResponse, effectiveRoute, attempts, errFreeTierQuotaSpent
+		}
 		return lastResponse, effectiveRoute, attempts, nil
 	}
 	if lastErr == nil {
@@ -544,7 +549,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 			}
 			setRequestCredential(ctx, config.TierZen, "anonymous", "anonymous", true, node.proxy)
 			started := time.Now()
-			resp, err := doInferenceAttempt(g.inferenceClient(node.proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+			resp, err := doInferenceAttempt(g.inferenceClient(node.proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeoutFor(route.ID))
 			duration := time.Since(started)
 			if ctx.Err() != nil {
 				// The parent budget expired while this attempt was in flight. Its
@@ -968,7 +973,7 @@ func (g *Gateway) doSelectedKeyUpstream(ctx context.Context, route models.Route,
 	if useWARP {
 		resp, egress, err = g.doWARPAttempt(ctx, req, baseURL, route.ID, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second)
 	} else {
-		resp, err = doInferenceAttempt(g.inferenceClient(proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+		resp, err = doInferenceAttempt(g.inferenceClient(proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeoutFor(route.ID))
 	}
 	duration := time.Since(started)
 	recordProxy := proxy
@@ -1082,7 +1087,7 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		if attemptUseWARP {
 			resp, egress, err = g.doWARPAttempt(ctx, req, baseURL, route.ID, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second)
 		} else {
-			resp, err = doInferenceAttempt(g.inferenceClient(proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeout)
+			resp, err = doInferenceAttempt(g.inferenceClient(proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeoutFor(route.ID))
 		}
 		attemptDuration := time.Since(attemptStarted)
 		if ctx.Err() != nil {
@@ -1108,8 +1113,17 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		}
 		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, recordProxy, resp, err, attemptDuration)
 		if err == nil && resp.StatusCode/100 == 2 {
-			g.logger.Debug("upstream accepted request", "component", "upstream", "event", "attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel, "status", resp.StatusCode, "duration_ms", attemptDuration.Milliseconds())
-			return resp, nil, attempts
+			if isQuotaErrorDocument(resp) {
+				// The tier answered 200 with a quota error document: the key
+				// (or its egress) has no budget left. Treat it as a retryable
+				// failure so the request can move to the next key or tier
+				// instead of handing the client a broken document.
+				err = errFreeTierQuotaSpent
+				g.logger.Warn("upstream answered 200 with a quota error document; trying the next key", "component", "upstream", "event", "quota_error_document", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel)
+			} else {
+				g.logger.Debug("upstream accepted request", "component", "upstream", "event", "attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel, "status", resp.StatusCode, "duration_ms", attemptDuration.Milliseconds())
+				return resp, nil, attempts
+			}
 		}
 		// Request-shape errors are deterministic and must leave this tier without
 		// rotating through unrelated keys. The outer route may still try the next

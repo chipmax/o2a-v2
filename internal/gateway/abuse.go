@@ -29,7 +29,27 @@ const freeTierBlockedMessage = "OpenCode is blocking free-model traffic from the
 // authenticated tier or report the pause itself.
 var errAnonymousLanePaused = errors.New("anonymous lane paused by its circuit breaker")
 
-// anonymousLanePausedMessage is what a client receives while the circuit
+// errFreeTierQuotaSpent reports that the upstream answered 200 with a quota
+// error document instead of a completion: the free tier spends one bucket per
+// egress IP and reports exhaustion that way once it is out. Treating that body
+// as a success handed clients a broken response, so it counts as a retryable
+// failure for this exit and lets the request fall through to a keyed tier.
+var errFreeTierQuotaSpent = errors.New("free tier quota exhausted on this exit")
+
+// freeTierQuotaMessage is what a client receives when every exit and tier the
+// request could use has spent its free quota.
+const freeTierQuotaMessage = "the upstream free quota is used up on every exit this gateway can reach right now. Add an upstream key, wait for the quota window to reset, or retry later."
+
+// quotaErrorMarkers are the error types and wordings the free tier uses when it
+// reports exhaustion in a 200 response body instead of a 429 status.
+var quotaErrorMarkers = []string{
+	"freeusagelimiterror",
+	"freetiererror",
+	"free usage limit",
+	"usage limit reached",
+	"rate_limit_exceeded",
+	"too many requests",
+} // anonymousLanePausedMessage is what a client receives while the circuit
 // breaker holds the anonymous lane shut. It names the cause so the operator is
 // not sent looking for a credential or model problem.
 const anonymousLanePausedMessage = "The anonymous free tier is paused after repeated upstream failures. Configure an authenticated key, wait for the pause to expire, or restart the gateway after confirming the upstream block has lifted."
@@ -98,6 +118,34 @@ func peekNetworkAbuseBlock(resp *http.Response) bool {
 		return false
 	}
 	return isNetworkAbuseBlock(resp.StatusCode, peekResponseBody(resp))
+}
+
+// isQuotaErrorDocument reports a 2xx response that actually carries an error
+// document. The v2 inference lane answers 200 with {"type":"error",...} once
+// the free quota of the egress IP is spent, and forwarding that body as a
+// success gives the client a response it cannot parse. Only JSON responses are
+// inspected: an event stream must never be blocked on while headers are
+// classified.
+func isQuotaErrorDocument(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode/100 != 2 || resp.Body == nil {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "json") {
+		return false
+	}
+	text := strings.ToLower(string(peekResponseBody(resp)))
+	if !strings.Contains(text, `"type":"error"`) &&
+		!strings.Contains(text, `"type": "error"`) &&
+		!strings.Contains(text, `"error":`) &&
+		!strings.Contains(text, `"error": `) {
+		return false
+	}
+	for _, marker := range quotaErrorMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // errDeterministicClientRejection reports that the upstream rejected the

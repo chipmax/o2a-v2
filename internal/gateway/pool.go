@@ -94,6 +94,10 @@ type anonymousNode struct {
 	proxy         *proxyTransport
 	failures      atomic.Uint32
 	cooldownUntil atomic.Int64
+	// quotaCooldown marks a cooldown that came from the upstream's Retry-After
+	// (a spent quota window) rather than a transport failure. A proxy recovery
+	// must not clear it: the exit IP is still out of allowance.
+	quotaCooldown atomic.Bool
 }
 
 // anonymousCursor walks the anonymous nodes for one request from start;
@@ -391,6 +395,7 @@ func (p *anonymousNodes) MarkSuccess(node *anonymousNode) {
 	}
 	node.failures.Store(0)
 	node.cooldownUntil.Store(0)
+	node.quotaCooldown.Store(false)
 }
 
 // RestoreProxy clears cooldowns for anonymous nodes bound to a recovered
@@ -407,6 +412,11 @@ func (p *anonymousNodes) RestoreProxy(proxy *proxyTransport) int {
 		if node.proxy != proxy {
 			continue
 		}
+		if node.quotaCooldown.Load() {
+			// The upstream said this exit has no allowance left; recovering
+			// the socket does not refill it.
+			continue
+		}
 		if node.cooldownUntil.Load() == 0 && node.failures.Load() == 0 {
 			continue
 		}
@@ -417,21 +427,20 @@ func (p *anonymousNodes) RestoreProxy(proxy *proxyTransport) int {
 	return cleared
 }
 
-// maxAnonymousRetryAfterMultiplier bounds an upstream Retry-After on the
-// anonymous lane to the same 8x ceiling as its exponential backoff. The lane
-// is rate limited per exit IP, and a cooling node is reached only through the
-// cursor's fallback: after every eligible node, and not at all while #pool
-// transports are present, since the cursor then keeps cycling those. A quota
-// response asking for hours would keep the exit demoted long after a network
-// change gave it a fresh allowance. Key lanes keep honoring Retry-After in
-// full.
-const maxAnonymousRetryAfterMultiplier = 8
+// maxAnonymousQuotaCooldown bounds an upstream Retry-After on the anonymous
+// lane. The free tier's window is the UTC calendar day, so a hint never
+// legitimately exceeds one day; the bound only guards against a malformed
+// header pinning an exit forever. Unlike the exponential backoff, the hint is
+// honoured in full: a spent /64 stays out of rotation until its window resets
+// instead of being retried every few minutes.
+const maxAnonymousQuotaCooldown = 24 * time.Hour
 
 // MarkFailure cools node down after an error or a 401, 403, 429 or 5xx
 // response; any other response leaves it untouched, and #pool nodes are never
 // cooled. The cooldown doubles with each consecutive failure, from the
-// base cooldown up to 8x, and a longer Retry-After extends it up to that same
-// 8x ceiling.
+// base cooldown up to 8x. An upstream Retry-After is honoured in full (bounded
+// by one day) and flagged as a quota cooldown, because a spent quota window
+// does not reopen when the proxy recovers.
 func (p *anonymousNodes) MarkFailure(node *anonymousNode, resp *http.Response, err error) {
 	if node == nil || (node.proxy != nil && node.proxy.pool) {
 		return
@@ -443,7 +452,8 @@ func (p *anonymousNodes) MarkFailure(node *anonymousNode, resp *http.Response, e
 	delay := p.cooldown * time.Duration(1<<min(failures-1, 3))
 	if resp != nil {
 		if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > delay {
-			delay = min(retryAfter, p.cooldown*maxAnonymousRetryAfterMultiplier)
+			delay = min(retryAfter, maxAnonymousQuotaCooldown)
+			node.quotaCooldown.Store(true)
 		}
 	}
 	node.cooldownUntil.Store(time.Now().Add(delay).UnixNano())

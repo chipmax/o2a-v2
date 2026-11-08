@@ -253,6 +253,25 @@ type PerformanceConfig struct {
 	// abusive stays out of the anonymous cursor. Upstream does not publish
 	// the block duration, so the default is a conservative 15 minutes.
 	FreeTierBlockSeconds int `json:"free_tier_block_seconds"`
+	// ModelTimeouts overrides AttemptTimeoutSeconds for the model IDs it
+	// names, in seconds. A model that is not listed keeps the global attempt
+	// timeout, so a slow reasoning model can be given a longer budget without
+	// loosening the bound for every other model.
+	ModelTimeouts map[string]int `json:"model_timeouts,omitempty"`
+}
+
+// AttemptTimeoutFor returns the per-attempt bound for model: its
+// performance.model_timeouts entry when set, otherwise AttemptTimeout. The
+// result is capped at requestTimeout exactly like AttemptTimeout.
+func (cfg PerformanceConfig) AttemptTimeoutFor(model string, requestTimeout time.Duration) time.Duration {
+	if seconds := cfg.ModelTimeouts[model]; seconds > 0 {
+		attempt := time.Duration(seconds) * time.Second
+		if requestTimeout > 0 && attempt > requestTimeout {
+			return requestTimeout
+		}
+		return attempt
+	}
+	return cfg.AttemptTimeout(requestTimeout)
 }
 
 // AttemptTimeout returns the bound for a single upstream attempt. When
@@ -389,6 +408,27 @@ func Normalize(path string, cfg Config) (Config, error) {
 	}
 	if cfg.Performance.FreeTierBlockSeconds < 0 {
 		return Config{}, errors.New("performance.free_tier_block_seconds must not be negative (0 uses the built-in cool-down)")
+	}
+	for model, seconds := range cfg.Performance.ModelTimeouts {
+		if strings.TrimSpace(model) == "" {
+			return Config{}, errors.New("performance.model_timeouts: model IDs must not be empty")
+		}
+		if seconds < 1 || seconds > 86400 {
+			return Config{}, fmt.Errorf("performance.model_timeouts[%s] must be between 1 and 86400 seconds", model)
+		}
+	}
+	for id, meta := range cfg.ServerKeyMetadata {
+		if meta.MaxConcurrency < 0 || meta.MaxConcurrency > 256 {
+			return Config{}, fmt.Errorf("server_key_metadata[%s].max_concurrency must be between 0 and 256", id)
+		}
+		if meta.DailyRequests < 0 || meta.DailyRequests > 1000000 {
+			return Config{}, fmt.Errorf("server_key_metadata[%s].daily_requests must be between 0 and 1000000", id)
+		}
+		for _, allowed := range meta.AllowModels {
+			if strings.TrimSpace(allowed) == "" {
+				return Config{}, fmt.Errorf("server_key_metadata[%s].allow_models: model IDs must not be empty", id)
+			}
+		}
 	}
 	if cfg.Logging.Level != "debug" && cfg.Logging.Level != "info" && cfg.Logging.Level != "warn" && cfg.Logging.Level != "error" {
 		return Config{}, errors.New("logging.level must be debug, info, warn, or error")
@@ -553,6 +593,7 @@ func Clone(cfg Config) Config {
 	cfg.ServerKeys = append([]string(nil), cfg.ServerKeys...)
 	metadata := make(map[string]ServerKeyMetadata, len(cfg.ServerKeyMetadata))
 	for id, item := range cfg.ServerKeyMetadata {
+		item.AllowModels = append([]string(nil), item.AllowModels...)
 		metadata[id] = item
 	}
 	cfg.ServerKeyMetadata = metadata

@@ -180,7 +180,7 @@ func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL,
 	label := "warp:" + lease.EgressKey()
 	setWarpEgress(ctx, label)
 	diagnostic := isDiagnosticRequest(ctx)
-	resp, err := doInferenceAttempt(owned.client(), req, firstEventTimeout, g.attemptTimeout)
+	resp, err := doInferenceAttempt(owned.client(), req, firstEventTimeout, g.attemptTimeoutFor(model))
 	if err != nil {
 		if ctx.Err() == nil && !diagnostic {
 			g.warp.Fail(lease, warpFailReason(err))
@@ -254,7 +254,7 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 	firstEventTimeout := time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds) * time.Second
 	var lastResponse *http.Response
 	var lastErr error
-	blocked, halted := false, false
+	blocked, halted, quotaSpent := false, false, false
 	attempts := 0
 	triedEgresses := make(map[string]bool)
 	for attempts < limit {
@@ -297,6 +297,17 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 			status := upstreamStatus(resp)
 			g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, warpProxy(egress), resp, err, duration)
 			if err == nil && status/100 == 2 {
+				if isQuotaErrorDocument(resp) {
+					// A 200 carrying the free tier's quota error is not a
+					// success: the exit has spent its bucket. Mark it tried,
+					// rotate to the next exit, and let the caller fall back to
+					// a keyed tier once every exit is spent.
+					lastResponse, lastErr = resp, errFreeTierQuotaSpent
+					quotaSpent = true
+					triedEgresses[strings.TrimPrefix(egress, "warp:")] = true
+					g.logger.Warn("free tier answered 200 with a quota error document; rotating the exit", "component", "upstream", "event", "free_tier_quota_document", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "upstream", config.RedactURL(baseURL), "proxy", egress)
+					break
+				}
 				g.anonymous.NoteSuccess()
 				g.logger.Debug("anonymous WARP upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "upstream", config.RedactURL(baseURL), "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", egress, "status", status, "duration_ms", duration.Milliseconds())
 				return resp, nil, attempts
@@ -335,12 +346,12 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 		if halted || ctx.Err() != nil {
 			break
 		}
-		if status := upstreamStatus(lastResponse); status == http.StatusTooManyRequests {
+		if status := upstreamStatus(lastResponse); status == http.StatusTooManyRequests || quotaSpent {
 			if !g.warp.HasUntriedActive(triedEgresses) {
 				break
 			}
 		}
-		if !leaseBlocked && upstreamStatus(lastResponse) != http.StatusTooManyRequests {
+		if !leaseBlocked && !quotaSpent && upstreamStatus(lastResponse) != http.StatusTooManyRequests {
 			if pause, tripped := g.anonymous.NoteFailure(); tripped {
 				g.logger.Warn("anonymous lane circuit breaker opened", "component", "upstream", "event", "anonymous_breaker_open", "status", upstreamStatus(lastResponse), "paused_for", pause.String())
 				break
@@ -359,10 +370,16 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 		if blocked {
 			return lastResponse, errFreeTierIPBlocked, attempts
 		}
+		if quotaSpent {
+			return lastResponse, errFreeTierQuotaSpent, attempts
+		}
 		return lastResponse, nil, attempts
 	}
 	if blocked {
 		return nil, errFreeTierIPBlocked, attempts
+	}
+	if quotaSpent {
+		return nil, errFreeTierQuotaSpent, attempts
 	}
 	if lastErr == nil {
 		lastErr = errWARPUnavailable

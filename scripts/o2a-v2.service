@@ -1,0 +1,16 @@
+[Unit]
+Description=o2a-v2 gateway (personal fork)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=o2a
+Group=o2a
+WorkingDirectory=/opt/o2a-v2
+ExecStart=/opt/o2a-v2/opencode2api -config /opt/o2a-v2/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

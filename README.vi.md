@@ -2,6 +2,14 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md) | [Tiếng Việt](README.vi.md) | [Italiano](README.it.md)
 
+> **Bản fork cá nhân `o2a-v2`** — dựa trên upstream 1.4.7 (MIT).
+> Khác biệt chính: WebUI **mặc định tiếng Việt**, **hạn mức theo từng khoá API**
+> (danh sách model / số request song song / số request mỗi ngày), timeout theo model,
+> giữ nóng đăng ký WARP qua restart, nhận diện "HTTP 200 + lỗi quota" của free tier,
+> cổng API mặc định **6363**.
+> Đọc [FORK.vi.md](FORK.vi.md) để biết chi tiết và [docs/CONFIG.vi.md](docs/CONFIG.vi.md)
+> cho toàn bộ tham số cấu hình; đề xuất tiếp theo ở [docs/ROADMAP.vi.md](docs/ROADMAP.vi.md).
+
 Một gateway viết bằng Go cho **OpenCode Zen và Zen Go**. Nó cung cấp các endpoint Chat Completions, Responses và Anthropic Messages, chuyển đổi qua lại giữa các giao thức gốc của chúng, và quản lý upstream key cùng proxy.
 
 File thực thi đã bao gồm WebUI. Việc chạy dịch vụ không cần Node.js runtime hay cơ sở dữ liệu.

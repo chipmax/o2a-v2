@@ -23,6 +23,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,6 +54,15 @@ func attemptDeadline(cfg config.Config) time.Duration {
 		return 0
 	}
 	return cfg.Performance.AttemptTimeout(time.Duration(cfg.Retry.TimeoutSeconds) * time.Second)
+}
+
+// attemptTimeoutFor returns the per-attempt deadline for one model, honouring
+// performance.model_timeouts before the global attempt timeout.
+func (g *Gateway) attemptTimeoutFor(model string) time.Duration {
+	if seconds := g.cfg.Performance.ModelTimeouts[model]; seconds > 0 {
+		return g.cfg.Performance.AttemptTimeoutFor(model, time.Duration(g.cfg.Retry.TimeoutSeconds)*time.Second)
+	}
+	return g.attemptTimeout
 }
 
 // statusClientClosedRequest is nginx's 499: the client went away before the
@@ -206,6 +216,18 @@ func (g *Gateway) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		if isDiagnosticRequest(r.Context()) {
 			caller = telemetry.PlaygroundServerKey
 		}
+		release, refusal := quota.acquire(caller, g.cfg.PolicyByID(caller))
+		if refusal != nil {
+			protocol := wire.Chat
+			if r.URL.Path == "/v1/messages" {
+				protocol = wire.Anthropic
+			}
+			seconds := int((refusal.retryAfter + time.Second - 1) / time.Second)
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			wire.WriteError(w, protocol, http.StatusTooManyRequests, refusal.message, refusal.code, "")
+			return
+		}
+		defer release()
 		if meta := telemetry.MetaFromRequest(r); meta != nil {
 			meta.ServerKeyID = caller
 		}
@@ -270,6 +292,10 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 		}
 		if model == "" {
 			wire.WriteError(w, external, http.StatusBadRequest, "model is required", "invalid_request_error", "model")
+			return
+		}
+		if !g.cfg.PolicyByID(callerScope(r.Context())).ModelAllowed(model) {
+			wire.WriteError(w, external, http.StatusForbidden, fmt.Sprintf("this API key is not allowed to use model %q", model), "model_not_allowed", "model")
 			return
 		}
 		if id := g.rotation.GroupID(model); id != "" {
@@ -389,6 +415,14 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				wire.WriteError(w, external, http.StatusServiceUnavailable, freeTierBlockedMessage, "free_tier_ip_blocked", ids.Request)
 				return
 			}
+			// Every lane answered 200 with the free tier's quota error
+			// document: the quota itself is gone, so a retry now cannot help
+			// and the client should back off instead of replaying the body.
+			if errors.Is(err, errFreeTierQuotaSpent) {
+				w.Header().Set("Retry-After", "60")
+				wire.WriteError(w, external, http.StatusTooManyRequests, freeTierQuotaMessage, "free_tier_quota_exhausted", ids.Request)
+				return
+			}
 			// The anonymous lane's circuit breaker is open. Report the pause
 			// distinctly so the operator does not look for a credential or a
 			// model problem in the upstream error.
@@ -406,6 +440,16 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 		}
 		w.Header().Set("x-request-id", ids.Request)
 		if resp.StatusCode/100 != 2 {
+			// A 401 or 403 here is the upstream rejecting the gateway's own
+			// key (invalid, expired, or blocked in this region), not the
+			// caller's: authentication already succeeded. Forwarding the
+			// upstream status would send the client looking for a credential
+			// problem on its side, so name the real cause and let it retry.
+			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+				g.logger.Warn("upstream rejected the gateway credential", "component", "upstream", "event", "upstream_credential_rejected", "request_id", ids.Request, "tier", upstreamRoute.Tier, "status", resp.StatusCode)
+				wire.WriteError(w, external, http.StatusBadGateway, "the upstream rejected the gateway's own credential; check the upstream key configured for this tier", "upstream_credential_rejected", ids.Request)
+				return
+			}
 			copyErrorResponse(w, external, resp, ids.Request)
 			return
 		}
@@ -502,6 +546,10 @@ func (g *Gateway) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 	}
 	if model == "" {
 		wire.WriteError(w, wire.SystemOne, http.StatusBadRequest, "model is required", "invalid_request_error", "model")
+		return
+	}
+	if !g.cfg.PolicyByID(callerScope(r.Context())).ModelAllowed(model) {
+		wire.WriteError(w, wire.SystemOne, http.StatusForbidden, fmt.Sprintf("this API key is not allowed to use model %q", model), "model_not_allowed", "model")
 		return
 	}
 	if !g.catalog.Supported(model) {

@@ -189,15 +189,24 @@ func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL,
 		return nil, label, err
 	}
 	if !diagnostic {
-		var body []byte
-		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
-			body = peekResponseBody(resp)
+		quotaDocument := resp.StatusCode/100 == 2 && isQuotaErrorDocument(resp)
+		g.quota.record(lease.EgressKey(), model, resp.StatusCode, quotaDocument, time.Now())
+		if quotaDocument {
+			// The exit answered 200 with the free tier's quota document: its
+			// /64 has spent the bucket for the counting window, so retire it
+			// until the window resets instead of dealing it out again.
+			g.warp.ReportQuotaSpent(lease, quotaResetAfter(time.Now()))
+		} else {
+			var body []byte
+			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+				body = peekResponseBody(resp)
+			}
+			var retryAfter time.Duration
+			if resp.StatusCode == http.StatusTooManyRequests {
+				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			}
+			g.warp.ReportWithRetryAfter(lease, resp.StatusCode, body, retryAfter)
 		}
-		var retryAfter time.Duration
-		if resp.StatusCode == http.StatusTooManyRequests {
-			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
-		}
-		g.warp.ReportWithRetryAfter(lease, resp.StatusCode, body, retryAfter)
 	}
 	resp.Body = &warpBody{ReadCloser: resp.Body, lease: owned, diagnostic: diagnostic}
 	return resp, label, nil
@@ -218,6 +227,23 @@ func warpProxy(label string) *proxyTransport {
 		return nil
 	}
 	return &proxyTransport{name: label}
+}
+
+// warpRotationWait bounds how long one attempt waits for a replacement exit to
+// finish registering before the request stops rotating.
+const warpRotationWait = 4 * time.Second
+
+// awaitFreshEgress reports whether an unused exit is available now, waiting up
+// to warpRotationWait while a replacement registration is in flight. A 429 or a
+// quota document retires the exit and starts its replacement in the background,
+// so giving up straight away would turn a rotation that is about to finish into
+// a client-visible 429. When nothing is registering the check returns at once,
+// so a genuinely exhausted pool still answers fast.
+func (g *Gateway) awaitFreshEgress(ctx context.Context, tried map[string]bool) bool {
+	if g.warp.HasUntriedActive(tried) {
+		return true
+	}
+	return g.warp.WaitForActive(ctx, tried, warpRotationWait)
 }
 
 // doWarpAnonymousUpstream is the anonymous lane with WARP as its only egress.
@@ -333,7 +359,7 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 			}
 			if status == http.StatusTooManyRequests {
 				triedEgresses[strings.TrimPrefix(egress, "warp:")] = true
-				if !g.warp.HasUntriedActive(triedEgresses) {
+				if !g.awaitFreshEgress(ctx, triedEgresses) {
 					g.logger.Warn("all active WARP exits exhausted or cooling down; stopping retries", "component", "upstream", "event", "warp_429_exhausted", "request_id", ids.Request, "attempt", attempts)
 					break
 				}
@@ -347,7 +373,7 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 			break
 		}
 		if status := upstreamStatus(lastResponse); status == http.StatusTooManyRequests || quotaSpent {
-			if !g.warp.HasUntriedActive(triedEgresses) {
+			if !g.awaitFreshEgress(ctx, triedEgresses) {
 				break
 			}
 		}

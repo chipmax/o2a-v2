@@ -98,8 +98,8 @@ func newRegistrationStore(path string, limit int) *registrationStore {
 	if len(store.pending) > 0 {
 		store.probeUntil = time.Now().Add(savedProbeWindow)
 		// A saved file written moments ago belongs to the process that just
-		// exited: Cloudflare still holds its tunnel sessions, so probing now
-		// only spends the startup budget on failures. Skip straight to fresh
+		// exited: its tunnel sessions are gone, so probing now only spends the
+		// startup budget on certain failures. Skip straight to fresh
 		// registrations and keep the file for the next start.
 		if !file.SavedAt.IsZero() && time.Since(file.SavedAt) < quickRestartWindow {
 			store.probeUntil = time.Now()
@@ -108,12 +108,15 @@ func newRegistrationStore(path string, limit int) *registrationStore {
 	return store
 }
 
-// quickRestartWindow is the age below which saved registrations are assumed
-// still bound to the previous process's tunnel sessions.
+// quickRestartWindow is the age below which saved registrations are known to be
+// bound to the previous process's tunnel sessions.
 const quickRestartWindow = 45 * time.Second
 
-// savedProbeWindow is how long startup may spend trying saved registrations
-// before it starts registering fresh exits.
+// savedProbeWindow bounds how long startup spends re-probing saved
+// registrations. Measured on this deployment, a registration saved by a process
+// that has exited does not carry traffic again (its WireGuard session is gone),
+// so each probe costs its full timeout and buys nothing: the window is small and
+// the pool registers fresh exits after it.
 const savedProbeWindow = 4 * time.Second
 
 // pop returns a saved registration, if one is still queued and the startup

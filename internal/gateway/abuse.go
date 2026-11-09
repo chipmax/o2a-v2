@@ -148,6 +148,31 @@ func isQuotaErrorDocument(resp *http.Response) bool {
 	return false
 }
 
+// freeTierQuotaWindowMin and freeTierQuotaWindowMax clamp quotaResetAfter. The
+// free tier counts per egress /64 and per model family, and resets at midnight
+// UTC; the bound only guards against clock skew.
+const (
+	freeTierQuotaWindowMin = 10 * time.Minute
+	freeTierQuotaWindowMax = 24 * time.Hour
+)
+
+// quotaResetAfter reports how long the free tier's counting window still runs.
+// A spent egress refills only when the counter resets at the next UTC midnight,
+// so a spent exit must stay out of rotation until then instead of being retried
+// (or re-registered onto) every cooldown period.
+func quotaResetAfter(now time.Time) time.Duration {
+	utc := now.UTC()
+	next := time.Date(utc.Year(), utc.Month(), utc.Day()+1, 0, 0, 0, 0, time.UTC)
+	remaining := next.Sub(utc)
+	if remaining < freeTierQuotaWindowMin {
+		return freeTierQuotaWindowMin
+	}
+	if remaining > freeTierQuotaWindowMax {
+		return freeTierQuotaWindowMax
+	}
+	return remaining
+}
+
 // errDeterministicClientRejection reports that the upstream rejected the
 // request itself: the body is malformed, too long for the model, or fails the
 // same validation on every credential. Retrying on another key, lane or tier

@@ -54,6 +54,7 @@
             <div class="nav-group-title" data-i18n="nav.group.runtime">Vận hành</div>
             <button class="nav-item active" data-page="overview" data-i18n="nav.overview">Tổng quan</button>
             <button class="nav-item" data-page="model-quotas" data-i18n="nav.model-quotas">Mô hình &amp; hạn mức</button>
+            <button class="nav-item" data-page="egress" data-i18n="nav.egress">Ngân sách /64</button>
             <button class="nav-item" data-page="api-keys" data-i18n="nav.api-keys">Khoá API</button>
           </div>
           <div class="nav-group">
@@ -741,6 +742,45 @@
                 </div>
               </section>
             </div>
+          </section>
+
+          <section id="page-egress" class="page hidden">
+            <section class="section">
+              <div class="section-head">
+                <div>
+                  <h2 class="section-title" data-i18n="egress.title">Ngân sách egress /64</h2>
+                  <p class="section-caption" data-i18n="egress.caption">
+                    Free tier đếm theo từng /64 và từng họ model; cửa sổ reset lúc 00:00 UTC.
+                  </p>
+                </div>
+                <button id="egress-refresh" class="btn btn-sm" data-i18n="egress.refresh">Làm mới</button>
+              </div>
+              <div
+                id="egress-summary"
+                class="quota-status"
+                role="status"
+                aria-live="polite"
+                data-i18n="egress.pending"
+              >
+                Đang đọc trạng thái pool.
+              </div>
+              <div class="table-wrap">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="egress.col.egress">Egress /64</th>
+                      <th data-i18n="egress.col.family">Họ model</th>
+                      <th data-i18n="egress.col.state">Trạng thái</th>
+                      <th data-i18n="egress.col.requests">Request</th>
+                      <th data-i18n="egress.col.quota">Hết quota</th>
+                      <th data-i18n="egress.col.cooling">Nghỉ còn</th>
+                      <th data-i18n="egress.col.reset">Reset</th>
+                    </tr>
+                  </thead>
+                  <tbody id="egress-rows"></tbody>
+                </table>
+              </div>
+            </section>
           </section>
 
           <section id="page-rotation" class="page hidden">

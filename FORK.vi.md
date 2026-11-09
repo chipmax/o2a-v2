@@ -101,10 +101,50 @@ Trong WebUI: **Khoá API → nút "Hạn mức"** (hoặc sửa trực tiếp `c
 | 502 | `upstream_credential_rejected` | Key upstream của gateway bị từ chối (hết hạn / sai vùng) |
 | 503 | `free_tier_ip_blocked` | OpenCode chặn IP exit; chờ hết `free_tier_block_seconds` |
 
+## Chuyển toàn bộ gate về một cổng (peers)
+
+Từ bản v2.4.0, `:6363` không cần router Python phía trước. Khai báo các gateway
+khác trong `peers`; khi mọi lane nội bộ thất bại (429/hết quota, 5xx, 401/403),
+request được chuyển tiếp nguyên văn sang peer, kèm header `X-Peer` cho biết ai đã phục vụ.
+
+```json
+"peers": [
+  {
+    "name": "vps1-o2a",
+    "base_url": "http://10.0.0.184:8080",
+    "key": "<server key của VPS1>",
+    "tier": 1,
+    "timeout_seconds": 180,
+    "cooldown_seconds": 60,
+    "models": []
+  }
+]
+```
+
+- `tier` nhỏ hơn được thử trước; cùng tier thì xoay vòng, nên hai máy ngang nhau chia tải.
+- `429` tôn trọng `Retry-After` (tối đa 15 phút); lỗi khác nghỉ `cooldown_seconds`.
+- `models: []` = phục vụ mọi mô hình; điền danh sách để giới hạn.
+- Peer cũng được thử khi model không có trong catalog nội bộ, nên một địa chỉ vẫn
+  trả lời được mô hình chỉ máy kia biết.
+- Khi free tier báo hết quota cho một họ model, gateway ghi nhớ tới mốc reset UTC và
+  **ưu tiên peer ngay từ đầu** cho các request sau — tránh mất 8–30 giây xoay exit vô ích.
+
+Đo trên VPS2 (local đã hết quota họ `de…`): request đầu 9.3 s (học trạng thái),
+các request sau 1.0–2.4 s, tất cả `200` với `X-Peer: vps1-o2a`.
+
+## Trang “Ngân sách /64” (WebUI)
+
+`GET /api/egress-quota` và mục **Ngân sách /64** trong WebUI liệt kê từng cặp
+(`egress /64`, họ model) với: số request, số lần hết quota, trạng thái
+`sẵn sàng / đang nghỉ / chưa dùng`, thời gian nghỉ còn lại và mốc reset UTC.
+Dữ liệu lấy từ bộ đếm trong bộ nhớ cộng trạng thái cooling thật của pool WARP.
+
 ## Ghi chú vận hành
 
 - `config.json.warp-state.json` chứa đăng ký WARP đã dùng; xoá file này để đăng ký mới hoàn toàn.
 - Free tier tính quota theo IP exit: một VPS mới cần vài phút để pool tìm được exit còn quota.
 - Log JSON có `event`: `request_routed`, `free_tier_quota_document`, `warp_429_exhausted`,
-  `upstream_credential_rejected`, `key_daily_limit`... dùng để soi nhanh.
+  `peer_served`, `peer_fallback`, `upstream_credential_rejected`, `key_daily_limit`... dùng để soi nhanh.
 - Gateway không đổi mô hình khi client chỉ định rõ; chỉ alias luân chuyển mới đổi.
+- Sau mỗi lần restart, pool WARP cần ~2–4 phút để ấm lại 8 exit; trong lúc đó peer
+  (nếu có) gánh traffic.

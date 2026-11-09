@@ -106,6 +106,16 @@ type Gateway struct {
 	freeTierBlock time.Duration
 	// refreshMu prevents overlapping catalog refreshes across concurrent or scheduled callers.
 	refreshMu sync.Mutex
+	// peers are other o2a gateways this one falls back to when every local
+	// lane fails, so a single listen address serves the whole fleet.
+	peers *peerPool
+	// quota records per-egress free-tier spend for the budget page.
+	quota *quotaBoard
+	// peerFirst holds, per model family, the moment its local free-tier bucket
+	// resets after the upstream reported it spent. While it is in the future,
+	// requests for that family go to a peer first.
+	peerMu    sync.Mutex
+	peerFirst map[string]time.Time
 }
 
 // New builds a Gateway for cfg: one proxy transport per runtime proxy (a
@@ -151,6 +161,8 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 		monitor:        monitor,
 		attemptTimeout: attemptDeadline(cfg),
 		freeTierBlock:  time.Duration(cfg.Performance.FreeTierBlockSeconds) * time.Second,
+		peers:          newPeerPool(cfg.Peers),
+		quota:          newQuotaBoard(),
 	}, nil
 }
 
@@ -302,7 +314,17 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			g.handleRotation(w, r, external, payload, id, model)
 			return
 		}
+		ids := identity.DeriveRequestIDs(r, payload, callerScope(r.Context()))
+		if meta != nil {
+			meta.Request = ids.Request
+			meta.Session = ids.Session
+		}
 		if !g.catalog.Supported(model) {
+			// A peer may know a model this instance does not: forward before
+			// answering "unknown model", so one address stays authoritative.
+			if g.tryPeers(r.Context(), w, r, body, model, ids.Request) {
+				return
+			}
 			// A model the catalog has never heard of is a bad model NAME: 404
 			// tells a client to pick a different model. A model the catalog
 			// knows but cannot serve is a capability or routing problem, and
@@ -350,12 +372,14 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			wire.WriteError(w, external, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
 			return
 		}
-		ids := identity.DeriveRequestIDs(r, payload, callerScope(r.Context()))
-		if meta != nil {
-			meta.Request = ids.Request
-			meta.Session = ids.Session
-		}
 		stream := jsonutil.BoolAt(payload, "stream")
+		// The local bucket of this model family is spent for the rest of its
+		// window: ask a peer first instead of rotating exits that cannot serve.
+		if g.peers.Len() > 0 && !isDiagnosticRequest(r.Context()) && g.localBucketSpent(model) {
+			if g.tryPeers(r.Context(), w, r, body, model, ids.Request) {
+				return
+			}
+		}
 		requestCtx, cancel := context.WithTimeout(r.Context(), time.Duration(g.cfg.Retry.TimeoutSeconds)*time.Second)
 		defer cancel()
 		resp, upstreamRoute, err := g.doUpstream(requestCtx, route, bodies, ids)
@@ -365,6 +389,17 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			// connection on every request.
 			if resp != nil && resp.Body != nil {
 				httpx.DrainAndClose(resp.Body)
+			}
+			// The request itself is fine but no local lane could serve it:
+			// hand it to the peers before answering an upstream failure.
+			if errors.Is(err, errFreeTierQuotaSpent) {
+				now := time.Now()
+				g.markLocalQuotaSpent(model, now, now.Add(quotaResetAfter(now)))
+			}
+			if !errors.Is(err, errDeterministicClientRejection) && !isDiagnosticRequest(requestCtx) {
+				if g.tryPeers(requestCtx, w, r, body, model, ids.Request) {
+					return
+				}
 			}
 			finalTier := route.Tier
 			if meta != nil && meta.Tier != "" {
@@ -419,7 +454,10 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			// document: the quota itself is gone, so a retry now cannot help
 			// and the client should back off instead of replaying the body.
 			if errors.Is(err, errFreeTierQuotaSpent) {
-				w.Header().Set("Retry-After", "60")
+				// The free tier counts per egress /64 and resets at midnight
+				// UTC, so hand the client the real remaining window instead of
+				// a one-minute hint that only produces retry churn.
+				w.Header().Set("Retry-After", strconv.Itoa(int(quotaResetAfter(time.Now()).Seconds())))
 				wire.WriteError(w, external, http.StatusTooManyRequests, freeTierQuotaMessage, "free_tier_quota_exhausted", ids.Request)
 				return
 			}
@@ -440,6 +478,23 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 		}
 		w.Header().Set("x-request-id", ids.Request)
 		if resp.StatusCode/100 != 2 {
+			if resp.StatusCode == http.StatusTooManyRequests && upstreamRoute.Anonymous {
+				// The free lane refused: its bucket for this family is spent
+				// until the window resets, so later requests skip the rotation.
+				now := time.Now()
+				g.markLocalQuotaSpent(model, now, now.Add(quotaResetAfter(now)))
+			}
+			// A spent free-tier bucket or a credential the upstream refuses is
+			// exactly what the peer list exists for: a peer with its own WARP
+			// exits and keys can still serve the request. The local response
+			// stays untouched, so it is still the answer if every peer fails.
+			if g.peers.Len() > 0 && !isDiagnosticRequest(r.Context()) &&
+				(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 ||
+					resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				if g.tryPeers(r.Context(), w, r, body, model, ids.Request) {
+					return
+				}
+			}
 			// A 401 or 403 here is the upstream rejecting the gateway's own
 			// key (invalid, expired, or blocked in this region), not the
 			// caller's: authentication already succeeded. Forwarding the

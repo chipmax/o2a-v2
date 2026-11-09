@@ -551,6 +551,20 @@ func (m *RuntimeController) Resources() ResourceSnapshot {
 	return result
 }
 
+// EgressQuota reports the free-tier bucket board: which egress /64s the pool
+// holds, which ones the upstream has refused, and when their window resets.
+func (m *RuntimeController) EgressQuota() EgressQuotaSnapshot {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil {
+		return EgressQuotaSnapshot{}
+	}
+	var states []warp.ExitState
+	if runtime.gateway.warp != nil {
+		states = runtime.gateway.warp.States()
+	}
+	return runtime.gateway.quota.snapshot(states, time.Now())
+}
+
 // DebugModels returns a routing diagnostic for every catalog model, with no
 // requested protocol, plus the catalog's metadata snapshot.
 func (m *RuntimeController) DebugModels() ([]modelcatalog.RouteDiagnostic, modelcatalog.MetadataSnapshot) {

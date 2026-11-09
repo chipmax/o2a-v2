@@ -45,6 +45,10 @@ type Config struct {
 	WebUI             WebUIConfig                  `json:"webui"`
 	Prefer            Tier                         `json:"prefer"`
 	Reasoning         ReasoningConfig              `json:"reasoning"`
+	// Peers are other o2a-compatible gateways this process falls back to when
+	// every local lane fails, so one listen address serves the whole fleet
+	// without an external router.
+	Peers []PeerConfig `json:"peers,omitempty"`
 
 	effectiveProxies []string
 }
@@ -484,7 +488,38 @@ func Normalize(path string, cfg Config) (Config, error) {
 	if err := normalizeProxyBindings(&cfg); err != nil {
 		return Config{}, err
 	}
+	if err := normalizePeers(&cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// normalizePeers trims and defaults the peer list, then rejects duplicate names
+// because logs and the X-Peer header identify a peer by name alone.
+func normalizePeers(cfg *Config) error {
+	if len(cfg.Peers) == 0 {
+		cfg.Peers = nil
+		return nil
+	}
+	if len(cfg.Peers) > 32 {
+		return fmt.Errorf("peers lists %d entries, at most 32 are supported", len(cfg.Peers))
+	}
+	seen := make(map[string]bool, len(cfg.Peers))
+	for index := range cfg.Peers {
+		peer := &cfg.Peers[index]
+		peer.Normalize()
+		if peer.Name == "" {
+			peer.Name = peer.BaseURL
+		}
+		if seen[peer.Name] {
+			return fmt.Errorf("peers[%d].name %q is used twice", index, peer.Name)
+		}
+		seen[peer.Name] = true
+		if err := peer.Validate(index); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func remapServerKeyMetadata(cfg *Config) {
@@ -622,6 +657,12 @@ func Clone(cfg Config) Config {
 		}
 		cfg.ProxyBindings = bindings
 	}
+	peers := make([]PeerConfig, len(cfg.Peers))
+	for index, peer := range cfg.Peers {
+		peer.Models = append([]string(nil), peer.Models...)
+		peers[index] = peer
+	}
+	cfg.Peers = peers
 	return cfg
 }
 

@@ -13,14 +13,15 @@ import (
 )
 
 type healthResponse struct {
-	Status  string        `json:"status"`
-	Ready   bool          `json:"ready"`
-	Version string        `json:"version"`
-	Models  healthModels  `json:"models"`
-	Keys    healthKeys    `json:"keys"`
-	Proxies healthProxies `json:"proxies"`
-	Warp    *healthWarp   `json:"warp,omitempty"`
-	Issues  []string      `json:"issues,omitempty"`
+	Status  string           `json:"status"`
+	Ready   bool             `json:"ready"`
+	Version string           `json:"version"`
+	Models  healthModels     `json:"models"`
+	Keys    healthKeys       `json:"keys"`
+	Proxies healthProxies    `json:"proxies"`
+	Warp    *healthWarp      `json:"warp,omitempty"`
+	Peers   []map[string]any `json:"peers,omitempty"`
+	Issues  []string         `json:"issues,omitempty"`
 }
 
 type healthModels struct {
@@ -156,6 +157,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			Unhealthy: proxyTotal - proxyHealthy,
 		},
 		Warp:   warpStatus,
+		Peers:  g.peers.peerSnapshot(),
 		Issues: issues,
 	})
 }

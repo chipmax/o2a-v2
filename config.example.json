@@ -12,6 +12,7 @@
   },
   "proxies": ["direct"],
   "proxyfile": "",
+  "peers": [],
   "upstream": {
     "zen": "https://opencode.ai/zen",
     "go": "https://opencode.ai/zen/go",

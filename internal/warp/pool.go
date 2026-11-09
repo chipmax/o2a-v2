@@ -106,8 +106,14 @@ type Pool struct {
 	// refillPaused keeps every refill trigger quiet until it expires.
 	refillFailures int
 	refillPaused   time.Time
-	wait           sync.WaitGroup
-	createMu       sync.Mutex
+	// registering counts exits being registered right now (createExit is
+	// serialized, so it is 0 or 1) and pending counts replacements queued by
+	// penalizeFor. WaitForActive uses them to tell "a fresh exit is on its way"
+	// from "the pool has nothing left to offer".
+	registering int
+	pending     int
+	wait        sync.WaitGroup
+	createMu    sync.Mutex
 }
 
 type Lease struct {
@@ -396,12 +402,68 @@ func (p *Pool) ReportWithRetryAfter(lease *Lease, status int, body []byte, retry
 	p.penalizeFor(lease.exit, reason, max(retryAfter, egressCooldown))
 }
 
+// ExitState is one WARP exit's live state for the quota board: its public
+// egress, whether it is carrying a request, and when a cooling one reopens. A
+// cooling exit is reported by egress key alone because its tunnel is gone.
+type ExitState struct {
+	ID           string
+	Egress       string
+	EgressKey    string
+	InFlight     int
+	Cooling      bool
+	CoolingUntil time.Time
+}
+
+// States reports every active and cooling exit. It never exposes keys or
+// device tokens.
+func (p *Pool) States() []ExitState {
+	if p == nil {
+		return nil
+	}
+	now := time.Now()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]ExitState, 0, len(p.active)+len(p.cooling))
+	for _, active := range p.active {
+		state := ExitState{ID: active.id, Egress: active.egress.String(), EgressKey: active.egressKey()}
+		active.mu.Lock()
+		state.InFlight = active.refs
+		active.mu.Unlock()
+		out = append(out, state)
+	}
+	for key, until := range p.cooling {
+		if until.After(now) {
+			out = append(out, ExitState{EgressKey: key, Cooling: true, CoolingUntil: until})
+		}
+	}
+	return out
+}
+
+// ReportQuotaSpent retires an exit whose egress answered 2xx with the free
+// tier's quota error document. That body means the /64 has spent its bucket for
+// the window, so the exit is dealt out again only as a wasted attempt; keeping
+// it out of rotation (and out of registration reuse through cooling) until the
+// next reset is what stops the same spent subnet from being picked repeatedly.
+func (p *Pool) ReportQuotaSpent(lease *Lease, cooldown time.Duration) {
+	if lease == nil || lease.exit == nil {
+		return
+	}
+	if cooldown <= 0 {
+		cooldown = egressCooldown
+	}
+	p.penalizeFor(lease.exit, "free tier quota document", cooldown)
+}
+
 // HasUntriedActive reports whether an active, unpenalized exit sits on an
 // egress key that is not in tried, so another attempt would leave from a
 // different quota scope.
 func (p *Pool) HasUntriedActive(tried map[string]bool) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.hasUntriedActiveLocked(tried)
+}
+
+func (p *Pool) hasUntriedActiveLocked(tried map[string]bool) bool {
 	for _, active := range p.active {
 		if active.isPenalized() {
 			continue
@@ -411,6 +473,44 @@ func (p *Pool) HasUntriedActive(tried map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// WaitForActive blocks until an active, unpenalized exit sits on an egress that
+// is not in tried, or limit expires. It only waits while a registration is
+// already in flight: a retired exit is replaced in the background, and giving
+// up the moment the last active exit is penalized turns a rotation that is
+// about to finish into a client-visible 429. When nothing is being registered
+// it reports the current state immediately, so a genuinely exhausted pool still
+// answers fast.
+func (p *Pool) WaitForActive(ctx context.Context, tried map[string]bool, limit time.Duration) bool {
+	if p == nil {
+		return false
+	}
+	timer := time.NewTimer(limit)
+	defer timer.Stop()
+	for {
+		p.mu.Lock()
+		available := p.hasUntriedActiveLocked(tried)
+		incoming := p.registering + p.pending
+		changed := p.changed
+		closed := p.closed
+		p.mu.Unlock()
+		if available {
+			return true
+		}
+		if closed || incoming == 0 {
+			return false
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-p.ctx.Done():
+			return false
+		case <-changed:
+		case <-timer.C:
+			return false
+		}
+	}
 }
 
 // Fail drops an exit that cannot carry traffic even though the upstream never
@@ -469,6 +569,7 @@ func (p *Pool) penalizeFor(bad *exit, reason string, cooldown time.Duration) {
 	if p.next >= len(p.active) {
 		p.next = 0
 	}
+	p.pending++
 	p.notifyLocked()
 	p.wait.Add(1)
 	p.mu.Unlock()
@@ -480,6 +581,14 @@ func (p *Pool) penalizeFor(bad *exit, reason string, cooldown time.Duration) {
 	// and the retry draws whichever active exit is ready first.
 	go func() {
 		defer p.wait.Done()
+		defer func() {
+			p.mu.Lock()
+			if p.pending > 0 {
+				p.pending--
+			}
+			p.notifyLocked()
+			p.mu.Unlock()
+		}()
 		p.replace(bad, reason)
 	}()
 }
@@ -753,7 +862,13 @@ func (p *Pool) createExit(ctx context.Context) (*exit, error) {
 		if closed {
 			return nil, ErrClosed
 		}
+		p.mu.Lock()
+		p.registering++
+		p.mu.Unlock()
 		candidate, err := p.newExit(ctx)
+		p.mu.Lock()
+		p.registering--
+		p.mu.Unlock()
 		if err != nil {
 			return nil, err
 		}

@@ -98,3 +98,39 @@ Mỗi IP ~200 request/ngày. Cần bao nhiêu IP tuỳ lưu lượng:
   `egress-harvest.py` — chỉ giữ exit trả **200** thật.
 - `o2a-quota-probe.timer`: đã cài nhưng **tắt**, vì chạy lúc 00:03 UTC sẽ ăn
   hết hạn mức trong ngày của chính VPS2. Chỉ bật khi muốn đo dung lượng thật.
+- `o2a-he-tunnel.service`: dựng tunnel 6in4 Hurricane Electric (`he-ipv6`) và
+  dummy `he-v6` chứa routed /64; policy rule `from <routed>/64 lookup 100`.
+- `o2a-he-reset-probe.timer`: 00:00:20 và 00:05:20 UTC, bắn 20 request từ 20
+  địa chỉ /128 khác nhau trong routed /64 để đo hạn mức.
+
+## 5. Kiểm chứng 2026-11-11 (quan trọng — sửa lại giả thuyết /64)
+
+Sau khi mở ICMP + protocol 41 ở Default Security List (làm bằng OCI Cloud
+Shell, không cần dùng giao diện), tunnel HE đã chạy được:
+
+```
+he-ipv6  local 10.0.0.128 (private, OCI NAT ra 161.118.246.9)
+client   2001:470:35:966::2/64
+routed   2001:470:36:965::/64      (HE chỉ cấp /64, xin /48 trả "Error:")
+egress   2001:470:36:965::1  -> api64.ipify.org OK
+```
+
+Kết quả đo hạn mức cùng lúc:
+
+| Nguồn | /64 đã dùng chưa | Kết quả |
+| --- | --- | --- |
+| HE `2001:470:36:965::/64` (::1, ::2, ::abcd, ::beef::1, ::c1, ::c2) | chưa bao giờ | **429 toàn bộ** |
+| OCI native `2603:c024:4526:9797::/64` (::b1…::b4 mới thêm) | một phần | 429 |
+| VPS2 IPv4 `161.118.246.9` | đã dùng nhiều | 429 |
+| IP residential nhà (Windows, VN) | mới trong ngày | **429** |
+| `GET /inference/v1/models` | — | **200** |
+
+Kết luận đúng hơn: **không phải bucket theo /64**. Một /64 hoàn toàn mới
+(HE) vẫn 429, và IP residential cũng 429, trong khi `/models` trả 200 ⇒ hạn
+mức free hiện là **một pool toàn cục cạn dần trong ngày** (hoặc chặn cả dải
+tunnel/ASN), không phải "mỗi IP 200 request" như giả thuyết ban đầu.
+
+Hệ quả: mua thêm proxy/IP lúc này không giải quyết gì. Việc cần làm là đo lại
+ngay sau 00:00 UTC: nếu nhiều /128 trong cùng /64 cùng trả 200 thì bucket
+theo IP là đúng và pool HE dùng được; nếu chỉ 1–2 địa chỉ 200 thì đó là pool
+toàn cục và chỉ cần chờ/giãn nhịp.

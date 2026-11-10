@@ -1,13 +1,14 @@
-// Page: 模型与额度 — Go quota windows and free model availability.
+// Page: models and quotas — Go quota windows and free model availability.
 import { api, hasSession } from "../api.js";
 import { loadDebugModels } from "../data.js";
 import { t, onChange } from "../i18n.js";
 import { $, bindTabs, copyText, el, emptyRow, localTime, toast } from "../ui.js";
+import rotation from "./rotation.js";
 
 const windows = () => [
-  ["rolling", t("5 小时窗口", "quotas.window.hour")],
-  ["weekly", t("每周窗口", "quotas.window.week")],
-  ["monthly", t("每月窗口", "quotas.window.month")],
+  ["rolling", t("Cửa sổ 5 giờ", "quotas.window.hour")],
+  ["weekly", t("Cửa sổ theo tuần", "quotas.window.week")],
+  ["monthly", t("Cửa sổ theo tháng", "quotas.window.month")],
 ];
 
 let data = null;
@@ -15,13 +16,68 @@ let timer = null;
 let loading = false;
 let activeTab = "quota";
 
+const fmtTokens = (value) =>
+  value >= 1_000_000
+    ? `${(value / 1_000_000).toFixed(2)}M`
+    : value >= 1_000
+      ? `${Math.round(value / 1_000)}k`
+      : String(value ?? "?");
+
+const contextCell = (model) => {
+  if (!model.context_window) return el("td", { class: "mono", text: t("Không rõ", "common.unknown") });
+  const source =
+    model.context_source === "config"
+      ? t("đặt trong cấu hình", "quotas.context.config")
+      : model.context_source === "learned"
+        ? t("học từ lưu lượng", "quotas.context.learned")
+        : t("danh mục", "quotas.context.catalog");
+  const notes = [source];
+  if (model.context_observed)
+    notes.push(t("đã dùng {0}", "quotas.context.observed", fmtTokens(model.context_observed)));
+  if (model.context_rejected)
+    notes.push(t("bị từ chối ở {0}", "quotas.context.rejected", fmtTokens(model.context_rejected)));
+  return el("td", {}, [
+    el("div", { class: "mono", text: fmtTokens(model.context_window) }),
+    el("div", { class: "metric-note", text: notes.join(" · ") }),
+  ]);
+};
+
+async function probeContext(id, button) {
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = t("Đang đo…", "quotas.contextProbing");
+  try {
+    const result = await api("/api/models/context-probe", {
+      method: "POST",
+      body: JSON.stringify({ model: id }),
+      timeoutMs: 1200000,
+    });
+    toast(
+      t(
+        "Đã đo {0} sau {1} lượt: ngữ cảnh {2} → {3}.",
+        "quotas.contextProbeDone",
+        id,
+        String(result.attempts?.length || 0),
+        fmtTokens(result.advertised_before || 0),
+        fmtTokens(result.advertised_after || 0),
+      ),
+    );
+    await load();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
 async function load() {
   if (loading) return;
   loading = true;
   $("#quota-refresh").disabled = true;
-  $("#quota-refresh").textContent = t("读取中…", "quotas.loading");
+  $("#quota-refresh").textContent = t("Đang đọc…", "quotas.loading");
   try {
-    const value = await api("/api/model-quotas");
+    const value = await api("/api/model-quotas", { timeoutMs: 15000 });
     if (!hasSession()) return;
     data = value;
     const select = $("#quota-account");
@@ -32,60 +88,63 @@ async function load() {
     }
     if ([...select.options].some((option) => option.value === selected)) select.value = selected;
     if (!select.options.length)
-      select.append(el("option", { value: "", text: t("尚未配置 Go Key", "quotas.noKey") }));
+      select.append(el("option", { value: "", text: t("Chưa cấu hình Go Key", "quotas.noKey") }));
     render();
   } catch (error) {
     $("#quota-status").textContent = t(
-      `查询失败：${error.message}。已有显示仅为上次查询结果。`,
+      "Truy vấn thất bại: {0}. Nội dung đang hiển thị chỉ là kết quả truy vấn trước.",
       "quotas.queryFailed",
       error.message,
     );
   } finally {
     loading = false;
     $("#quota-refresh").disabled = false;
-    $("#quota-refresh").textContent = t("刷新额度", "quotas.refresh");
+    $("#quota-refresh").textContent = t("Làm mới hạn mức", "quotas.refresh");
   }
 }
 
 function render() {
   if (!data) return;
-  const account = (data.accounts || []).find((item) => item.id === $("#quota-account").value);
+  const accounts = data.accounts || [];
+  const hasGoAccount = accounts.length > 0;
+  $("#quota-summary-section")?.classList.toggle("hidden", !hasGoAccount);
+  const account = accounts.find((item) => item.id === $("#quota-account").value);
   const stale = account?.status === "stale";
   const cards = $("#quota-cards");
   cards.replaceChildren();
   $("#quota-status").textContent = !account
-    ? t("请先在配置中心添加 OpenCode Go Key。", "quotas.addKeyFirst")
+    ? t("Hãy thêm OpenCode Go Key trong Trung tâm cấu hình trước.", "quotas.addKeyFirst")
     : account.error
       ? stale
-        ? t("{0}；下方显示上次成功数据，当前额度未知。", "quotas.staleError", account.error)
-        : t("{0}；当前额度未知。", "quotas.error", account.error)
-      : t("已连接 OpenCode · 共享套餐额度。多个 Key 的额度不相加。", "quotas.connected");
+        ? t("{0}; bên dưới hiển thị dữ liệu thành công gần nhất, hiện không rõ hạn mức.", "quotas.staleError", account.error)
+        : t("{0}; hiện không rõ hạn mức.", "quotas.error", account.error)
+      : t("Đã kết nối OpenCode · hạn mức gói dùng chung. Hạn mức của nhiều Key không cộng dồn.", "quotas.connected");
   $("#quota-updated").textContent = account?.fetched_at
     ? t(
-        `${stale ? "上次成功查询" : "额度更新时间"}：${localTime(account.fetched_at)} · 缓存 60 秒 · 来源：OpenCode Go /v1/usage`,
+        `${stale ? "Lần truy vấn thành công trước" : "Cập nhật hạn mức"} : ${localTime(account.fetched_at)} · cache 60 giây · nguồn: OpenCode Go /v1/usage`,
         stale ? "quotas.lastSuccess" : "quotas.updated",
         localTime(account.fetched_at),
       )
     : "";
   for (const [id, label] of windows()) {
     const item = account?.windows?.[id];
-    const progress = el("progress", { max: 100, "aria-label": t(`${label}剩余额度`, "quotas.window.aria", label) });
+    const progress = el("progress", { max: 100, "aria-label": t("Hạn mức còn lại của {0}", "quotas.window.aria", label) });
     progress.value = item ? item.remaining_percent : 0;
     cards.append(
       el("div", { class: `quota-card${item?.remaining_percent < 20 ? " quota-low" : ""}` }, [
         el("h3", { text: label }),
         el("div", {
           class: "quota-value",
-          text: item ? `≈ ${item.remaining_percent}%` : t("未知", "common.unknown"),
+          text: item ? `≈ ${item.remaining_percent}%` : t("Không rõ", "common.unknown"),
         }),
         progress,
         el("div", {
           class: "quota-reset",
           text: item
-            ? `${stale ? t("历史剩余", "quotas.remainingHistory") : t("剩余", "quotas.remaining")} · ${
-                item.status === "rate-limited" ? t("已限额 · ", "quotas.rateLimited") : ""
-              }${t("重置于 {0}", "quotas.resetsAt", localTime(item.resets_at))}`
-            : t("等待上游额度数据", "quotas.waiting"),
+            ? `${stale ? t("Còn lại (lịch sử)", "quotas.remainingHistory") : t("Còn lại", "quotas.remaining")} · ${
+                item.status === "rate-limited" ? t("đã chạm trần · ", "quotas.rateLimited") : ""
+              }${t("reset lúc {0}", "quotas.resetsAt", localTime(item.resets_at))}`
+            : t("Đang chờ dữ liệu hạn mức từ upstream", "quotas.waiting"),
         }),
       ]),
     );
@@ -94,55 +153,83 @@ function render() {
   const allModels = data.models || [];
   const models = allModels.filter((model) => model.id.toLowerCase().includes(query));
   $("#quota-model-count").textContent = `${models.length} / ${allModels.length}`;
+  const note = $("#quota-model-note");
+  note.classList.toggle("hidden", hasGoAccount);
+  note.textContent = hasGoAccount
+    ? ""
+    : t(
+        "Chưa cấu hình Go Key — danh sách dưới là các mô hình đang phục vụ được qua kênh miễn phí.",
+        "quotas.freeOnly",
+      );
   const catalog = data.catalog;
   const catalogUpdated =
     catalog?.updated_at && !catalog.updated_at.startsWith("0001-")
       ? localTime(catalog.updated_at)
-      : t("尚未就绪", "common.notReady");
-  $("#quota-catalog-status").textContent = `${catalog?.stale ? t("模型目录暂未更新，显示缓存 · ", "quotas.catalogStale") : ""}${t(
-    `目录更新时间：${catalogUpdated}`,
+      : t("Chưa sẵn sàng", "common.notReady");
+  $("#quota-catalog-status").textContent = `${catalog?.stale ? t("Danh mục mô hình chưa cập nhật, đang hiện cache · ", "quotas.catalogStale") : ""}${t(
+    "Danh mục cập nhật lúc: {0}",
     "quotas.catalogUpdated",
     catalogUpdated,
   )}`;
   const host = $("#quota-models");
   host.replaceChildren();
   for (const model of models) {
-    const copy = el("button", { class: "btn btn-sm btn-ghost", text: t("复制名称", "quotas.copyName") });
+    const copy = el("button", { class: "btn btn-sm btn-ghost", text: t("Sao chép tên", "quotas.copyName") });
     copy.addEventListener("click", () => copyText(model.id));
+    const probe = el("button", { class: "btn btn-sm btn-ghost", text: t("Đo trần", "quotas.contextProbe") });
+    probe.addEventListener("click", () => probeContext(model.id, probe));
+    const protocol =
+      { chat: "Chat Completions", responses: "Responses", anthropic: "Messages" }[model.protocol] ||
+      model.protocol;
     const row = el("tr", {}, [
       el("td", { class: "mono", text: model.id }),
-      el("td", {
-        text:
-          { chat: "Chat Completions", responses: "Responses", anthropic: "Messages" }[model.protocol] ||
-          model.protocol,
-      }),
+      el("td", {}, [
+        el("div", { text: protocol }),
+        el("div", {
+          class: "metric-note",
+          text: model.free
+            ? t("Miễn phí · không dùng hạn mức Go", "quotas.freeChannel")
+            : `Tier ${model.tier || "—"}`,
+        }),
+      ]),
+      contextCell(model),
     ]);
-    for (const [id] of windows()) {
-      const item = account?.windows?.[id];
+    if (!hasGoAccount) {
       row.append(
         el("td", {
           class: "num",
-          text: item
-            ? `≈ ${item.remaining_percent}%${stale ? t("（历史）", "quotas.history") : ""}`
-            : t("未知", "common.unknown"),
+          colspan: "3",
+          text: t("Không áp dụng — mô hình miễn phí", "quotas.freeNotApplicable"),
         }),
       );
+    } else {
+      for (const [id] of windows()) {
+        const item = account?.windows?.[id];
+        row.append(
+          el("td", {
+            class: "num",
+            text: item
+              ? `≈ ${item.remaining_percent}%${stale ? t(" (lịch sử)", "quotas.history") : ""}`
+              : t("Không rõ", "common.unknown"),
+          }),
+        );
+      }
     }
-    row.append(el("td", {}, [copy]));
+    row.append(el("td", {}, [el("div", { class: "key-actions" }, [copy, probe])]));
     host.append(row);
   }
   if (!models.length)
     emptyRow(
       host,
-      6,
+      7,
       allModels.length
-        ? t("没有匹配的模型", "diag.noMatch")
-        : t("模型目录尚未就绪，请稍后刷新", "quotas.catalogPending"),
+        ? t("Không có mô hình phù hợp", "diag.noMatch")
+        : t("Danh mục mô hình chưa sẵn sàng, vui lòng làm mới sau", "quotas.catalogPending"),
     );
 }
 
 const date = (value) =>
-  value && !value.startsWith("0001-") ? localTime(value) : t("待探测", "availability.pending");
+  value && !value.startsWith("0001-") ? localTime(value) : t("Chờ dò", "availability.pending");
 
 async function loadAvailability() {
   try {
@@ -154,15 +241,15 @@ async function loadAvailability() {
       const restore = el("button", {
         type: "button",
         class: "btn btn-sm btn-ghost",
-        text: t("恢复启用", "availability.restore"),
+        text: t("Khôi phục bật", "availability.restore"),
         disabled: !item.disabled,
       });
       const toggle = el("button", {
         type: "button",
         class: "btn btn-sm btn-ghost",
         text: item.manual
-          ? t("切回自动", "availability.switchAuto")
-          : t("切为手动", "availability.switchManual"),
+          ? t("Chuyển lại tự động", "availability.switchAuto")
+          : t("Chuyển sang thủ công", "availability.switchManual"),
       });
       const run = async (path, body) => {
         restore.disabled = true;
@@ -186,28 +273,28 @@ async function loadAvailability() {
           el("td", { class: "mono", text: item.model }),
           el("td", {
             class: item.disabled ? "warn" : "ok",
-            text: item.disabled ? t("已禁用", "state.disabled") : t("已启用", "state.enabled"),
+            text: item.disabled ? t("Đang tắt", "state.disabled") : t("Đang bật", "state.enabled"),
           }),
           el("td", {
             text:
               [item.channel, item.reason].filter(Boolean).join(" / ") ||
-              t("待探测", "availability.pending"),
+              t("Chờ dò", "availability.pending"),
           }),
           el("td", {
             text: item.manual
-              ? t("手动", "availability.manual")
-              : t("自动", "availability.auto"),
+              ? t("Thủ công", "availability.manual")
+              : t("Tự động", "availability.auto"),
           }),
           el("td", {
             text: item.auto_effort?.effort
-              ? `${item.auto_effort.effort}（${date(item.effort_checked_at)}）`
-              : t("未验证", "availability.unverified"),
+              ? `${item.auto_effort.effort} (${date(item.effort_checked_at)})`
+              : t("Chưa xác minh", "availability.unverified"),
           }),
           el("td", { class: "mono", text: date(item.checked_at) }),
           el("td", {
             class: "mono",
             text: item.manual
-              ? t("手动控制，不自动探测", "availability.manualControl")
+              ? t("Điều khiển thủ công, không dò tự động", "availability.manualControl")
               : date(item.next_check),
           }),
           el("td", {}, [el("div", { class: "key-actions" }, [restore, toggle])]),
@@ -216,7 +303,7 @@ async function loadAvailability() {
     }
     if (!value.models.length)
       $("#availability-error").textContent = t(
-        "当前模型目录中没有符合免费资格的模型。",
+        "Danh mục mô hình hiện tại không có mô hình nào đủ điều kiện miễn phí.",
         "availability.noneEligible",
       );
   } catch (error) {
@@ -229,7 +316,7 @@ async function refreshAvailability() {
   button.disabled = true;
   try {
     await api("/api/models/probe", { method: "POST", body: "{}" });
-    toast(t("已安排重新探测，结果将在探测后陆续更新。", "availability.probeScheduled"));
+    toast(t("Đã lên lịch dò lại; kết quả sẽ cập nhật sau khi các mô hình được kiểm tra.", "availability.probeScheduled"));
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -255,37 +342,40 @@ function stopPolling() {
 
 export default {
   id: "model-quotas",
-  title: "模型与额度",
-  sub: "共享套餐额度与免费模型探测状态。",
+  title: "Mô hình & hạn mức",
+  sub: "Hạn mức gói chia sẻ và trạng thái dò mô hình miễn phí.",
   init() {
     bindTabs($("#page-model-quotas"), (id) => {
       activeTab = id;
       if (id === "quota") {
         load();
         startPolling();
-      } else {
-        stopPolling();
-        loadAvailability();
+        return;
       }
+      stopPolling();
+      if (id === "rotation") rotation.show();
+      else loadAvailability();
     });
     $("#quota-refresh").addEventListener("click", load);
     $("#quota-account").addEventListener("change", render);
     $("#quota-model-search").addEventListener("input", render);
     $("#availability-refresh").addEventListener("click", refreshAvailability);
     // Only the rows are rebuilt: a refresh button that is mid-request keeps its
-    // disabled state and its "读取中…" label.
+    // disabled state and its "Đang tải…" label.
     onChange(() => {
-      if (!loading) $("#quota-refresh").textContent = t("刷新额度", "quotas.refresh");
+      if (!loading) $("#quota-refresh").textContent = t("Làm mới hạn mức", "quotas.refresh");
       const emptyOpt = $("#quota-account")?.querySelector('option[value=""]');
-      if (emptyOpt) emptyOpt.textContent = t("尚未配置 Go Key", "quotas.noKey");
+      if (emptyOpt) emptyOpt.textContent = t("Chưa cấu hình Go Key", "quotas.noKey");
       if (activeTab === "quota") render();
-      else loadAvailability();
+      else if (activeTab === "free") loadAvailability();
     });
   },
   show() {
     if (activeTab === "quota") {
       load();
       startPolling();
+    } else if (activeTab === "rotation") {
+      rotation.show();
     } else {
       loadAvailability();
     }
@@ -295,6 +385,7 @@ export default {
   },
   refresh() {
     if (activeTab === "quota") load();
+    else if (activeTab === "rotation") rotation.show();
     else loadAvailability();
   },
 };

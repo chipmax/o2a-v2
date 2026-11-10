@@ -36,7 +36,7 @@ function render() {
       ]),
     );
   });
-  if (!rows.length) host.append(el("div", { class: "empty", text: t("等待日志事件…", "logs.waiting") }));
+  if (!rows.length) host.append(el("div", { class: "empty", text: t("Đang chờ sự kiện log…", "logs.waiting") }));
   host.scrollTop = host.scrollHeight;
 }
 
@@ -57,7 +57,7 @@ export function connect() {
       });
     }
   });
-  source.addEventListener("gap", () => toast(t("较早日志已从内存清除", "logs.gap"), true));
+  source.addEventListener("gap", () => toast(t("Log cũ hơn đã bị xóa khỏi bộ nhớ", "logs.gap"), true));
 }
 
 export function disconnect() {
@@ -87,8 +87,8 @@ export function bind() {
 // rebuilt on every language switch.
 export function syncPauseButton() {
   $("#log-pause").textContent = paused
-    ? t("继续", "logs.resume")
-    : t("暂停", "logs.pause");
+    ? t("Tiếp tục", "logs.resume")
+    : t("Tạm dừng", "logs.pause");
 }
 
 export { render };

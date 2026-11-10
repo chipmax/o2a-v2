@@ -13,34 +13,25 @@
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/components.css" />
     <link rel="stylesheet" href="/css/pages.css" />
-    <script>
-      // Apply the stored theme before first paint; theme.js owns every change.
-      try {
-        var opencodeTheme = localStorage.getItem("opencode2api.ui.theme") || "auto";
-        var opencodeDark =
-          opencodeTheme === "dark" ||
-          (opencodeTheme === "auto" && matchMedia("(prefers-color-scheme: dark)").matches);
-        document.documentElement.setAttribute("data-theme", opencodeDark ? "dark" : "light");
-      } catch (_) {}
-    </script>
+    <script src="/js/theme-boot.js"></script>
   </head>
   <body>
-    <a class="skip-link" href="#main" data-i18n="a11y.skip">跳到主要内容</a>
+    <a class="skip-link" href="#main" data-i18n="a11y.skip">Bỏ qua đến nội dung chính</a>
 
     <section id="login" class="login-view">
       <form id="login-form" class="login-card">
-        <div class="login-lang"><select class="lang-switch" data-lang-switch aria-label="语言"></select></div>
-        <h1 class="login-name" data-i18n="login.title">opencode2api 控制台</h1>
+        <div class="login-lang"><select class="lang-switch" data-lang-switch aria-label="Ngôn ngữ"></select></div>
+        <h1 class="login-name" data-i18n="login.title">Đăng nhập quản trị</h1>
         <div class="field">
-          <label for="login-user" data-i18n="login.username">账号</label>
+          <label for="login-user" data-i18n="login.username">Tài khoản</label>
           <input id="login-user" autocomplete="username" required />
         </div>
         <div class="field">
-          <label for="login-pass" data-i18n="login.password">密码</label>
+          <label for="login-pass" data-i18n="login.password">Mật khẩu</label>
           <input id="login-pass" type="password" autocomplete="current-password" required />
         </div>
         <p id="login-error" class="form-error" role="alert"></p>
-        <button class="btn btn-primary btn-block" data-i18n="login.submit">登录</button>
+        <button class="btn btn-primary btn-block" data-i18n="login.submit">Vào Sổ tay vận hành</button>
       </form>
     </section>
 
@@ -53,23 +44,12 @@
           <div class="nav-group">
             <div class="nav-group-title" data-i18n="nav.group.runtime">Vận hành</div>
             <button class="nav-item active" data-page="overview" data-i18n="nav.overview">Tổng quan</button>
-            <button class="nav-item" data-page="model-quotas" data-i18n="nav.model-quotas">Mô hình &amp; hạn mức</button>
-            <button class="nav-item" data-page="egress" data-i18n="nav.egress">Ngân sách /64</button>
-            <button class="nav-item" data-page="api-keys" data-i18n="nav.api-keys">Khoá API</button>
-          </div>
-          <div class="nav-group">
-            <div class="nav-group-title" data-i18n="nav.group.integration">Tích hợp</div>
-            <button class="nav-item" data-page="access" data-i18n="nav.access">Hướng dẫn kết nối</button>
-            <button class="nav-item" data-page="diagnostics" data-i18n="nav.diagnostics">Chẩn đoán</button>
-          </div>
-          <div class="nav-group">
-            <div class="nav-group-title" data-i18n="nav.group.models">Mô hình</div>
-            <button class="nav-item" data-page="rotation" data-i18n="nav.rotation">Luân chuyển</button>
+            <button class="nav-item" data-page="model-quotas" data-i18n="nav.model-quotas">Mô hình &amp; Key</button>
+            <button class="nav-item" data-page="egress" data-i18n="nav.egress">Egress &amp; WARP</button>
           </div>
           <div class="nav-group">
             <div class="nav-group-title" data-i18n="nav.group.system">Hệ thống</div>
-            <button class="nav-item" data-page="config" data-i18n="nav.config">Cấu hình</button>
-            <button class="nav-item" data-page="account" data-i18n="nav.account">Tài khoản</button>
+            <button class="nav-item" data-page="config" data-i18n="nav.config">Cài đặt</button>
           </div>
         </nav>
         <div class="sidebar-foot">
@@ -78,7 +58,7 @@
             href="https://github.com/jasonxu114514/opencode2api"
             target="_blank"
             rel="noopener noreferrer"
-            >版本 —</a
+            >Phiên bản —</a
           >
         </div>
       </aside>
@@ -91,9 +71,9 @@
           </div>
           <div class="topbar-actions">
             <button id="theme-toggle" class="btn btn-sm"></button>
-            <select class="lang-switch" data-lang-switch aria-label="语言"></select>
-            <button id="refresh-now" class="btn btn-sm" data-i18n="topbar.refresh">刷新</button>
-            <button id="logout" class="btn btn-sm btn-ghost" data-i18n="topbar.logout">退出</button>
+            <select class="lang-switch" data-lang-switch aria-label="Ngôn ngữ"></select>
+            <button id="refresh-now" class="btn btn-sm" data-i18n="topbar.refresh">Làm mới ngay</button>
+            <button id="logout" class="btn btn-sm btn-ghost" data-i18n="topbar.logout">Đăng xuất</button>
           </div>
         </header>
 
@@ -101,56 +81,62 @@
           <div id="restart-notice" class="notice hidden" role="status"></div>
 
           <section id="page-overview" class="page">
-            <div class="tabs" role="tablist" aria-label="概览视图">
-              <button class="tab active" data-tab="summary" role="tab" aria-selected="true" data-i18n="overview.tab.summary">概览</button>
-              <button class="tab" data-tab="usage" role="tab" aria-selected="false" data-i18n="overview.tab.usage">用量</button>
+            <div class="tabs" role="tablist" aria-label="Chế độ xem tổng quan">
+              <button class="tab active" data-tab="summary" role="tab" aria-selected="true" data-i18n="overview.tab.summary">Tổng quan</button>
+              <button class="tab" data-tab="usage" role="tab" aria-selected="false" data-i18n="overview.tab.usage">Mức dùng</button>
+              <button class="tab" data-tab="egress" role="tab" aria-selected="false" data-i18n="overview.tab.egress">Ngân sách /64</button>
             </div>
             <div data-panel="summary" class="stack" role="tabpanel">
               <section id="overview-checklist" class="section hidden">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="overview.checklist.title">上线检查</h2>
-                    <p class="section-caption" data-i18n="overview.checklist.caption">状态来自当前配置与实时资源。</p>
+                    <h2 class="section-title" data-i18n="overview.checklist.title">Kiểm tra sẵn sàng</h2>
+                    <p class="section-caption" data-i18n="overview.checklist.caption">Trạng thái lấy từ cấu hình hiện tại và tài nguyên thời gian thực.</p>
                   </div>
                 </div>
                 <div id="guide-steps" class="guide"></div>
               </section>
               <div class="metrics">
                 <div class="metric">
-                  <div class="metric-label" data-i18n="overview.requests">近 1 小时请求</div>
+                  <div class="metric-label" data-i18n="overview.requests">Yêu cầu 1 giờ qua</div>
                   <div id="m-total" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="overview.hour">最近 60 分钟</div>
+                  <div class="metric-note" data-i18n="overview.hour">60 phút gần nhất</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="overview.success">成功率</div>
+                  <div class="metric-label" data-i18n="overview.success">Tỷ lệ thành công</div>
                   <div id="m-rate" class="metric-value">—</div>
                   <div class="metric-note" data-i18n="overview.http2xx">HTTP 2xx–3xx</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="overview.p95">P95 延迟</div>
+                  <div class="metric-label" data-i18n="overview.p95">Độ trễ P95</div>
                   <div id="m-p95" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="overview.endToEnd">端到端毫秒</div>
+                  <div class="metric-note" data-i18n="overview.endToEnd">Mili giây đầu–cuối</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="overview.active">活跃 / 流式</div>
+                  <div class="metric-label" data-i18n="overview.active">Đang chạy / luồng</div>
                   <div id="m-active" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="overview.concurrent">当前并发</div>
+                  <div class="metric-note" data-i18n="overview.concurrent">Số request đồng thời</div>
                 </div>
+              </div>
+              <div class="quick-actions" aria-label="Thao tác nhanh">
+                <button id="quick-api-keys" class="btn btn-sm" data-i18n="quick.apiKeys">Quản lý API Key</button>
+                <button id="quick-diagnostics" class="btn btn-sm" data-i18n="quick.diagnostics">Chẩn đoán</button>
+                <button id="quick-egress" class="btn btn-sm" data-i18n="quick.egress">Egress &amp; WARP</button>
               </div>
               <div class="split">
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="overview.proxy.title">Proxy 节点</h2>
+                      <h2 class="section-title" data-i18n="overview.proxy.title">Nút Proxy</h2>
                     </div>
                   </div>
                   <div class="table-wrap">
                     <table class="table">
                       <thead>
                         <tr>
-                          <th data-i18n="overview.proxy.col.node">节点</th>
-                          <th data-i18n="overview.proxy.col.health">健康</th>
-                          <th data-i18n="overview.proxy.col.binding">绑定</th>
+                          <th data-i18n="overview.proxy.col.node">Nút</th>
+                          <th data-i18n="overview.proxy.col.health">Sức khoẻ</th>
+                          <th data-i18n="overview.proxy.col.binding">Ràng buộc</th>
                         </tr>
                       </thead>
                       <tbody id="proxy-table"></tbody>
@@ -160,16 +146,16 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="overview.keys.title">Key 池</h2>
+                      <h2 class="section-title" data-i18n="overview.keys.title">Nhóm Key</h2>
                     </div>
                   </div>
                   <div class="table-wrap">
                     <table class="table">
                       <thead>
                         <tr>
-                          <th data-i18n="overview.keys.col.tail">Key 尾码</th>
+                          <th data-i18n="overview.keys.col.tail">Đuôi Key</th>
                           <th data-i18n="overview.keys.col.tier">Tier</th>
-                          <th data-i18n="overview.keys.col.state">状态</th>
+                          <th data-i18n="overview.keys.col.state">Trạng thái</th>
                         </tr>
                       </thead>
                       <tbody id="key-table"></tbody>
@@ -180,8 +166,8 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="overview.distribution.title">请求分布</h2>
-                    <p class="section-caption" data-i18n="overview.distribution.caption">最近一小时，各取前 10。</p>
+                    <h2 class="section-title" data-i18n="overview.distribution.title">Phân bố yêu cầu</h2>
+                    <p class="section-caption" data-i18n="overview.distribution.caption">Tổng hợp 1 giờ gần nhất theo endpoint, mô hình, Tier và mã trạng thái.</p>
                   </div>
                 </div>
                 <div id="breakdowns" class="split"></div>
@@ -190,31 +176,31 @@
             <div data-panel="usage" class="stack hidden" role="tabpanel">
               <div class="metrics">
                 <div class="metric">
-                  <div class="metric-label" data-i18n="usage.coverage">用量覆盖率</div>
+                  <div class="metric-label" data-i18n="usage.coverage">Độ phủ sử dụng</div>
                   <div id="u-coverage" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="usage.coverage.note">有 Token 回报 / 推理请求</div>
+                  <div class="metric-note" data-i18n="usage.coverage.note">Yêu cầu có token trả về / suy luận</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="usage.total">Token 总量</div>
+                  <div class="metric-label" data-i18n="usage.total">Tổng token</div>
                   <div id="u-total" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="usage.hour">最近 60 分钟</div>
+                  <div class="metric-note" data-i18n="usage.hour">60 phút gần nhất</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="usage.cached">缓存 Token</div>
+                  <div class="metric-label" data-i18n="usage.cached">Token đã cache</div>
                   <div id="u-cached" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="usage.cached.note">上游回报的缓存命中</div>
+                  <div class="metric-note" data-i18n="usage.cached.note">Cache hit do upstream báo</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="usage.reasoning">推理 Token</div>
+                  <div class="metric-label" data-i18n="usage.reasoning">Token suy luận</div>
                   <div id="u-reasoning" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="usage.reasoning.note">上游回报的推理用量</div>
+                  <div class="metric-note" data-i18n="usage.reasoning.note">Mức dùng suy luận do upstream báo</div>
                 </div>
               </div>
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="usage.trend.title">每分钟 Token 趋势</h2>
-                    <p class="section-caption" data-i18n="usage.trend.caption">最近 60 分钟；悬停查看输入、输出与总量。</p>
+                    <h2 class="section-title" data-i18n="usage.trend.title">Xu hướng token mỗi phút</h2>
+                    <p class="section-caption" data-i18n="usage.trend.caption">60 phút gần nhất; di chuột để xem input, output và tổng.</p>
                   </div>
                 </div>
                 <div id="usage-trend" class="trend"></div>
@@ -224,18 +210,18 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="usage.models.title">模型排行</h2>
-                      <p class="section-caption" data-i18n="usage.models.caption">按总量排序，取前 15。</p>
+                      <h2 class="section-title" data-i18n="usage.models.title">Xếp hạng mô hình</h2>
+                      <p class="section-caption" data-i18n="usage.models.caption">Sắp xếp theo total_tokens.</p>
                     </div>
                   </div>
                   <div class="table-wrap">
                     <table class="table">
                       <thead>
                         <tr>
-                          <th data-i18n="usage.models.col.model">模型</th>
-                          <th class="num" data-i18n="usage.models.col.input">输入</th>
-                          <th class="num" data-i18n="usage.models.col.output">输出</th>
-                          <th class="num" data-i18n="usage.models.col.total">总量</th>
+                          <th data-i18n="usage.models.col.model">Mô hình</th>
+                          <th class="num" data-i18n="usage.models.col.input">Input</th>
+                          <th class="num" data-i18n="usage.models.col.output">Output</th>
+                          <th class="num" data-i18n="usage.models.col.total">Tổng</th>
                         </tr>
                       </thead>
                       <tbody id="usage-models"></tbody>
@@ -245,35 +231,122 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="usage.tiers.title">Tier 分布</h2>
-                      <p class="section-caption" data-i18n="usage.tiers.caption">Zen / Go 的 Token 去向。</p>
+                      <h2 class="section-title" data-i18n="usage.tiers.title">Phân bố Tier</h2>
+                      <p class="section-caption" data-i18n="usage.tiers.caption">Token của Zen / Go đi về đâu.</p>
                     </div>
                   </div>
                   <div id="usage-tiers"></div>
                 </section>
               </div>
             </div>
+            <div data-panel="egress" class="stack hidden" role="tabpanel">
+              <div class="metrics" id="egress-metrics">
+                <div class="metric">
+                  <div class="metric-label" data-i18n="egress.metrics.warp">WARP đang chạy</div>
+                  <div id="egress-m-warp" class="metric-value">—</div>
+                  <div class="metric-note" data-i18n="egress.metrics.warp.note">Sẵn sàng / dự phòng / đang nghỉ</div>
+                </div>
+                <div class="metric">
+                  <div class="metric-label" data-i18n="egress.metrics.proxies">Proxy khoẻ</div>
+                  <div id="egress-m-proxies" class="metric-value">—</div>
+                  <div class="metric-note" data-i18n="egress.metrics.proxies.note">Đang dùng được / tổng cấu hình</div>
+                </div>
+                <div class="metric">
+                  <div class="metric-label" data-i18n="egress.metrics.peers">Peer sẵn sàng</div>
+                  <div id="egress-m-peers" class="metric-value">—</div>
+                  <div class="metric-note" data-i18n="egress.metrics.peers.note">Không còn cooldown / tổng peer</div>
+                </div>
+                <div class="metric">
+                  <div class="metric-label" data-i18n="egress.metrics.quota">Dòng /64 theo dõi</div>
+                  <div id="egress-m-quota" class="metric-value">—</div>
+                  <div class="metric-note" data-i18n="egress.metrics.quota.note">Theo họ model trong cửa sổ hiện tại</div>
+                </div>
+              </div>
+              <section class="section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="egress.sources.title">Nguồn ra và IP</h2>
+                    <p class="section-caption" data-i18n="egress.sources.caption">Từng exit WARP, proxy và peer với trạng thái, tải hiện tại và thời gian nghỉ.</p>
+                  </div>
+                  <select id="egress-filter" aria-label="Lọc nguồn ra">
+                    <option value="all" data-i18n="egress.sources.filter.all">Tất cả nguồn</option>
+                    <option value="issues" data-i18n="egress.sources.filter.issues">Cần chú ý</option>
+                  </select>
+                </div>
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="egress.sources.col.source">Nguồn</th>
+                        <th data-i18n="egress.sources.col.address">IP / endpoint</th>
+                        <th data-i18n="egress.sources.col.state">Trạng thái</th>
+                        <th data-i18n="egress.sources.col.load">Đang chạy</th>
+                        <th data-i18n="egress.sources.col.cooling">Nghỉ còn</th>
+                      </tr>
+                    </thead>
+                    <tbody id="egress-sources"></tbody>
+                  </table>
+                </div>
+                <p id="egress-sources-meta" class="section-caption" role="status" aria-live="polite"></p>
+              </section>
+              <section class="section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="egress.title">Ngân sách egress /64</h2>
+                    <p class="section-caption" data-i18n="egress.caption">Free tier đếm theo từng /64 và từng họ model; cửa sổ reset lúc 00:00 UTC.</p>
+                  </div>
+                  <div class="actions">
+                    <button id="egress-check" class="btn btn-sm btn-primary" data-i18n="egress.check">Kiểm tra proxy</button>
+                    <button id="egress-refresh" class="btn btn-sm" data-i18n="egress.refresh">Làm mới</button>
+                  </div>
+                </div>
+                <div
+                  id="egress-summary"
+                  class="quota-status"
+                  role="status"
+                  aria-live="polite"
+                  data-i18n="egress.pending"
+                >Đang đọc trạng thái pool.</div>
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="egress.col.egress">Egress /64</th>
+                        <th data-i18n="egress.col.family">Họ model</th>
+                        <th data-i18n="egress.col.state">Trạng thái</th>
+                        <th data-i18n="egress.col.requests">Request</th>
+                        <th data-i18n="egress.col.quota">Hết quota</th>
+                        <th data-i18n="egress.col.cooling">Nghỉ còn</th>
+                        <th data-i18n="egress.col.reset">Reset</th>
+                      </tr>
+                    </thead>
+                    <tbody id="egress-rows"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
           </section>
 
           <section id="page-diagnostics" class="page hidden">
-            <div class="tabs" role="tablist" aria-label="诊断视图">
-              <button class="tab active" data-tab="playground" role="tab" aria-selected="true" data-i18n="diagnostics.tab.playground">请求测试</button>
-              <button class="tab" data-tab="ledger" role="tab" aria-selected="false" data-i18n="diagnostics.tab.ledger">请求流水</button>
-              <button class="tab" data-tab="logs" role="tab" aria-selected="false" data-i18n="diagnostics.tab.logs">事件流</button>
-              <button class="tab" data-tab="route" role="tab" aria-selected="false" data-i18n="diagnostics.tab.route">路由与资格</button>
+            <div class="tabs" role="tablist" aria-label="Chế độ xem chẩn đoán">
+              <button class="tab active" data-tab="playground" role="tab" aria-selected="true" data-i18n="diagnostics.tab.playground">Thử request</button>
+              <button class="tab" data-tab="ledger" role="tab" aria-selected="false" data-i18n="diagnostics.tab.ledger">Luồng request</button>
+              <button class="tab" data-tab="logs" role="tab" aria-selected="false" data-i18n="diagnostics.tab.logs">Luồng sự kiện</button>
+              <button class="tab" data-tab="route" role="tab" aria-selected="false" data-i18n="diagnostics.tab.route">Định tuyến và điều kiện</button>
+              <button class="tab" data-tab="access" role="tab" aria-selected="false" data-i18n="diagnostics.tab.access">Hướng dẫn kết nối</button>
             </div>
             <div data-panel="playground" class="stack" role="tabpanel">
               <div class="play-layout">
                 <form id="play-form" class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="playground.title">三协议请求台</h2>
-                      <p class="section-caption" data-i18n="playground.caption">服务端强制非流式，并经由真实 Gateway 路由。</p>
+                      <h2 class="section-title" data-i18n="playground.title">Bàn gửi request ba giao thức</h2>
+                      <p class="section-caption" data-i18n="playground.caption">Máy chủ ép buộc không streaming và định tuyến qua Gateway thật.</p>
                     </div>
                   </div>
                   <div class="form-grid">
                     <div class="field">
-                      <label for="play-protocol" data-i18n="playground.protocol">入口协议</label>
+                      <label for="play-protocol" data-i18n="playground.protocol">Giao thức đầu vào</label>
                       <select id="play-protocol">
                         <option value="chat">Chat Completions</option>
                         <option value="responses">Responses</option>
@@ -281,61 +354,45 @@
                       </select>
                     </div>
                     <div class="field">
-                      <label for="play-model" data-i18n="playground.model">模型</label>
+                      <label for="play-model" data-i18n="playground.model">Mô hình</label>
                       <select id="play-model"></select>
                     </div>
                     <div class="field full">
-                      <label for="play-key" data-i18n="playground.key">上游 Key</label>
+                      <label for="play-key" data-i18n="playground.key">Key upstream</label>
                       <select id="play-key">
-                        <option value="auto" data-i18n="playground.key.auto">
-                          自动路由（匿名 / Tier 回退 / Key 轮询）
-                        </option>
+                        <option value="auto" data-i18n="playground.key.auto">Định tuyến tự động (ẩn danh / dự phòng Tier / luân phiên Key)</option>
                       </select>
-                      <p class="section-caption" data-i18n="playground.key.caption">
-                        指定 Key 后只测试该 Key：不切换、不回退，也不改变冷却与代理健康。
-                      </p>
+                      <p class="section-caption" data-i18n="playground.key.caption">Khi chọn một Key cụ thể, chỉ Key đó được thử: không chuyển sang Key khác, Tier khác hay kênh ẩn danh, và không làm thay đổi trạng thái cooldown của Key hay sức khoẻ của proxy.</p>
                     </div>
                     <div class="field full">
                       <label for="play-relay" data-i18n="playground.relay">Relay</label>
                       <select id="play-relay">
-                        <option value="auto" data-i18n="playground.relay.auto">
-                          任意 Relay（正常路由）
-                        </option>
+                        <option value="auto" data-i18n="playground.relay.auto">Mọi relay (định tuyến thường)</option>
                       </select>
-                      <p class="section-caption" data-i18n="playground.relay.caption">
-                        指定 Relay 后只经它发送一次尝试：真实 session、system prompt 与 tool shaping，不切换、不回退，也不改变冷却与代理健康。
-                      </p>
+                      <p class="section-caption" data-i18n="playground.relay.caption">Ghim một relay sẽ gửi đúng một lần thử qua nó, với session, system prompt và tool shaping thật: không failover, không đổi cooldown hay sức khoẻ proxy.</p>
                     </div>
                   </div>
                   <div class="field">
-                    <label for="play-request" data-i18n="playground.request">请求 JSON</label>
+                    <label for="play-request" data-i18n="playground.request">JSON của request</label>
                     <textarea id="play-request" class="json-editor" spellcheck="false"></textarea>
                   </div>
                   <div class="actions">
-                    <button id="play-reset" type="button" class="btn btn-sm btn-ghost" data-i18n="playground.reset">
-                      重置模板
-                    </button>
-                    <button id="play-run" class="btn btn-sm btn-primary" data-i18n="playground.run">
-                      发送诊断请求
-                    </button>
+                    <button id="play-reset" type="button" class="btn btn-sm btn-ghost" data-i18n="playground.reset">Đặt lại mẫu</button>
+                    <button id="play-run" class="btn btn-sm btn-primary" data-i18n="playground.run">Gửi request chẩn đoán</button>
                   </div>
                 </form>
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="playground.result.title">诊断结果</h2>
-                      <p id="play-state" class="section-caption" data-i18n="playground.result.idle">
-                        尚未发送请求。
-                      </p>
+                      <h2 class="section-title" data-i18n="playground.result.title">Kết quả chẩn đoán</h2>
+                      <p id="play-state" class="section-caption" data-i18n="playground.result.idle">Chưa gửi request nào.</p>
                     </div>
                   </div>
                   <div id="play-facts" class="facts"></div>
                   <div class="code-card">
                     <div class="code-head">
-                      <span data-i18n="playground.output">原始响应</span>
-                      <button id="play-copy" type="button" class="btn btn-sm btn-ghost" data-i18n="common.copy">
-                        复制
-                      </button>
+                      <span data-i18n="playground.output">Phản hồi giao thức gốc</span>
+                      <button id="play-copy" type="button" class="btn btn-sm btn-ghost" data-i18n="common.copy">Sao chép</button>
                     </div>
                     <pre id="play-output">{}</pre>
                   </div>
@@ -346,36 +403,36 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="diagnostics.requests.title">请求路由</h2>
-                    <p class="section-caption" data-i18n="diagnostics.requests.caption">最多展示最近 500 条，分页显示。</p>
+                    <h2 class="section-title" data-i18n="diagnostics.requests.title">Định tuyến request</h2>
+                    <p class="section-caption" data-i18n="diagnostics.requests.caption">Đuôi Key hoặc anonymous thực sự được dùng cho từng request; 500 bản ghi gần nhất, có phân trang.</p>
                   </div>
                 </div>
                 <div class="table-wrap">
                   <table class="table">
                     <thead>
                       <tr>
-                        <th data-i18n="diagnostics.col.time">时间</th>
+                        <th data-i18n="diagnostics.col.time">Thời gian</th>
                         <th>Request ID</th>
-                        <th data-i18n="diagnostics.col.model">模型</th>
+                        <th data-i18n="diagnostics.col.model">Mô hình</th>
                         <th data-i18n="diagnostics.col.tier">Tier</th>
-                        <th data-i18n="diagnostics.col.channel">通道</th>
-                        <th data-i18n="diagnostics.col.tail">Key 尾码</th>
-                        <th class="num" data-i18n="diagnostics.col.attempts">尝试</th>
-                        <th data-i18n="diagnostics.col.state">状态</th>
-                        <th class="num" data-i18n="diagnostics.col.duration">耗时</th>
+                        <th data-i18n="diagnostics.col.channel">Kênh</th>
+                        <th data-i18n="diagnostics.col.tail">Đuôi Key</th>
+                        <th class="num" data-i18n="diagnostics.col.attempts">Lần thử</th>
+                        <th data-i18n="diagnostics.col.state">Trạng thái</th>
+                        <th class="num" data-i18n="diagnostics.col.duration">Thời gian</th>
                       </tr>
                     </thead>
                     <tbody id="upstream-requests"></tbody>
                   </table>
                 </div>
                 <div class="pager">
-                  <button id="requests-pager-prev" class="btn btn-sm" data-i18n="diag.pager.prev">上一页</button>
+                  <button id="requests-pager-prev" class="btn btn-sm" data-i18n="diag.pager.prev">Trang trước</button>
                   <span id="requests-pager-info" class="pager-info"></span>
-                  <button id="requests-pager-next" class="btn btn-sm" data-i18n="diag.pager.next">下一页</button>
+                  <button id="requests-pager-next" class="btn btn-sm" data-i18n="diag.pager.next">Trang sau</button>
                   <select
                     id="requests-pager-size"
                     class="pager-size"
-                    aria-label="每页条数"
+                    aria-label="Số dòng mỗi trang"
                     data-i18n-attr="aria-label:diag.pager.size"
                   >
                     <option value="50">50</option>
@@ -388,35 +445,35 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="diagnostics.attempts.title">上游尝试</h2>
-                    <p class="section-caption" data-i18n="diagnostics.attempts.caption">最多展示最近 500 条，分页显示。</p>
+                    <h2 class="section-title" data-i18n="diagnostics.attempts.title">Lần thử upstream</h2>
+                    <p class="section-caption" data-i18n="diagnostics.attempts.caption">Đuôi Key, kênh ẩn danh và nút proxy đã che; 500 bản ghi gần nhất, có phân trang.</p>
                   </div>
                 </div>
                 <div class="table-wrap">
                   <table class="table">
                     <thead>
                       <tr>
-                        <th data-i18n="diagnostics.col.time">时间</th>
+                        <th data-i18n="diagnostics.col.time">Thời gian</th>
                         <th>Request ID</th>
-                        <th data-i18n="diagnostics.col.model">模型</th>
-                        <th data-i18n="diagnostics.col.channel">通道</th>
-                        <th data-i18n="diagnostics.col.tail">Key 尾码</th>
-                        <th data-i18n="diagnostics.col.proxy">代理节点</th>
-                        <th data-i18n="diagnostics.col.state">状态</th>
-                        <th class="num" data-i18n="diagnostics.col.duration">耗时</th>
+                        <th data-i18n="diagnostics.col.model">Mô hình</th>
+                        <th data-i18n="diagnostics.col.channel">Kênh</th>
+                        <th data-i18n="diagnostics.col.tail">Đuôi Key</th>
+                        <th data-i18n="diagnostics.col.proxy">Nút proxy</th>
+                        <th data-i18n="diagnostics.col.state">Trạng thái</th>
+                        <th class="num" data-i18n="diagnostics.col.duration">Thời gian</th>
                       </tr>
                     </thead>
                     <tbody id="upstream-attempts"></tbody>
                   </table>
                 </div>
                 <div class="pager">
-                  <button id="attempts-pager-prev" class="btn btn-sm" data-i18n="diag.pager.prev">上一页</button>
+                  <button id="attempts-pager-prev" class="btn btn-sm" data-i18n="diag.pager.prev">Trang trước</button>
                   <span id="attempts-pager-info" class="pager-info"></span>
-                  <button id="attempts-pager-next" class="btn btn-sm" data-i18n="diag.pager.next">下一页</button>
+                  <button id="attempts-pager-next" class="btn btn-sm" data-i18n="diag.pager.next">Trang sau</button>
                   <select
                     id="attempts-pager-size"
                     class="pager-size"
-                    aria-label="每页条数"
+                    aria-label="Số dòng mỗi trang"
                     data-i18n-attr="aria-label:diag.pager.size"
                   >
                     <option value="50">50</option>
@@ -429,8 +486,8 @@
             </div>
             <div data-panel="logs" class="stack hidden" role="tabpanel">
               <div class="filters">
-                <select id="log-level" aria-label="日志级别">
-                  <option value="" data-i18n="logs.level.all">全部级别</option>
+                <select id="log-level" aria-label="Mức log">
+                  <option value="" data-i18n="logs.level.all">Tất cả mức</option>
                   <option>debug</option>
                   <option>info</option>
                   <option>warn</option>
@@ -438,17 +495,17 @@
                 </select>
                 <input
                   id="log-component"
-                  placeholder="模块"
-                  aria-label="模块筛选"
+                  placeholder="module"
+                  aria-label="Lọc theo module"
                   data-i18n-attr="placeholder:logs.component,aria-label:logs.component"
                 />
                 <input
                   id="log-search"
-                  placeholder="搜索事件、Request ID、模型"
-                  aria-label="全文搜索"
+                  placeholder="Tìm sự kiện, Request ID, model"
+                  aria-label="Tìm toàn văn"
                   data-i18n-attr="placeholder:logs.search,aria-label:logs.search"
                 />
-                <button id="log-pause" class="btn btn-sm btn-ghost" data-i18n="logs.pause">暂停</button>
+                <button id="log-pause" class="btn btn-sm btn-ghost" data-i18n="logs.pause">Tạm dừng</button>
               </div>
               <div id="log-list" class="logs"></div>
             </div>
@@ -456,10 +513,8 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="diagnostics.metadata.title">模型 Metadata</h2>
-                    <p class="section-caption" data-i18n="diagnostics.metadata.caption">
-                      OpenCode 元数据价格缓存状态。
-                    </p>
+                    <h2 class="section-title" data-i18n="diagnostics.metadata.title">Metadata mô hình</h2>
+                    <p class="section-caption" data-i18n="diagnostics.metadata.caption">Trạng thái cache giá từ điểm cuối metadata OpenCode; giá bằng 0 hoặc tên chứa free là đủ điều kiện vào kênh ẩn danh.</p>
                   </div>
                 </div>
                 <div id="metadata-facts" class="facts"></div>
@@ -467,15 +522,13 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="diagnostics.models.title">模型路由表</h2>
-                    <p class="section-caption" data-i18n="diagnostics.models.caption">
-                      显式协议、匿名资格来源与成本判断。
-                    </p>
+                    <h2 class="section-title" data-i18n="diagnostics.models.title">Bảng định tuyến mô hình</h2>
+                    <p class="section-caption" data-i18n="diagnostics.models.caption">Giao thức tường minh, nguồn điều kiện ẩn danh và cách xác định chi phí.</p>
                   </div>
                   <input
                     id="diagnostic-model-search"
                     class="head-search"
-                    placeholder="筛选模型"
+                    placeholder="Lọc model"
                     data-i18n-attr="placeholder:diagnostics.models.filter"
                   />
                 </div>
@@ -483,12 +536,12 @@
                   <table class="table">
                     <thead>
                       <tr>
-                        <th data-i18n="diagnostics.models.col.model">模型</th>
-                        <th data-i18n="diagnostics.models.col.protocol">原生协议</th>
-                        <th data-i18n="diagnostics.models.col.route">路由</th>
-                        <th data-i18n="diagnostics.models.col.eligibility">匿名资格</th>
-                        <th data-i18n="diagnostics.models.col.source">判断来源</th>
-                        <th class="num" data-i18n="diagnostics.models.col.cost">成本 input / output</th>
+                        <th data-i18n="diagnostics.models.col.model">Mô hình</th>
+                        <th data-i18n="diagnostics.models.col.protocol">Giao thức gốc</th>
+                        <th data-i18n="diagnostics.models.col.route">Định tuyến</th>
+                        <th data-i18n="diagnostics.models.col.eligibility">Điều kiện ẩn danh</th>
+                        <th data-i18n="diagnostics.models.col.source">Nguồn đánh giá</th>
+                        <th class="num" data-i18n="diagnostics.models.col.cost">Chi phí input / output</th>
                       </tr>
                     </thead>
                     <tbody id="diagnostic-models"></tbody>
@@ -496,164 +549,144 @@
                 </div>
               </section>
             </div>
-          </section>
-
-          <section id="page-access" class="page hidden">
-            <section class="section">
-              <div class="section-head">
-                <div>
-                  <h2 class="section-title" data-i18n="access.base.title">基础地址</h2>
-                  <p class="section-caption" data-i18n="access.base.caption">示例不会写入真实 Server Key。</p>
+            <div data-panel="access" class="stack hidden" role="tabpanel">
+              <section class="section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="access.base.title">Địa chỉ cơ sở</h2>
+                    <p class="section-caption" data-i18n="access.base.caption">Ví dụ không ghi Server Key thật.</p>
+                  </div>
                 </div>
-              </div>
-              <div class="field">
-                <label for="access-base-value" data-i18n="access.base.label">推导的 API Base</label>
-                <input id="access-base-value" readonly />
-              </div>
-              <div class="field">
-                <label for="access-model" data-i18n="access.model.label">示例模型</label>
-                <input id="access-model" value="YOUR_MODEL" />
-              </div>
-            </section>
-            <section class="section">
-              <h2 class="section-title" data-i18n="access.protocols.title">三种协议入口</h2>
-              <div id="access-protocol-examples"></div>
-            </section>
-            <section class="section">
-              <h2 class="section-title" data-i18n="access.sdk.title">Python 与 JavaScript</h2>
-              <div id="access-sdk-examples"></div>
-            </section>
-            <section class="section">
-              <h2 class="section-title" data-i18n="access.notes.title">接入注意</h2>
-              <ul class="section-caption">
-                <li data-i18n="access.notes.auth">
-                  OpenAI 兼容客户端使用 <code>Authorization: Bearer YOUR_API_KEY</code>。
-                </li>
-                <li data-i18n="access.notes.anthropic">
-                  Anthropic 客户端可使用 <code>x-api-key</code>，路径为 <code>/v1/messages</code>。
-                </li>
-                <li data-i18n="access.notes.stream">
-                  流式请求会保持原协议事件；跨协议时由 Gateway 转换。
-                </li>
-              </ul>
-            </section>
+                <div class="field">
+                  <label for="access-base-value" data-i18n="access.base.label">API Base được suy ra</label>
+                  <input id="access-base-value" readonly />
+                </div>
+                <div class="field">
+                  <label for="access-model" data-i18n="access.model.label">Mô hình ví dụ</label>
+                  <input id="access-model" value="YOUR_MODEL" />
+                </div>
+              </section>
+              <section class="section">
+                <h2 class="section-title" data-i18n="access.protocols.title">Các cổng vào theo ba giao thức</h2>
+                <div id="access-protocol-examples"></div>
+              </section>
+              <section class="section">
+                <h2 class="section-title" data-i18n="access.sdk.title">Python và JavaScript</h2>
+                <div id="access-sdk-examples"></div>
+              </section>
+              <section class="section">
+                <h2 class="section-title" data-i18n="access.notes.title">Lưu ý khi tích hợp</h2>
+                <ul class="section-caption">
+                  <li data-i18n="access.notes.auth">
+                    Client tương thích OpenAI dùng <code>Authorization: Bearer YOUR_API_KEY</code>.
+                  </li>
+                  <li data-i18n="access.notes.anthropic">
+                    Client Anthropic có thể dùng <code>x-api-key</code>, đường dẫn <code>/v1/messages</code>.
+                  </li>
+                  <li data-i18n="access.notes.stream">Request streaming giữ nguyên sự kiện của giao thức gốc; khi khác giao thức, Gateway sẽ chuyển đổi.</li>
+                </ul>
+              </section>
+            </div>
           </section>
 
           <section id="page-api-keys" class="page hidden">
             <section class="section">
               <div class="section-head">
                 <div>
-                  <h2 class="section-title" data-i18n="apikeys.create.title">为调用方创建 API Key</h2>
-                  <p class="section-caption" data-i18n="apikeys.create.caption">
-                    用于访问本机 Gateway。每个应用可使用独立密钥；创建、启停和删除立即生效。
-                  </p>
+                  <h2 class="section-title" data-i18n="apikeys.create.title">Tạo API Key cho bên gọi</h2>
+                  <p class="section-caption" data-i18n="apikeys.create.caption">Dùng để truy cập dịch vụ B trên máy này. Mỗi ứng dụng có thể dùng một khóa riêng; tạo, bật/tắt và xoá đều có hiệu lực ngay.</p>
                 </div>
               </div>
               <form id="api-key-form">
                 <div class="form-grid">
                   <div class="field">
-                    <label for="api-key-name" data-i18n="apikeys.create.name">名称</label>
+                    <label for="api-key-name" data-i18n="apikeys.create.name">Tên</label>
                     <input
                       id="api-key-name"
-                      placeholder="例如：我的笔记助手"
+                      placeholder="Ví dụ: trợ lý ghi chú của tôi"
                       maxlength="80"
                       required
                       data-i18n-attr="placeholder:apikeys.create.namePlaceholder"
                     />
                   </div>
                   <div class="field">
-                    <label for="api-key-value" data-i18n="apikeys.create.value">自定义 Key（可选）</label>
+                    <label for="api-key-value" data-i18n="apikeys.create.value">Key tuỳ chọn (không bắt buộc)</label>
                     <input
                       id="api-key-value"
                       type="password"
                       autocomplete="new-password"
                       minlength="16"
                       maxlength="256"
-                      placeholder="留空自动生成；自定义需 16–256 位"
+                      placeholder="Để trống để tự tạo; tối thiểu 16, tối đa 256 ký tự"
                       data-i18n-attr="placeholder:apikeys.create.valuePlaceholder"
                     />
                   </div>
                 </div>
                 <div class="actions">
-                  <button id="api-key-create" class="btn btn-sm btn-primary" data-i18n="apikeys.create.submit">
-                    创建 API Key
-                  </button>
+                  <button id="api-key-create" class="btn btn-sm btn-primary" data-i18n="apikeys.create.submit">Tạo API Key</button>
                 </div>
               </form>
             </section>
             <section id="api-key-created" class="section hidden" role="status">
               <div class="section-head">
                 <div>
-                  <h2 class="section-title" data-i18n="apikeys.created.title">密钥已创建</h2>
-                  <p class="section-caption" data-i18n="apikeys.created.caption">
-                    完整密钥仅在创建后展示，请现在保存到调用方的环境变量。
-                  </p>
+                  <h2 class="section-title" data-i18n="apikeys.created.title">Đã tạo khóa</h2>
+                  <p class="section-caption" data-i18n="apikeys.created.caption">Khóa đầy đủ chỉ hiển thị sau khi tạo, hãy lưu ngay vào biến môi trường của bên gọi.</p>
                 </div>
-                <button id="api-key-dismiss" class="btn btn-sm btn-ghost" data-i18n="apikeys.created.dismiss">
-                  已保存，关闭
-                </button>
+                <button id="api-key-dismiss" class="btn btn-sm btn-ghost" data-i18n="apikeys.created.dismiss">Đã lưu, đóng</button>
               </div>
               <pre id="api-key-env" class="key-env"></pre>
               <div class="actions">
-                <button id="api-key-copy" class="btn btn-sm btn-ghost" data-i18n="apikeys.created.copy">
-                  复制 Key
-                </button>
-                <button id="api-key-copy-env" class="btn btn-sm btn-primary" data-i18n="apikeys.created.copyEnv">
-                  复制环境变量
-                </button>
+                <button id="api-key-copy" class="btn btn-sm btn-ghost" data-i18n="apikeys.created.copy">Sao chép Key</button>
+                <button id="api-key-copy-env" class="btn btn-sm btn-primary" data-i18n="apikeys.created.copyEnv">Sao chép biến môi trường</button>
               </div>
             </section>
             <section class="section">
               <div class="section-head">
                 <div>
                   <h2 class="section-title">
-                    <span data-i18n="apikeys.list.title">访问密钥</span>
+                    <span data-i18n="apikeys.list.title">Khóa truy cập</span>
                     <span id="api-key-count" class="section-caption"></span>
                   </h2>
-                  <p class="section-caption" data-i18n="apikeys.list.caption">
-                    此处管理 Gateway 的调用方访问权限；OpenCode 上游密钥在配置中心管理。
-                  </p>
+                  <p class="section-caption" data-i18n="apikeys.list.caption">Quản lý quyền truy cập vào dịch vụ B. Khóa upstream của OpenCode Go vẫn nằm ở Trung tâm cấu hình.</p>
                 </div>
-                <button id="api-key-refresh" class="btn btn-sm" data-i18n="apikeys.list.refresh">
-                  刷新列表
-                </button>
+                <button id="api-key-refresh" class="btn btn-sm" data-i18n="apikeys.list.refresh">Làm mới danh sách</button>
               </div>
               <p id="api-key-status" class="section-caption" role="status" aria-live="polite"></p>
               <div class="table-wrap">
                 <table class="table">
                   <thead>
                     <tr>
-                      <th data-i18n="apikeys.col.name">名称</th>
-                      <th data-i18n="apikeys.col.tail">密钥尾码</th>
-                      <th data-i18n="apikeys.col.state">状态</th>
-                      <th data-i18n="apikeys.col.usage">用量（近 1 小时 / 累计）</th>
-                      <th data-i18n="apikeys.col.policy">限额</th>
-                      <th data-i18n="apikeys.col.created">创建时间</th>
-                      <th data-i18n="apikeys.col.action">操作</th>
+                      <th data-i18n="apikeys.col.name">Tên</th>
+                      <th data-i18n="apikeys.col.tail">Đuôi khóa</th>
+                      <th data-i18n="apikeys.col.state">Trạng thái</th>
+                      <th data-i18n="apikeys.col.usage">Mức dùng (1 giờ gần nhất / tích lũy)</th>
+                      <th data-i18n="apikeys.col.policy">Hạn mức</th>
+                      <th data-i18n="apikeys.col.created">Thời điểm tạo</th>
+                      <th data-i18n="apikeys.col.action">Thao tác</th>
                     </tr>
                   </thead>
                   <tbody id="api-key-list"></tbody>
                 </table>
               </div>
-              <p class="section-caption" data-i18n="apikeys.note">
-                停用和删除会使对应应用的新请求返回 401。至少保留一个启用的 Key。
-              </p>
+              <p class="section-caption" data-i18n="apikeys.note">Tắt và xoá sẽ khiến các request mới của ứng dụng tương ứng trả về 401. Phải giữ lại ít nhất một Key đang bật.</p>
             </section>
           </section>
 
           <section id="page-model-quotas" class="page hidden">
-            <div class="tabs" role="tablist" aria-label="模型视图">
-              <button class="tab active" data-tab="quota" role="tab" aria-selected="true" data-i18n="quotas.tab.quota">套餐额度</button>
-              <button class="tab" data-tab="free" role="tab" aria-selected="false" data-i18n="quotas.tab.free">免费模型</button>
+            <div class="tabs" role="tablist" aria-label="Chế độ xem model">
+              <button class="tab active" data-tab="quota" role="tab" aria-selected="true" data-i18n="quotas.tab.quota">Hạn mức gói</button>
+              <button class="tab" data-tab="free" role="tab" aria-selected="false" data-i18n="quotas.tab.free">Mô hình miễn phí</button>
+              <button class="tab" data-tab="rotation" role="tab" aria-selected="false" data-i18n="quotas.tab.rotation">Luân chuyển mô hình</button>
             </div>
             <div data-panel="quota" class="stack" role="tabpanel">
-              <section class="section">
+              <section id="quota-summary-section" class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="quotas.title">OpenCode Go 套餐额度</h2>
-                    <p class="section-caption" data-i18n="quotas.caption">所有模型共享套餐窗口，百分比由上游取整。</p>
+                    <h2 class="section-title" data-i18n="quotas.title">Hạn mức gói OpenCode Go</h2>
+                    <p class="section-caption" data-i18n="quotas.caption">Truy vấn trực tiếp từ OpenCode, cache 60 giây. Mọi mô hình dùng chung một cửa sổ gói, phần trăm do upstream làm tròn.</p>
                   </div>
-                  <button id="quota-refresh" class="btn btn-sm" data-i18n="quotas.refresh">刷新额度</button>
+                  <button id="quota-refresh" class="btn btn-sm" data-i18n="quotas.refresh">Làm mới hạn mức</button>
                 </div>
                 <div class="field">
                   <label for="quota-account">Go Key</label>
@@ -665,9 +698,7 @@
                   role="status"
                   aria-live="polite"
                   data-i18n="quotas.pending"
-                >
-                  进入页面后读取额度。
-                </div>
+                >Sẽ đọc hạn mức khi mở trang.</div>
                 <div id="quota-cards" class="quota-grid"></div>
                 <p id="quota-updated" class="section-caption"></p>
               </section>
@@ -675,33 +706,33 @@
                 <div class="section-head">
                   <div>
                     <h2 class="section-title">
-                      <span data-i18n="quotas.catalog.title">可用模型</span>
+                      <span data-i18n="quotas.catalog.title">Mô hình khả dụng</span>
                       <span id="quota-model-count" class="section-caption"></span>
                     </h2>
-                    <p class="section-caption" data-i18n="quotas.catalog.caption">
-                      模型名称可直接填入 OPENAI_MODEL；额度列对应上方选定套餐。
-                    </p>
+                    <p class="section-caption" data-i18n="quotas.catalog.caption">Tên mô hình dùng thẳng cho OPENAI_MODEL. Cột hạn mức ứng với gói đã chọn ở trên, không phải mỗi mô hình có hạn mức riêng.</p>
                   </div>
                   <input
                     id="quota-model-search"
                     class="head-search"
                     type="search"
-                    aria-label="搜索模型"
-                    placeholder="搜索模型名称…"
+                    aria-label="Tìm model"
+                    placeholder="Tìm tên model…"
                     data-i18n-attr="placeholder:quotas.catalog.search,aria-label:quotas.catalog.search"
                   />
                 </div>
                 <p id="quota-catalog-status" class="section-caption"></p>
+                <p id="quota-model-note" class="section-caption hidden"></p>
                 <div class="table-wrap">
                   <table class="table">
                     <thead>
                       <tr>
-                        <th data-i18n="quotas.col.model">模型名称</th>
-                        <th data-i18n="quotas.col.protocol">上游协议</th>
-                        <th class="num" data-i18n="quotas.col.hour">5 小时剩余 · 共享</th>
-                        <th class="num" data-i18n="quotas.col.week">本周剩余 · 共享</th>
-                        <th class="num" data-i18n="quotas.col.month">本月剩余 · 共享</th>
-                        <th data-i18n="quotas.col.action">操作</th>
+                        <th data-i18n="quotas.col.model">Tên mô hình</th>
+                        <th data-i18n="quotas.col.protocol">Giao thức upstream</th>
+                        <th data-i18n="quotas.col.context">Ngữ cảnh</th>
+                        <th class="num" data-i18n="quotas.col.hour">Còn lại 5 giờ · dùng chung</th>
+                        <th class="num" data-i18n="quotas.col.week">Còn lại tuần · dùng chung</th>
+                        <th class="num" data-i18n="quotas.col.month">Còn lại tháng · dùng chung</th>
+                        <th data-i18n="quotas.col.action">Thao tác</th>
                       </tr>
                     </thead>
                     <tbody id="quota-models"></tbody>
@@ -713,28 +744,24 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="availability.title">免费模型探测</h2>
-                    <p class="section-caption" data-i18n="availability.desc">
-                      检查名称含 free 或零价未弃用的模型；仅明确失效才禁用并在 24 小时后复测，临时错误不新增禁用。手动控制的模型保持启用，不自动探测。
-                    </p>
+                    <h2 class="section-title" data-i18n="availability.title">Dò mô hình miễn phí</h2>
+                    <p class="section-caption" data-i18n="availability.desc">Kiểm tra các mô hình có tên chứa free hoặc giá bằng 0 trong metadata và chưa bị loại bỏ. Ưu tiên kênh ẩn danh, sau đó mới thử Zen Key; chỉ vô hiệu hóa khi mô hình hẳn đã hỏng và thử lại sau 24 giờ. Lỗi tạm thời không tạo thêm mô hình bị vô hiệu hóa: mô hình đang bật thử lại sau 1 giờ, mô hình đã tắt giữ nguyên lý do cũ và thử lại sau 24 giờ. Khi khôi phục bật hoặc chuyển sang điều khiển thủ công, mô hình giữ nguyên bật và không còn được dò tự động; khi chuyển lại tự động, lượt định tuyến kế tiếp sẽ sắp xếp lần dò. System One dùng bộ câu hỏi quyết định riêng 1+1. Khi đặt cường độ auto, hiển thị bậc cao nhất đã được dò xác minh.</p>
                   </div>
-                  <button id="availability-refresh" class="btn btn-sm" data-i18n="availability.refresh">
-                    刷新状态
-                  </button>
+                  <button id="availability-refresh" class="btn btn-sm" data-i18n="availability.refresh">Làm mới trạng thái</button>
                 </div>
                 <p id="availability-error" class="section-caption" role="status"></p>
                 <div class="table-wrap">
                   <table class="table">
                     <thead>
                       <tr>
-                        <th data-i18n="availability.col.model">模型</th>
-                        <th data-i18n="availability.col.state">状态</th>
-                        <th data-i18n="availability.col.channel">通道 / 结果</th>
-                        <th data-i18n="availability.col.control">控制</th>
-                        <th data-i18n="availability.col.effort">已验证思考档位</th>
-                        <th data-i18n="availability.col.checked">上次探测</th>
-                        <th data-i18n="availability.col.next">下次探测</th>
-                        <th data-i18n="availability.col.action">操作</th>
+                        <th data-i18n="availability.col.model">Mô hình</th>
+                        <th data-i18n="availability.col.state">Trạng thái</th>
+                        <th data-i18n="availability.col.channel">Kênh / Kết quả</th>
+                        <th data-i18n="availability.col.control">Điều khiển</th>
+                        <th data-i18n="availability.col.effort">Bậc suy luận đã xác minh</th>
+                        <th data-i18n="availability.col.checked">Lần dò gần nhất</th>
+                        <th data-i18n="availability.col.next">Lần dò kế tiếp</th>
+                        <th data-i18n="availability.col.action">Thao tác</th>
                       </tr>
                     </thead>
                     <tbody id="availability-models"></tbody>
@@ -742,120 +769,71 @@
                 </div>
               </section>
             </div>
-          </section>
-
-          <section id="page-egress" class="page hidden">
-            <section class="section">
-              <div class="section-head">
-                <div>
-                  <h2 class="section-title" data-i18n="egress.title">Ngân sách egress /64</h2>
-                  <p class="section-caption" data-i18n="egress.caption">
-                    Free tier đếm theo từng /64 và từng họ model; cửa sổ reset lúc 00:00 UTC.
-                  </p>
-                </div>
-                <button id="egress-refresh" class="btn btn-sm" data-i18n="egress.refresh">Làm mới</button>
-              </div>
-              <div
-                id="egress-summary"
-                class="quota-status"
-                role="status"
-                aria-live="polite"
-                data-i18n="egress.pending"
-              >
-                Đang đọc trạng thái pool.
-              </div>
-              <div class="table-wrap">
-                <table class="table">
-                  <thead>
-                    <tr>
-                      <th data-i18n="egress.col.egress">Egress /64</th>
-                      <th data-i18n="egress.col.family">Họ model</th>
-                      <th data-i18n="egress.col.state">Trạng thái</th>
-                      <th data-i18n="egress.col.requests">Request</th>
-                      <th data-i18n="egress.col.quota">Hết quota</th>
-                      <th data-i18n="egress.col.cooling">Nghỉ còn</th>
-                      <th data-i18n="egress.col.reset">Reset</th>
-                    </tr>
-                  </thead>
-                  <tbody id="egress-rows"></tbody>
-                </table>
-              </div>
-            </section>
-          </section>
-
-          <section id="page-rotation" class="page hidden">
-            <section class="section">
-              <div class="section-head">
-                <div>
-                  <h2 class="section-title" data-i18n="rotation.title">SOTA / 甜点模型轮转</h2>
-                  <p class="section-caption" data-i18n="rotation.caption">
-                    成功后继续使用当前模型；额度不足或错误时按顺序切换，仅使用 OpenCode Go。
-                  </p>
-                </div>
-                <button id="rotation-refresh" class="btn btn-sm" data-i18n="rotation.refresh">刷新状态</button>
-              </div>
-              <p class="section-caption" data-i18n="rotation.usage">
-                沿用现有 Base URL 和 API Key，将 OPENAI_MODEL 设为下方别名。每个模型普通错误最多尝试 3
-                次，一次请求最多重试 3 个模型；额度不足直接跳过。输出开始后，本次回答固定使用同一模型。
-              </p>
-              <p id="rotation-status" class="section-caption" role="status"></p>
-            </section>
-            <form id="rotation-form" class="stack">
-              <div id="rotation-groups"></div>
+            <div data-panel="rotation" class="stack hidden" role="tabpanel">
               <section class="section">
-                <div class="field">
-                  <label for="rotation-timeout" data-i18n="rotation.timeout">首个有效输出等待上限（秒）</label>
-                  <input id="rotation-timeout" type="number" min="1" max="300" value="30" required />
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="rotation.title">Luân chuyển mô hình SOTA / sweet</h2>
+                    <p class="section-caption" data-i18n="rotation.caption">Thành công thì giữ nguyên mô hình hiện tại. Khi hết hạn mức hoặc gặp lỗi sẽ chuyển theo thứ tự, chỉ dùng OpenCode Go.</p>
+                  </div>
+                  <button id="rotation-refresh" class="btn btn-sm" data-i18n="rotation.refresh">Làm mới trạng thái</button>
                 </div>
-                <div class="actions">
-                  <button id="rotation-save" class="btn btn-sm btn-primary" data-i18n="rotation.save">
-                    保存别名与顺序
-                  </button>
-                </div>
-                <p class="section-caption" data-i18n="rotation.saveNote">
-                  保存立即生效；调整顺序不会打断正在输出的回答。手动选择当前模型会立即生效，并解除该模型的临时暂停。
-                </p>
+                <p class="section-caption" data-i18n="rotation.usage">Giữ nguyên Base URL và API Key hiện có, đặt OPENAI_MODEL là bí danh bên dưới. Mỗi mô hình lỗi thường được thử tối đa 3 lần, mỗi request tối đa thử 3 mô hình; hết hạn mức thì bỏ qua ngay.</p>
+                <p id="rotation-status" class="section-caption" role="status"></p>
               </section>
-            </form>
-            <section class="section">
-              <div class="section-head">
-                <h2 class="section-title" data-i18n="rotation.attempts.title">最近请求尝试</h2>
-              </div>
-              <div class="table-wrap">
-                <table class="table">
-                  <thead>
-                    <tr>
-                      <th data-i18n="rotation.col.time">时间</th>
-                      <th data-i18n="rotation.col.request">请求</th>
-                      <th data-i18n="rotation.col.alias">别名</th>
-                      <th data-i18n="rotation.col.model">实际模型</th>
-                      <th class="num" data-i18n="rotation.col.attempt">尝试</th>
-                      <th data-i18n="rotation.col.result">结果</th>
-                    </tr>
-                  </thead>
-                  <tbody id="rotation-attempts"></tbody>
-                </table>
-              </div>
-            </section>
+              <form id="rotation-form" class="stack">
+                <div id="rotation-groups"></div>
+                <section class="section">
+                  <div class="field">
+                    <label for="rotation-timeout" data-i18n="rotation.timeout">Giới hạn chờ output hợp lệ đầu tiên (giây)</label>
+                    <input id="rotation-timeout" type="number" min="1" max="300" value="30" required />
+                  </div>
+                  <div class="actions">
+                    <button id="rotation-save" class="btn btn-sm btn-primary" data-i18n="rotation.save">Lưu bí danh và thứ tự</button>
+                  </div>
+                  <p class="section-caption" data-i18n="rotation.saveNote">Lưu là có hiệu lực ngay; đổi thứ tự không cắt ngang câu trả lời đang xuất. Chọn thủ công mô hình hiện tại sẽ có hiệu lực ngay và gỡ trạng thái tạm dừng của mô hình đó.</p>
+                </section>
+              </form>
+              <section class="section">
+                <div class="section-head">
+                  <h2 class="section-title" data-i18n="rotation.attempts.title">Các lần thử gần nhất</h2>
+                </div>
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="rotation.col.time">Thời gian</th>
+                        <th data-i18n="rotation.col.request">Request</th>
+                        <th data-i18n="rotation.col.alias">Bí danh</th>
+                        <th data-i18n="rotation.col.model">Mô hình thực</th>
+                        <th class="num" data-i18n="rotation.col.attempt">Lần thử</th>
+                        <th data-i18n="rotation.col.result">Kết quả</th>
+                      </tr>
+                    </thead>
+                    <tbody id="rotation-attempts"></tbody>
+                  </table>
+                </div>
+              </section>
+            </div>
           </section>
 
           <section id="page-config" class="page hidden">
+            <div class="tabs" role="tablist" aria-label="Phần cấu hình">
+              <button class="tab active" data-tab="service" role="tab" aria-selected="true" data-i18n="config.tab.service">Dịch vụ</button>
+              <button class="tab" data-tab="keys" role="tab" aria-selected="false" data-i18n="config.tab.keys">Khóa và ẩn danh</button>
+              <button class="tab" data-tab="proxies" role="tab" aria-selected="false" data-i18n="config.tab.proxies">Proxy</button>
+              <button class="tab" data-tab="upstream" role="tab" aria-selected="false" data-i18n="config.tab.upstream">Upstream và mô hình</button>
+              <button class="tab" data-tab="reasoning" role="tab" aria-selected="false" data-i18n="config.tab.reasoning">Suy luận và hiệu năng</button>
+              <button class="tab" data-tab="logging" role="tab" aria-selected="false" data-i18n="config.tab.logging">Nhật ký</button>
+              <button class="tab" data-tab="account" role="tab" aria-selected="false" data-i18n="config.tab.account">Tài khoản</button>
+            </div>
             <form id="config-form" class="stack">
-              <div class="tabs" role="tablist" aria-label="配置分区">
-                <button class="tab active" data-tab="service" role="tab" aria-selected="true" data-i18n="config.tab.service">服务</button>
-                <button class="tab" data-tab="keys" role="tab" aria-selected="false" data-i18n="config.tab.keys">密钥与匿名</button>
-                <button class="tab" data-tab="proxies" role="tab" aria-selected="false" data-i18n="config.tab.proxies">代理</button>
-                <button class="tab" data-tab="upstream" role="tab" aria-selected="false" data-i18n="config.tab.upstream">上游与模型</button>
-                <button class="tab" data-tab="reasoning" role="tab" aria-selected="false" data-i18n="config.tab.reasoning">推理与性能</button>
-                <button class="tab" data-tab="logging" role="tab" aria-selected="false" data-i18n="config.tab.logging">日志</button>
-              </div>
-
               <div data-panel="service" class="stack" role="tabpanel">
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.server.title">服务</h2>
-                      <p class="section-caption" data-i18n="config.server.caption">监听地址变更保存后需要重启进程。</p>
+                      <h2 class="section-title" data-i18n="config.server.title">Máy chủ và bảng quản trị</h2>
+                      <p class="section-caption" data-i18n="config.server.caption">Địa chỉ lắng nghe cần khởi động lại sau khi lưu.</p>
                     </div>
                   </div>
                   <div class="form-grid">
@@ -868,13 +846,13 @@
                       <input id="c-web-listen" />
                     </div>
                     <div class="field">
-                      <label for="c-session" data-i18n="config.server.session">Session TTL（分钟）</label>
+                      <label for="c-session" data-i18n="config.server.session">Session TTL (phút)</label>
                       <input id="c-session" type="number" />
                     </div>
                     <div class="field full">
                       <label class="check">
                         <input id="c-web-enabled" type="checkbox" />
-                        <span data-i18n="config.server.enabled">启用 WebUI（修改需重启）</span>
+                        <span data-i18n="config.server.enabled">Bật WebUI (cần khởi động lại khi thay đổi)</span>
                       </label>
                     </div>
                   </div>
@@ -885,20 +863,16 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.secrets.title">密钥与匿名</h2>
-                      <p class="section-caption" data-i18n="config.secrets.caption">
-                        敏感值默认仅显示掩码；移除后保存才会生效。
-                      </p>
+                      <h2 class="section-title" data-i18n="config.secrets.title">Khóa và kênh ẩn danh</h2>
+                      <p class="section-caption" data-i18n="config.secrets.caption">Giá trị nhạy cảm mặc định chỉ hiện dạng che; chỉ lưu sau khi gỡ bỏ mới có hiệu lực.</p>
                     </div>
-                    <button id="reveal" type="button" class="btn btn-sm" data-i18n="config.secrets.reveal">
-                      二次验证查看
-                    </button>
+                    <button id="reveal" type="button" class="btn btn-sm" data-i18n="config.secrets.reveal">Xem sau khi xác minh lại</button>
                   </div>
                   <div class="form-grid">
                     <div class="field full">
                       <label class="check">
                         <input id="c-anonymous" type="checkbox" />
-                        <span data-i18n="config.secrets.anonymous">启用 Zen 匿名通道</span>
+                        <span data-i18n="config.secrets.anonymous">Bật kênh ẩn danh Zen</span>
                       </label>
                     </div>
                     <div class="field full">
@@ -906,7 +880,7 @@
                       <div id="server_keys-chips" class="chips"></div>
                       <textarea
                         id="server_keys-new"
-                        placeholder="每行新增一个 key"
+                        placeholder="Mỗi dòng thêm một key"
                         data-i18n-attr="placeholder:config.secrets.add"
                       ></textarea>
                     </div>
@@ -915,7 +889,7 @@
                       <div id="zen_keys-chips" class="chips"></div>
                       <textarea
                         id="zen_keys-new"
-                        placeholder="每行新增一个 key"
+                        placeholder="Mỗi dòng thêm một key"
                         data-i18n-attr="placeholder:config.secrets.add"
                       ></textarea>
                     </div>
@@ -924,7 +898,7 @@
                       <div id="go_keys-chips" class="chips"></div>
                       <textarea
                         id="go_keys-new"
-                        placeholder="每行新增一个 key"
+                        placeholder="Mỗi dòng thêm một key"
                         data-i18n-attr="placeholder:config.secrets.add"
                       ></textarea>
                     </div>
@@ -936,13 +910,13 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.proxy.title">Proxy 节点</h2>
+                      <h2 class="section-title" data-i18n="config.proxy.title">Nút Proxy</h2>
                     </div>
                   </div>
                   <div id="proxies-chips" class="chips"></div>
                   <div class="form-grid">
                     <div class="field">
-                      <label for="proxies-new" data-i18n="config.proxy.add">新增 Proxy（每行一个）</label>
+                      <label for="proxies-new" data-i18n="config.proxy.add">Thêm Proxy (mỗi dòng một cái)</label>
                       <textarea
                         id="proxies-new"
                         placeholder="direct&#10;http://user:pass@host:port&#10;http://127.0.0.1:7890#pool"
@@ -957,40 +931,34 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.warp.title">WARP 出口</h2>
-                      <p class="section-caption" data-i18n="config.warp.caption">
-                        开启后，免费模型流量（匿名通道、免费模型 Zen Key、免费模型探测）改走用户态 WARP，不再使用任何 Proxy；Go 套餐与付费模型保持不变。出口收到 429/403 立即淘汰并在后台重新注册，免费模型请求持续轮换出口，用完 retry.max_attempts 次后才把最后一个 429 返回客户端。
-                      </p>
+                      <h2 class="section-title" data-i18n="config.warp.title">Đầu ra WARP</h2>
+                      <p class="section-caption" data-i18n="config.warp.caption">Khi bật, lưu lượng model miễn phí (kênh ẩn danh, Zen Key cho model miễn phí, kiểm tra model miễn phí) đi qua đường hầm Cloudflare WARP chạy trong tiến trình và không dùng proxy nào; gói Go và model trả phí vẫn giữ proxy. Đầu ra trả 429/403 bị loại và đăng ký lại ở nền; yêu cầu model miễn phí tiếp tục đổi đầu ra cho đến khi hết retry.max_attempts rồi mới trả 429 cuối cùng cho client.</p>
                     </div>
                   </div>
                   <div class="form-grid">
                     <div class="field full">
                       <label class="check">
                         <input id="c-warp-enabled" type="checkbox" />
-                        <span data-i18n="config.warp.enabled">免费模型流量通过 WARP 出口</span>
+                        <span data-i18n="config.warp.enabled">Đưa lưu lượng model miễn phí qua WARP</span>
                       </label>
                     </div>
                     <div class="field">
-                      <label for="c-warp-pool" data-i18n="config.warp.pool">WARP 出口上限</label>
+                      <label for="c-warp-pool" data-i18n="config.warp.pool">Số đầu ra WARP tối đa</label>
                       <input id="c-warp-pool" type="number" min="1" max="32" step="1" />
-                      <p class="section-caption" data-i18n="config.warp.pool.hint">
-                        上限而非固定值：第一个出口就绪后，后台预注册一半（至少 1 个）作为暖池；活跃出口随并发调整（每个在途请求一个，另留一个备用），空闲 60 秒后回收多余出口。
-                      </p>
+                      <p class="section-caption" data-i18n="config.warp.pool.hint">Là giới hạn trên, không phải số cố định: sau khi đầu ra đầu tiên sẵn sàng, một nửa (ít nhất một) được đăng ký trước ở nền; vòng hoạt động sau đó thay đổi theo mức đồng thời (mỗi yêu cầu đang chạy một đầu ra, cộng một đầu ra dự phòng) và thu gọn sau 60 giây nhàn rỗi.</p>
                     </div>
                     <div class="field">
-                      <label for="c-warp-stack" data-i18n="config.warp.stack">网络栈</label>
+                      <label for="c-warp-stack" data-i18n="config.warp.stack">Ngăn xếp mạng</label>
                       <select id="c-warp-stack">
                         <option value="ipv6">IPv6</option>
                         <option value="ipv4">IPv4</option>
-                        <option value="dual" data-i18n="config.warp.stack.dual">双栈</option>
+                        <option value="dual" data-i18n="config.warp.stack.dual">Hai ngăn xếp</option>
                       </select>
                     </div>
                     <div class="field full">
-                      <label for="c-warp-source" data-i18n="config.warp.source">外层 IPv6 源前缀（/64）</label>
+                      <label for="c-warp-source" data-i18n="config.warp.source">Tiền tố nguồn IPv6 bên ngoài (/64)</label>
                       <input id="c-warp-source" placeholder="2001:db8:1::/64" />
-                      <p class="section-caption" data-i18n="config.warp.source.hint">
-                        仅在使用 IPv6 网络栈时生效。每个 WARP 出口从该前缀取一个源地址出网，换出口即换公网地址；留空则共用本机默认源地址。
-                      </p>
+                      <p class="section-caption" data-i18n="config.warp.source.hint">Chỉ dùng với ngăn xếp mạng IPv6. Mỗi đầu ra WARP gắn một địa chỉ nguồn trong tiền tố này, nên khi thay đầu ra là thay luôn địa chỉ công cộng; để trống sẽ dùng địa chỉ nguồn mặc định của máy chủ.</p>
                     </div>
                   </div>
                 </section>
@@ -1000,18 +968,16 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.upstream.title">上游与模型</h2>
-                      <p class="section-caption" data-i18n="config.upstream.caption">
-                        anonymous 会耗尽可用 Proxy；显式 protocol 映射优先于模型名称推断。
-                      </p>
+                      <h2 class="section-title" data-i18n="config.upstream.title">Upstream và định tuyến giao thức</h2>
+                      <p class="section-caption" data-i18n="config.upstream.caption">anonymous sẽ dùng hết các Proxy khả dụng; ánh xạ protocol tường minh được ưu tiên hơn việc suy luận từ tên mô hình.</p>
                     </div>
                   </div>
                   <div class="form-grid">
                     <div class="field">
-                      <label for="c-prefer" data-i18n="config.server.prefer">认证 Key 首选 Tier</label>
+                      <label for="c-prefer" data-i18n="config.server.prefer">Tier ưu tiên cho Key xác thực</label>
                       <select id="c-prefer">
-                        <option value="go" data-i18n="config.server.prefer.go">Go（失败回退 Zen）</option>
-                        <option value="zen" data-i18n="config.server.prefer.zen">Zen（失败回退 Go）</option>
+                        <option value="go" data-i18n="config.server.prefer.go">Go (lỗi thì dự phòng Zen)</option>
+                        <option value="zen" data-i18n="config.server.prefer.zen">Zen (lỗi thì dự phòng Go)</option>
                       </select>
                     </div>
                     <div class="field">
@@ -1023,35 +989,31 @@
                       <input id="c-up-go" />
                     </div>
                     <div class="field">
-                      <label for="c-attempts" data-i18n="config.upstream.attempts">每个 Key Tier 最大尝试次数</label>
+                      <label for="c-attempts" data-i18n="config.upstream.attempts">Số lần thử tối đa cho mỗi Key Tier</label>
                       <input id="c-attempts" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-timeout" data-i18n="config.upstream.timeout">请求超时（秒）</label>
+                      <label for="c-timeout" data-i18n="config.upstream.timeout">Timeout của request (giây)</label>
                       <input id="c-timeout" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-refresh" data-i18n="config.upstream.refresh">模型刷新（秒）</label>
+                      <label for="c-refresh" data-i18n="config.upstream.refresh">Làm mới mô hình (giây)</label>
                       <input id="c-refresh" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-protocols" data-i18n="config.upstream.protocols">模型协议覆盖（JSON）</label>
+                      <label for="c-protocols" data-i18n="config.upstream.protocols">Ghi đè giao thức mô hình (JSON)</label>
                       <textarea id="c-protocols" spellcheck="false">{}</textarea>
                     </div>
                     <div class="field full">
                       <label class="check">
                         <input id="c-free-only" type="checkbox" />
-                        <span data-i18n="config.upstream.freeOnly">
-                          仅暴露免费模型（即使配置了 Zen / Go Key）
-                        </span>
+                        <span data-i18n="config.upstream.freeOnly">Chỉ công khai mô hình miễn phí (kể cả khi đã cấu hình Zen / Go Key)</span>
                       </label>
                     </div>
                     <div class="field full">
                       <label class="check">
                         <input id="c-active-probes" type="checkbox" />
-                        <span data-i18n="config.upstream.activeProbes">
-                          启用免费模型后台主动探测（默认关闭，使用被动调用追踪以节省额度）
-                        </span>
+                        <span data-i18n="config.upstream.activeProbes">Bật probe chủ động ngầm cho mô hình miễn phí (mặc định tắt để tiết kiệm hạn mức)</span>
                       </label>
                     </div>
                   </div>
@@ -1062,48 +1024,41 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.reasoning.title">Thinking 强度</h2>
-                      <p class="section-caption" data-i18n="config.reasoning.caption">
-                        仅在客户端没有明确指定时生效；按模型覆盖默认值。选择"关闭"会移除未明确请求的
-                        reasoning。
-                      </p>
+                      <h2 class="section-title" data-i18n="config.reasoning.title">Cường độ Thinking</h2>
+                      <p class="section-caption" data-i18n="config.reasoning.caption">Chỉ áp dụng khi client không chỉ định rõ; có thể ghi đè theo từng mô hình. Chọn “Tắt” sẽ bỏ reasoning cho các request không yêu cầu rõ.</p>
                     </div>
                   </div>
                   <div class="form-grid">
                     <div class="field">
-                      <label for="c-reasoning-effort" data-i18n="config.reasoning.default">默认强度</label>
+                      <label for="c-reasoning-effort" data-i18n="config.reasoning.default">Cường độ mặc định</label>
                       <select id="c-reasoning-effort">
-                        <option value="" data-i18n="config.reasoning.follow">跟随客户端</option>
-                        <option value="auto" data-i18n="config.reasoning.auto">auto（探测最高可用档）</option>
+                        <option value="" data-i18n="config.reasoning.follow">Theo client</option>
+                        <option value="auto" data-i18n="config.reasoning.auto">auto (dò mức cao nhất khả dụng)</option>
                         <option value="minimal">minimal</option>
                         <option value="low">low</option>
                         <option value="medium">medium</option>
                         <option value="high">high</option>
                         <option value="xhigh">xhigh</option>
                         <option value="max">max</option>
-                        <option value="none" data-i18n="config.reasoning.none">关闭</option>
+                        <option value="none" data-i18n="config.reasoning.none">Tắt</option>
                       </select>
                     </div>
                     <div class="field full">
-                      <label for="c-reasoning-by-model" data-i18n="config.reasoning.byModel">
-                        按模型覆盖（JSON）
-                      </label>
+                      <label for="c-reasoning-by-model" data-i18n="config.reasoning.byModel">Ghi đè theo mô hình (JSON)</label>
                       <textarea
                         id="c-reasoning-by-model"
                         spellcheck="false"
                         placeholder='{"model-id":"high"}'
                       ></textarea>
-                      <p class="section-caption" data-i18n="config.reasoning.byModelNote">
-                        值可为 minimal、low、medium、high、xhigh、max 或 none；空对象表示不覆盖。
-                      </p>
+                      <p class="section-caption" data-i18n="config.reasoning.byModelNote">Giá trị có thể là minimal, low, medium, high, xhigh, max hoặc none; đối tượng rỗng nghĩa là không ghi đè.</p>
                     </div>
                   </div>
                 </section>
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.performance.title">连接与超时</h2>
-                      <p class="section-caption" data-i18n="config.performance.caption">热重载会保留进程内监控累计。</p>
+                      <h2 class="section-title" data-i18n="config.performance.title">Hiệu năng và nhật ký</h2>
+                      <p class="section-caption" data-i18n="config.performance.caption">Nạp lại nóng vẫn giữ số liệu tích lũy trong bộ nhớ tiến trình.</p>
                     </div>
                   </div>
                   <div class="form-grid">
@@ -1120,33 +1075,29 @@
                       <input id="c-max-host" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-idle-timeout" data-i18n="config.performance.idleTimeout">Idle Timeout（秒）</label>
+                      <label for="c-idle-timeout" data-i18n="config.performance.idleTimeout">Idle Timeout (giây)</label>
                       <input id="c-idle-timeout" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-connect" data-i18n="config.performance.connect">Connect Timeout（秒）</label>
+                      <label for="c-connect" data-i18n="config.performance.connect">Connect Timeout (giây)</label>
                       <input id="c-connect" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-cooldown" data-i18n="config.performance.cooldown">Failure Cooldown（秒）</label>
+                      <label for="c-cooldown" data-i18n="config.performance.cooldown">Failure Cooldown (giây)</label>
                       <input id="c-cooldown" type="number" />
                     </div>
                     <div class="field">
-                      <label for="c-attempt-timeout" data-i18n="config.performance.attemptTimeout">
-                        Attempt Timeout（秒）
-                      </label>
+                      <label for="c-attempt-timeout" data-i18n="config.performance.attemptTimeout">Attempt Timeout (giây)</label>
                       <input
                         id="c-attempt-timeout"
                         type="number"
                         min="0"
-                        placeholder="0 = 跟随请求超时"
+                        placeholder="0 = theo timeout của request"
                         data-i18n-attr="placeholder:config.performance.attemptTimeoutHint"
                       />
                     </div>
                     <div class="field">
-                      <label for="c-first-event-timeout" data-i18n="config.performance.firstEvent">
-                        首个 SSE 事件超时（秒，0 关闭）
-                      </label>
+                      <label for="c-first-event-timeout" data-i18n="config.performance.firstEvent">Timeout sự kiện SSE đầu tiên (giây, 0 để tắt)</label>
                       <input id="c-first-event-timeout" type="number" min="0" max="86400" />
                     </div>
                   </div>
@@ -1157,12 +1108,12 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
-                      <h2 class="section-title" data-i18n="config.performance.level">日志</h2>
+                      <h2 class="section-title" data-i18n="config.performance.level">Mức log</h2>
                     </div>
                   </div>
                   <div class="form-grid">
                     <div class="field">
-                      <label for="c-level" data-i18n="config.performance.level">日志级别</label>
+                      <label for="c-level" data-i18n="config.performance.level">Mức log</label>
                       <select id="c-level">
                         <option>debug</option>
                         <option>info</option>
@@ -1171,15 +1122,13 @@
                       </select>
                     </div>
                     <div class="field">
-                      <label for="c-ring" data-i18n="config.performance.ring">日志 Ring Size</label>
+                      <label for="c-ring" data-i18n="config.performance.ring">Kích thước ring log</label>
                       <input id="c-ring" type="number" />
                     </div>
                     <div class="field full">
                       <label class="check">
                         <input id="c-dump-bodies" type="checkbox" />
-                        <span data-i18n="config.performance.dump">
-                          转储出站请求体（已脱敏，仅用于排查重试与转换问题）
-                        </span>
+                        <span data-i18n="config.performance.dump">Ghi dump request đi ra (đã che, chỉ dùng để truy vết retry và chuyển đổi)</span>
                       </label>
                     </div>
                   </div>
@@ -1187,38 +1136,35 @@
               </div>
 
               <div class="sticky-actions">
-                <button id="reload-config" type="button" class="btn btn-sm btn-ghost" data-i18n="config.reload">
-                  从磁盘重载
-                </button>
-                <button class="btn btn-sm btn-primary" data-i18n="config.save">验证、保存并应用</button>
+                <button id="reload-config" type="button" class="btn btn-sm btn-ghost" data-i18n="config.reload">Nạp lại từ đĩa</button>
+                <button class="btn btn-sm btn-primary" data-i18n="config.save">Kiểm tra, lưu và áp dụng</button>
               </div>
             </form>
-          </section>
-
-          <section id="page-account" class="page hidden">
-            <form id="account-form" class="section">
-              <div class="section-head">
-                <div>
-                  <h2 class="section-title" data-i18n="account.title">更新管理账号</h2>
-                  <p class="section-caption" data-i18n="account.caption">成功后撤销全部会话，并要求重新登录。</p>
+            <div data-panel="account" class="stack hidden" role="tabpanel">
+              <form id="account-form" class="section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="account.title">Cập nhật tài khoản quản trị</h2>
+                    <p class="section-caption" data-i18n="account.caption">Thành công sẽ thu hồi toàn bộ Session và yêu cầu đăng nhập lại.</p>
+                  </div>
                 </div>
-              </div>
-              <div class="field">
-                <label for="a-user" data-i18n="account.user">新账号（留空保持）</label>
-                <input id="a-user" autocomplete="username" />
-              </div>
-              <div class="field">
-                <label for="a-current" data-i18n="account.current">当前密码</label>
-                <input id="a-current" type="password" autocomplete="current-password" required />
-              </div>
-              <div class="field">
-                <label for="a-new" data-i18n="account.new">新密码（留空保持，至少 10 字符）</label>
-                <input id="a-new" type="password" autocomplete="new-password" />
-              </div>
-              <div class="actions">
-                <button class="btn btn-sm btn-primary" data-i18n="account.submit">更新并重新登录</button>
-              </div>
-            </form>
+                <div class="field">
+                  <label for="a-user" data-i18n="account.user">Tài khoản mới (để trống để giữ nguyên)</label>
+                  <input id="a-user" autocomplete="username" />
+                </div>
+                <div class="field">
+                  <label for="a-current" data-i18n="account.current">Mật khẩu hiện tại</label>
+                  <input id="a-current" type="password" autocomplete="current-password" required />
+                </div>
+                <div class="field">
+                  <label for="a-new" data-i18n="account.new">Mật khẩu mới (để trống để giữ nguyên, tối thiểu 10 ký tự)</label>
+                  <input id="a-new" type="password" autocomplete="new-password" />
+                </div>
+                <div class="actions">
+                  <button class="btn btn-sm btn-primary" data-i18n="account.submit">Cập nhật và đăng nhập lại</button>
+                </div>
+              </form>
+            </div>
           </section>
         </main>
       </div>

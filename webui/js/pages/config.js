@@ -1,4 +1,4 @@
-// Page: 配置中心 — masked config editing with validation, hot reload and reveal.
+// Page: configuration center — masked config editing with validation, hot reload and reveal.
 import { api } from "../api.js";
 import { loadConfig, loadDebugModels } from "../data.js";
 import * as store from "../store.js";
@@ -18,19 +18,19 @@ function renderChips(name) {
   const expanded = expandedChips.has(name);
   const visible = expanded ? items : items.slice(0, CHIP_RENDER_LIMIT);
   visible.forEach((item) => {
-    const remove = el("button", { type: "button", title: t("移除", "common.remove"), text: "×" });
+    const remove = el("button", { type: "button", title: t("Gỡ bỏ", "common.remove"), text: "×" });
     const chip = el("span", { class: "chip", dataset: { id: item.id } });
     remove.addEventListener("click", () => chip.remove());
     chip.append(el("span", { text: item.display }), remove);
     host.append(chip);
   });
   if (items.length > visible.length)
-    host.append(chipToggle(`config.chips.expand`, `展开全部（共 ${items.length} 个）`, items.length, () => {
+    host.append(chipToggle(`config.chips.expand`, `Mở rộng tất cả (${items.length})`, items.length, () => {
       expandedChips.add(name);
       renderChips(name);
     }));
   else if (expanded)
-    host.append(chipToggle(`config.chips.collapse`, "收起", null, () => {
+    host.append(chipToggle(`config.chips.collapse`, "Thu gọn", null, () => {
       expandedChips.delete(name);
       renderChips(name);
     }));
@@ -48,7 +48,7 @@ function renderRestartNotice(value) {
   const notice = $("#restart-notice");
   if (value?.restart_required_fields?.length) {
     notice.textContent = t(
-      `已保存但尚未生效：${value.restart_required_fields.join(", ")}。当前 API ${value.effective.listen}、WebUI ${value.effective.webui_listen}。请重启进程。`,
+      "Đã lưu nhưng chưa có hiệu lực: {0}. API hiện tại {1}, WebUI {2}. Vui lòng khởi động lại tiến trình.",
       "config.restartNotice",
       value.restart_required_fields.join(", "),
       value.effective.listen,
@@ -168,7 +168,11 @@ async function save(event) {
         session_ttl_minutes: numberValue("#c-session"),
       },
     };
-    const result = await api("/api/config", { method: "PUT", body: JSON.stringify(update) });
+    const result = await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify(update),
+      timeoutMs: 90000,
+    });
     store.set("config", result.config);
     ["server_keys", "zen_keys", "go_keys", "proxies"].forEach(
       (name) => ($(`#${name}-new`).value = ""),
@@ -177,11 +181,11 @@ async function save(event) {
     toast(
       result.result.restart_required
         ? t(
-            `已应用；${result.result.restart_fields.join(", ")} 需重启`,
+            "Đã áp dụng; cần khởi động lại cho {0}",
             "toast.config.restart",
             result.result.restart_fields.join(", "),
           )
-        : t("配置已保存并立即应用", "toast.config.saved"),
+        : t("Cấu hình đã lưu và có hiệu lực ngay", "toast.config.saved"),
     );
   } catch (error) {
     toast(error.message, true);
@@ -190,13 +194,17 @@ async function save(event) {
 
 async function reload() {
   try {
-    const result = await api("/api/config/reload", { method: "POST", body: "{}" });
+    const result = await api("/api/config/reload", {
+      method: "POST",
+      body: "{}",
+      timeoutMs: 90000,
+    });
     await loadConfig();
     await loadDebugModels();
     toast(
       result.restart_required
-        ? t("磁盘配置已重载，监听字段需重启", "toast.config.reloadedRestart")
-        : t("磁盘配置已重载", "toast.config.reloaded"),
+        ? t("Đã nạp lại cấu hình từ đĩa, các trường lắng nghe cần khởi động lại", "toast.config.reloadedRestart")
+        : t("Đã nạp lại cấu hình từ đĩa", "toast.config.reloaded"),
     );
   } catch (error) {
     toast(error.message, true);
@@ -213,24 +221,24 @@ function reveal() {
       });
       close();
       openDialog({
-        title: t("敏感配置", "modal.title"),
+        title: t("Cấu hình nhạy cảm", "modal.title"),
         size: "dialog-lg",
         body: el("pre", { text: JSON.stringify(values, null, 2) }),
-        actions: [{ label: t("关闭", "modal.close") }],
+        actions: [{ label: t("Đóng", "modal.close") }],
       });
     } catch (error) {
       toast(error.message, true);
     }
   };
   const dialog = openDialog({
-    title: t("查看敏感配置", "modal.revealTitle"),
+    title: t("Xem cấu hình nhạy cảm", "modal.revealTitle"),
     body: el("div", { class: "field" }, [
-      el("label", { text: t("请再次输入管理密码", "config.revealPrompt") }),
+      el("label", { text: t("Nhập lại mật khẩu quản trị", "config.revealPrompt") }),
       input,
     ]),
     actions: [
-      { label: t("取消", "common.cancel") },
-      { label: t("查看", "common.view"), kind: "btn-primary", onClick: submit },
+      { label: t("Huỷ", "common.cancel") },
+      { label: t("Xem", "common.view"), kind: "btn-primary", onClick: submit },
     ],
   });
   input.addEventListener("keydown", (event) => {
@@ -243,11 +251,13 @@ function reveal() {
 
 export default {
   id: "config",
-  title: "配置中心",
-  sub: "验证后原子保存，并热应用可变字段。",
+  title: "Cấu hình",
+  sub: "Kiểm tra, lưu và áp dụng nóng các trường có thể thay đổi.",
   init() {
     store.on("config", fillConfig);
-    bindTabs($("#page-config"));
+    bindTabs($("#page-config"), (id) => {
+      $("#config-form").classList.toggle("hidden", id === "account");
+    });
     $("#config-form").addEventListener("submit", save);
     $("#reload-config").addEventListener("click", reload);
     $("#reveal").addEventListener("click", reveal);
@@ -255,11 +265,11 @@ export default {
       const value = store.get("config");
       if (value) renderRestartNotice(value);
       // Update chip tooltips in place so pending unsaved chip removals survive a language switch.
-      $$(".chips .chip > button").forEach((button) => (button.title = t("移除", "common.remove")));
+      $$(".chips .chip > button").forEach((button) => (button.title = t("Gỡ bỏ", "common.remove")));
       $$(".chip-toggle").forEach((node) => {
         node.textContent = node.dataset.count
-          ? t(`展开全部（共 ${node.dataset.count} 个）`, "config.chips.expand", node.dataset.count)
-          : t("收起", "config.chips.collapse");
+          ? t("Hiện tất cả ({0})", "config.chips.expand", node.dataset.count)
+          : t("Thu gọn", "config.chips.collapse");
       });
     });
   },

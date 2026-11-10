@@ -44,18 +44,18 @@ export function toast(message, bad = false) {
   toastTimer = setTimeout(() => node.classList.add("hidden"), 3600);
 }
 
-export async function copyText(text, okMessage = t("已复制", "toast.copied")) {
+export async function copyText(text, okMessage = t("Đã sao chép", "toast.copied")) {
   try {
     await navigator.clipboard.writeText(text);
     toast(okMessage);
     return true;
   } catch {
-    toast(t("浏览器不允许剪贴板访问，请手动选中复制", "toast.copyDenied"), true);
+    toast(t("Trình duyệt không cho phép sao chép, hãy chọn và sao chép thủ công", "toast.copyDenied"), true);
     return false;
   }
 }
 
-export function emptyRow(host, columns, message = t("暂无数据", "common.empty")) {
+export function emptyRow(host, columns, message = t("Chưa có dữ liệu", "common.empty")) {
   host.append(el("tr", {}, [el("td", { class: "empty", colspan: columns, text: message })]));
 }
 
@@ -128,7 +128,7 @@ export function openDialog({ title, body = null, size = "", actions = [], onClos
 export function confirmDialog({
   title,
   message = "",
-  confirmLabel = t("确定", "common.confirm"),
+  confirmLabel = t("Xác nhận", "common.confirm"),
   danger = false,
 }) {
   return new Promise((resolve) => {
@@ -145,7 +145,7 @@ export function confirmDialog({
       body: message ? el("p", { class: "dialog-text", text: message }) : null,
       onClose: () => finish(false),
       actions: [
-        { label: t("取消", "common.cancel"), onClick: (close) => finish(false, close) },
+        { label: t("Huỷ", "common.cancel"), onClick: (close) => finish(false, close) },
         {
           label: confirmLabel,
           kind: danger ? "btn-danger" : "btn-primary",
@@ -161,7 +161,7 @@ export function promptDialog({
   label,
   value = "",
   placeholder = "",
-  confirmLabel = t("确定", "common.confirm"),
+  confirmLabel = t("Xác nhận", "common.confirm"),
 }) {
   return new Promise((resolve) => {
     let settled = false;
@@ -184,7 +184,7 @@ export function promptDialog({
       body: el("div", { class: "field" }, [el("label", { text: label }), input]),
       onClose: () => finish(null),
       actions: [
-        { label: t("取消", "common.cancel"), onClick: (close) => finish(null, close) },
+        { label: t("Huỷ", "common.cancel"), onClick: (close) => finish(null, close) },
         { label: confirmLabel, kind: "btn-primary", onClick: (close) => finish(input.value, close) },
       ],
     });

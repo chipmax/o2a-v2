@@ -20,9 +20,9 @@ let mode = MODES.includes(stored()) ? stored() : "auto";
 const isDark = () => mode === "dark" || (mode === "auto" && media.matches);
 
 function label() {
-  if (mode === "light") return t("浅色", "theme.light");
-  if (mode === "dark") return t("深色", "theme.dark");
-  return t("跟随系统", "theme.auto");
+  if (mode === "light") return t("Sáng", "theme.light");
+  if (mode === "dark") return t("Tối", "theme.dark");
+  return t("Theo hệ thống", "theme.auto");
 }
 
 function apply() {
@@ -30,7 +30,7 @@ function apply() {
   const button = document.getElementById("theme-toggle");
   if (button) {
     button.textContent = label();
-    button.title = t("切换主题", "theme.toggle");
+    button.title = t("Đổi chủ đề", "theme.toggle");
   }
 }
 

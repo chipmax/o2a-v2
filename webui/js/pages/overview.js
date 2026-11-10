@@ -1,6 +1,7 @@
-// Page: 概览 — readiness checklist, metrics, resources and token usage.
+// Page: overview — readiness checklist, metrics, resources and token usage.
 import * as store from "../store.js";
 import { $, bindTabs, el, emptyRow, formatNumber, timeOnly } from "../ui.js";
+import egress from "./egress.js";
 import { t, onChange } from "../i18n.js";
 
 function renderChecklist() {
@@ -11,30 +12,30 @@ function renderChecklist() {
   const models = resources.models || {};
   const modelDescription = models.stale
     ? t(
-        `目录来自${models.cache_source || "磁盘"}快取，等待后台刷新。`,
+        "Danh mục lấy từ cache {0}, đang chờ nền làm mới.",
         "guide.models.cached",
-        models.cache_source || "磁盘",
+        models.cache_source || "đĩa",
       )
-    : t("上游目录已完成首次刷新且有可暴露模型。", "guide.models.ready");
+    : t("Danh mục upstream đã qua lần làm mới đầu tiên và có mô hình để phục vụ.", "guide.models.ready");
   const checks = [
     [
-      t("配置本地 Key", "guide.step.serverkey"),
-      t("客户端使用 Server Key 访问 Gateway。", "guide.step.serverkey.desc"),
+      t("Cấu hình Key cục bộ", "guide.step.serverkey"),
+      t("Client dùng Server Key để truy cập Gateway.", "guide.step.serverkey.desc"),
       (config.server_keys || []).length > 0,
     ],
     [
-      t("选择上游通道", "guide.step.upstream"),
-      t("至少有 Zen / Go Key，或启用匿名通道。", "guide.step.upstream.desc"),
+      t("Chọn kênh upstream", "guide.step.upstream"),
+      t("Có ít nhất một Zen / Go Key, hoặc đã bật kênh ẩn danh.", "guide.step.upstream.desc"),
       (config.zen_keys || []).length + (config.go_keys || []).length > 0 || config.anonymous,
     ],
     [
-      t("检查 Proxy", "guide.step.proxy"),
-      t("至少一个代理节点健康，或 WARP 正在承载免费流量。", "guide.step.proxy.desc"),
+      t("Kiểm tra Proxy", "guide.step.proxy"),
+      t("Có ít nhất một nút proxy còn khỏe, hoặc WARP đang tải lưu lượng model miễn phí.", "guide.step.proxy.desc"),
       (resources.warp?.active || 0) > 0 ||
         (resources.proxies || []).some((proxy) => proxy.healthy),
     ],
     [
-      t("等待模型目录", "guide.step.models"),
+      t("Chờ danh mục mô hình", "guide.step.models"),
       modelDescription,
       models.exposed > 0 && !!models.updated_at,
     ],
@@ -52,7 +53,7 @@ function renderChecklist() {
         el("p", { text: description }),
         el("div", {
           class: `step-state ${done ? "ok" : "warn"}`,
-          text: done ? t("✓ 已就绪", "guide.done") : t("○ 待处理", "guide.todo"),
+          text: done ? t("✓ Đã sẵn sàng", "guide.done") : t("○ Cần xử lý", "guide.todo"),
         }),
       ]),
     );
@@ -68,11 +69,11 @@ function renderResources(resources) {
         el("td", { text: proxy.address }),
         el("td", {
           class: `status ${proxy.healthy ? "ok" : "bad"}`,
-          text: proxy.healthy ? t("正常", "state.healthy") : t("不可用", "state.unavailable"),
+          text: proxy.healthy ? t("Khỏe", "state.healthy") : t("Không dùng được", "state.unavailable"),
         }),
         el("td", {
           text: `Z ${proxy.zen_keys} · G ${proxy.go_keys} · A ${
-            proxy.anonymous ? t("开", "common.on") : t("关", "common.off")
+            proxy.anonymous ? t("Bật", "common.on") : t("Tắt", "common.off")
           }`,
         }),
       ]),
@@ -82,15 +83,33 @@ function renderResources(resources) {
   if (warp?.enabled) {
     // WARP is not a proxy: show it beside them so the egress that carries
     // free-model traffic is visible without pretending it is a bound node.
+    // The egress list only contains live tunnels; cooling exits still carry
+    // their /64 in exits, so use those keys as a fallback and never leave the
+    // IP column blank while WARP has any known route.
+    const addresses = [
+      ...new Set([
+        ...(warp.egress || []),
+        ...(warp.exits || []).map((exit) => exit.egress || exit.egress_key).filter(Boolean),
+      ]),
+    ];
+    const first = addresses[0] || "—";
+    const more = addresses.length > 1 ? ` (+${addresses.length - 1})` : "";
+    const state = warp.active > 0 ? "ok" : addresses.length ? "warn" : "bad";
     proxies.append(
       el("tr", {}, [
         el("td", { text: `WARP · ${warp.stack}` }),
         el("td", {
-          class: `status ${warp.active > 0 ? "ok" : "bad"}`,
-          text: warp.active > 0 ? t("正常", "state.healthy") : t("不可用", "state.unavailable"),
+          class: `status ${state}`,
+          text:
+            warp.active > 0
+              ? t("Khỏe", "state.healthy")
+              : addresses.length
+                ? t("Đang nghỉ / chờ", "state.cooling")
+                : t("Không dùng được", "state.unavailable"),
         }),
         el("td", {
-          text: `${warp.active}/${warp.size} · ${(warp.egress || []).join(", ") || "-"}`,
+          title: addresses.join("\n"),
+          text: `${warp.active}/${warp.size} · ${first}${more}`,
         }),
       ]),
     );
@@ -103,7 +122,7 @@ function renderResources(resources) {
       el("tr", {}, [
         el("td", { text: "anonymous" }),
         el("td", { text: "zen" }),
-        el("td", { class: "status ok", text: t("已启用", "state.enabled") }),
+        el("td", { class: "status ok", text: t("Đang bật", "state.enabled") }),
       ]),
     );
   }
@@ -114,7 +133,7 @@ function renderResources(resources) {
         el("td", { text: key.tier }),
         el("td", {
           class: `status ${key.cooldown_until ? "warn" : "ok"}`,
-          text: key.cooldown_until ? t("冷却中", "state.cooling") : t("可用", "state.available"),
+          text: key.cooldown_until ? t("Đang nghỉ (cooldown)", "state.cooling") : t("Sẵn sàng", "state.available"),
         }),
       ]),
     );
@@ -126,9 +145,9 @@ function renderBreakdowns(metrics) {
   const host = $("#breakdowns");
   host.replaceChildren();
   [
-    [t("端点", "breakdown.endpoint"), metrics.endpoints],
-    [t("状态码", "breakdown.status"), metrics.statuses],
-    [t("模型", "breakdown.model"), metrics.models],
+    [t("Endpoint", "breakdown.endpoint"), metrics.endpoints],
+    [t("Mã trạng thái", "breakdown.status"), metrics.statuses],
+    [t("Mô hình", "breakdown.model"), metrics.models],
     ["Tier", metrics.tiers],
   ].forEach(([title, data]) => {
     const body = el("tbody");
@@ -138,7 +157,7 @@ function renderBreakdowns(metrics) {
       .forEach(([key, value]) => {
         body.append(el("tr", {}, [el("td", { text: key }), el("td", { class: "num", text: value })]));
       });
-    if (!body.children.length) emptyRow(body, 2, t("暂无请求", "breakdown.empty"));
+    if (!body.children.length) emptyRow(body, 2, t("Chưa có request", "breakdown.empty"));
     host.append(
       el("div", { class: "breakdown" }, [
         el("h3", { text: title }),
@@ -171,12 +190,12 @@ function renderTrend(metrics) {
   });
   $("#usage-trend-meta").textContent = series.length
     ? t(
-        `峰值 ${formatNumber(maximum)} tokens / 分钟 · 近 ${series.length} 分钟`,
+        "Đỉnh {0} token / phút · {1} phút gần nhất",
         "usage.trend.peak",
         formatNumber(maximum),
         series.length,
       )
-    : t("尚无趋势数据", "usage.trend.empty");
+    : t("Chưa có dữ liệu xu hướng", "usage.trend.empty");
 }
 
 function renderUsageModels(usage) {
@@ -195,7 +214,7 @@ function renderUsageModels(usage) {
         ]),
       );
     });
-  if (!host.children.length) emptyRow(host, 4, t("尚无 Token 用量", "usage.empty.models"));
+  if (!host.children.length) emptyRow(host, 4, t("Chưa có mức dùng token", "usage.empty.models"));
 }
 
 function renderTiers(usage) {
@@ -216,7 +235,7 @@ function renderTiers(usage) {
       ]),
     );
   });
-  if (!entries.length) host.append(el("div", { class: "empty", text: t("尚无 Tier 用量", "usage.empty.tiers") }));
+  if (!entries.length) host.append(el("div", { class: "empty", text: t("Chưa có mức dùng theo Tier", "usage.empty.tiers") }));
 }
 
 function renderUsage(monitor) {
@@ -239,15 +258,28 @@ function render() {
   renderUsage(monitor);
 }
 
+let activeTab = "summary";
+
 export default {
   id: "overview",
-  title: "概览",
-  sub: "运行指标、Token 用量与资源状态。",
+  title: "Tổng quan",
+  sub: "Chỉ số vận hành, token, tài nguyên và ngân sách egress.",
   init() {
-    bindTabs($("#page-overview"));
+    bindTabs($("#page-overview"), (id) => {
+      activeTab = id;
+      if (id === "egress") egress.show();
+      else egress.hide();
+    });
     store.on("monitor", render);
     store.on("config", renderChecklist);
     onChange(render);
   },
-  show: render,
+  show() {
+    render();
+    if (activeTab === "egress") egress.show();
+    else egress.hide();
+  },
+  hide() {
+    egress.hide();
+  },
 };

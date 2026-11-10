@@ -26,19 +26,41 @@ export async function api(path, options = {}) {
   if (options.body) headers["Content-Type"] = "application/json";
   if (csrf && !["GET", "HEAD"].includes((options.method || "GET").toUpperCase()))
     headers["X-CSRF-Token"] = csrf;
-  const response = await fetch(path, { ...options, headers });
-  if (response.status === 204) return null;
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    // The login endpoint answers 401 for bad credentials: surface its message
-    // instead of treating the attempt as an expired session.
-    if (response.status === 401 && path !== "/api/auth/login") {
-      if (onUnauthorized) onUnauthorized();
-      throw new Error(t("登录已失效", "error.session"));
+  // A stalled tunnel or upstream must not leave a page permanently in its
+  // loading state. Callers that legitimately wait longer can raise timeoutMs.
+  const { timeoutMs = 30000, signal, ...fetchOptions } = options;
+  const controller = signal ? null : new AbortController();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller?.abort();
+      reject(new Error(t("Yêu cầu quá thời gian chờ", "error.timeout")));
+    }, timeoutMs);
+  });
+  const request = (async () => {
+    const response = await fetch(path, {
+      ...fetchOptions,
+      headers,
+      signal: signal || controller.signal,
+    });
+    if (response.status === 204) return null;
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      // The login endpoint answers 401 for bad credentials: surface its message
+      // instead of treating the attempt as an expired session.
+      if (response.status === 401 && path !== "/api/auth/login") {
+        if (onUnauthorized) onUnauthorized();
+        throw new Error(t("Phiên đăng nhập đã hết hạn", "error.session"));
+      }
+      throw new Error(data.error?.message || `HTTP ${response.status}`);
     }
-    throw new Error(data.error?.message || `HTTP ${response.status}`);
+    return data;
+  })();
+  try {
+    return await Promise.race([request, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
-  return data;
 }
 
 // Client-facing API base derived from the configured listen address.

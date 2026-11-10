@@ -1,9 +1,10 @@
-// Page: 诊断 — request testing, routing, ledgers and the live event stream.
+// Page: diagnostics — request testing, routing, ledgers and the live event stream.
 import { api } from "../api.js";
 import { loadDebugModels } from "../data.js";
 import * as logstream from "../logstream.js";
 import * as store from "../store.js";
 import { t, dateLocale, onChange } from "../i18n.js";
+import access from "./access.js";
 import {
   $,
   bindTabs,
@@ -17,19 +18,19 @@ import {
 } from "../ui.js";
 
 const keyTestLabels = () => ({
-  usable: t("Key 可用", "play.key.usable"),
-  rejected: t("Key 被拒绝", "play.key.rejected"),
-  rate_limited: t("Key 已被接受但受到限流", "play.key.rateLimited"),
-  upstream_error: t("上游异常，无法判定 Key", "play.key.upstreamError"),
-  transport_error: t("网络或代理异常，无法判定 Key", "play.key.transportError"),
-  unavailable: t("Key 或运行时不可用", "play.key.unavailable"),
-  request_error: t("请求未成功", "play.key.requestError"),
+  usable: t("Key dùng được", "play.key.usable"),
+  rejected: t("Key bị từ chối", "play.key.rejected"),
+  rate_limited: t("Key được chấp nhận nhưng bị giới hạn tần suất", "play.key.rateLimited"),
+  upstream_error: t("Upstream bất thường, không kết luận được về Key", "play.key.upstreamError"),
+  transport_error: t("Mạng hoặc proxy bất thường, không kết luận được về Key", "play.key.transportError"),
+  unavailable: t("Key hoặc môi trường chạy không dùng được", "play.key.unavailable"),
+  request_error: t("Request không thành công", "play.key.requestError"),
 });
 
 function playgroundTemplate() {
   const protocol = $("#play-protocol").value;
   const model = $("#play-model").value || "YOUR_MODEL";
-  const prompt = t("用一句话说明这个模型的能力。", "playground.samplePrompt");
+  const prompt = t("Giải thích năng lực của mô hình này trong một câu.", "playground.samplePrompt");
   if (protocol === "responses") return { model, input: prompt };
   if (protocol === "anthropic")
     return {
@@ -48,7 +49,7 @@ function renderKeys() {
   const select = $("#play-key");
   const selected = select.value;
   select.replaceChildren();
-  select.append(el("option", { value: "auto", text: t("自动路由（匿名 / Tier 回退 / Key 轮询）", "playground.key.auto") }));
+  select.append(el("option", { value: "auto", text: t("Định tuyến tự động (ẩn danh / dự phòng Tier / luân phiên Key)", "playground.key.auto") }));
   const keys = store.get("debug")?.keys || {};
   for (const [tier, label] of [
     ["zen", "Zen Keys"],
@@ -60,7 +61,7 @@ function renderKeys() {
     for (const item of items) {
       const cooling = item.cooldown_until
         ? t(
-            ` · 冷却至 ${new Date(item.cooldown_until).toLocaleTimeString(dateLocale(), { hour12: false })}`,
+            " · nghỉ đến {0}",
             "playground.key.cooling",
             new Date(item.cooldown_until).toLocaleTimeString(dateLocale(), { hour12: false }),
           )
@@ -83,7 +84,7 @@ function renderRelays() {
   if (!select) return;
   const selected = select.value;
   select.replaceChildren();
-  select.append(el("option", { value: "auto", text: t("任意 Relay（正常路由）", "playground.relay.auto") }));
+  select.append(el("option", { value: "auto", text: t("Mọi relay (định tuyến thường)", "playground.relay.auto") }));
   (store.get("debug")?.relays || []).forEach((name, index) => {
     select.append(el("option", { value: String(index), text: `${index} · ${name}` }));
   });
@@ -108,38 +109,38 @@ function showResult(result) {
   const keyTest = result.key_test ? keyTestLabels()[result.key_test] || result.key_test : "";
   const state = $("#play-state");
   state.textContent = result.ok
-    ? t(`请求成功 · HTTP ${result.http_status}`, "play.state.ok", result.http_status)
-    : t(`请求失败 · HTTP ${result.http_status}`, "play.state.failed", result.http_status);
+    ? t("Request thành công · HTTP {0}", "play.state.ok", result.http_status)
+    : t("Request thất bại · HTTP {0}", "play.state.failed", result.http_status);
   state.className = `section-caption ${result.ok ? "ok" : "bad"}`;
   const route = result.route || {};
   const eligibility = route.anonymous_eligibility || {};
   const selected = result.selected_key;
   const routeLabel = route.tier
     ? `${route.tier} / ${route.anonymous ? "anonymous" : route.key_id || "key"}`
-    : t("未路由", "play.route.none");
+    : t("Chưa định tuyến", "play.route.none");
   renderFacts($("#play-facts"), [
-    [t("HTTP 状态", "play.httpStatus"), result.http_status, result.ok ? "ok" : "bad"],
-    [t("耗时", "common.duration"), `${result.duration_ms} ms`],
+    [t("HTTP", "play.httpStatus"), result.http_status, result.ok ? "ok" : "bad"],
+    [t("Thời gian", "common.duration"), `${result.duration_ms} ms`],
     ["Request ID", result.request_id || "—"],
     [
-      t("测试模式", "play.mode"),
+      t("Chế độ thử", "play.mode"),
       selected
-        ? t(`指定 ${selected.tier.toUpperCase()} Key`, "play.mode.selected", selected.tier.toUpperCase())
-        : t("自动路由", "play.mode.auto"),
+        ? t("Chỉ định Key {0}", "play.mode.selected", selected.tier.toUpperCase())
+        : t("Định tuyến tự động", "play.mode.auto"),
     ],
-    [t("测试 Key", "play.testedKey"), selected ? `${selected.display} · ${selected.id}` : "—"],
+    [t("Key được thử", "play.testedKey"), selected ? `${selected.display} · ${selected.id}` : "—"],
     [
-      t("Key 判断", "play.keyVerdict"),
-      keyTest || t("自动路由未单独判定", "play.keyVerdict.none"),
+      t("Kết luận về Key", "play.keyVerdict"),
+      keyTest || t("Định tuyến tự động không có kết luận riêng", "play.keyVerdict.none"),
       result.key_test === "usable" ? "ok" : result.key_test ? "bad" : "",
     ],
-    [t("测试 Relay", "play.testedRelay"), result.relay_test || "—"],
-    [t("实际路由", "play.actualRoute"), routeLabel],
-    [t("原生协议", "play.nativeProtocol"), route.native_protocol || "—"],
+    [t("Relay được thử", "play.testedRelay"), result.relay_test || "—"],
+    [t("Định tuyến thực tế", "play.actualRoute"), routeLabel],
+    [t("Giao thức gốc", "play.nativeProtocol"), route.native_protocol || "—"],
     [
-      t("匿名判断", "play.anonymousVerdict"),
+      t("Kết luận ẩn danh", "play.anonymousVerdict"),
       t(
-        `${eligibility.allowed ? "允许" : "拒绝"} · ${eligibility.source || "—"}`,
+        `${eligibility.allowed ? "Cho phép" : "Từ chối"} · ${eligibility.source || "—"}`,
         eligibility.allowed ? "play.eligibility.allowed" : "play.eligibility.denied",
         eligibility.source || "—",
       ),
@@ -155,7 +156,7 @@ async function run(event) {
   try {
     request = JSON.parse($("#play-request").value);
   } catch (error) {
-    toast(t(`请求 JSON 无效：${error.message}`, "toast.play.invalidJson", error.message), true);
+    toast(t("JSON của request không hợp lệ: {0}", "toast.play.invalidJson", error.message), true);
     return;
   }
   const relayValue = $("#play-relay")?.value || "auto";
@@ -169,8 +170,8 @@ async function run(event) {
   $("#play-run").disabled = true;
   $("#play-state").textContent =
     key.mode === "selected"
-      ? t("指定 Key 测试进行中…", "play.state.testingKey")
-      : t("Gateway 请求进行中…", "play.state.running");
+      ? t("Đang thử với Key được chỉ định…", "play.state.testingKey")
+      : t("Đang gửi request qua Gateway…", "play.state.running");
   try {
     store.set(
       "lastPlayground",
@@ -181,7 +182,7 @@ async function run(event) {
     );
   } catch (error) {
     toast(error.message, true);
-    $("#play-state").textContent = t("诊断入口请求失败", "play.state.failedToCall");
+    $("#play-state").textContent = t("Không gọi được cổng chẩn đoán", "play.state.failedToCall");
   } finally {
     $("#play-run").disabled = false;
   }
@@ -192,7 +193,7 @@ function paginate(name, items) {
   const totalPages = Math.max(1, Math.ceil(items.length / state.size));
   state.page = Math.min(Math.max(1, state.page), totalPages);
   $(`#${name}-pager-info`).textContent = t(
-    `第 ${state.page} / ${totalPages} 页 · 共 ${items.length} 条`,
+    "Trang {0} / {1} · {2} mục",
     "diag.pager.info",
     state.page,
     totalPages,
@@ -209,8 +210,8 @@ function renderRequests() {
   const requests = paginate("requests", (store.get("monitor")?.upstream?.requests || []).slice().reverse());
   requests.forEach((request) => {
     const terminal = {
-      stream_error: t("流式响应失败", "diag.streamError"),
-      client_canceled: t("客户端已取消", "diag.clientCanceled"),
+      stream_error: t("Streaming thất bại", "diag.streamError"),
+      client_canceled: t("Client đã huỷ", "diag.clientCanceled"),
     };
     const result = terminal[request.outcome]
       ? `HTTP ${request.status} · ${terminal[request.outcome]}`
@@ -229,7 +230,7 @@ function renderRequests() {
       ]),
     );
   });
-  if (!host.children.length) emptyRow(host, 9, t("尚无请求路由", "diag.noRequests"));
+  if (!host.children.length) emptyRow(host, 9, t("Chưa có request nào được định tuyến", "diag.noRequests"));
 }
 
 function renderAttempts() {
@@ -250,7 +251,7 @@ function renderAttempts() {
       ]),
     );
   });
-  if (!host.children.length) emptyRow(host, 8, t("尚无上游尝试", "diag.noAttempts"));
+  if (!host.children.length) emptyRow(host, 8, t("Chưa có lần thử upstream", "diag.noAttempts"));
 }
 
 function renderMetadata() {
@@ -260,20 +261,20 @@ function renderMetadata() {
   const stamp = (value) => new Date(value).toLocaleString(dateLocale(), { hour12: false });
   renderFacts($("#metadata-facts"), [
     [
-      t("就绪", "diag.ready"),
-      metadata.ready ? t("是", "common.yes") : t("否", "common.no"),
+      t("Sẵn sàng", "diag.ready"),
+      metadata.ready ? t("Có", "common.yes") : t("Không", "common.no"),
       metadata.ready ? "ok" : "warn",
     ],
-    [t("模型数", "diag.modelCount"), formatNumber(metadata.models)],
+    [t("Số mô hình", "diag.modelCount"), formatNumber(metadata.models)],
     [
-      t("更新时间", "diag.updatedAt"),
-      metadata.updated_at ? stamp(metadata.updated_at) : t("尚未更新", "diag.notUpdated"),
+      t("Thời điểm cập nhật", "diag.updatedAt"),
+      metadata.updated_at ? stamp(metadata.updated_at) : t("Chưa cập nhật", "diag.notUpdated"),
     ],
-    [t("是否过期", "diag.stale"), metadata.stale ? t("是", "common.yes") : t("否", "common.no"), metadata.stale ? "warn" : "ok"],
-    [t("下次刷新", "diag.nextRefresh"), metadata.next_refresh ? stamp(metadata.next_refresh) : "—"],
+    [t("Đã cũ", "diag.stale"), metadata.stale ? t("Có", "common.yes") : t("Không", "common.no"), metadata.stale ? "warn" : "ok"],
+    [t("Lần làm mới kế tiếp", "diag.nextRefresh"), metadata.next_refresh ? stamp(metadata.next_refresh) : "—"],
     [
-      t("最近错误", "diag.lastError"),
-      metadata.last_error || t("无", "common.none"),
+      t("Lỗi gần nhất", "diag.lastError"),
+      metadata.last_error || t("Không có", "common.none"),
       metadata.last_error ? "bad" : "ok",
     ],
   ]);
@@ -300,7 +301,7 @@ function renderRouteModels() {
           }),
           el("td", {
             class: eligibility.allowed ? "ok" : "warn",
-            text: eligibility.allowed ? t("允许", "common.allowed") : t("拒绝", "common.denied"),
+            text: eligibility.allowed ? t("Cho phép", "common.allowed") : t("Từ chối", "common.denied"),
           }),
           el("td", { text: eligibility.source || "—" }),
           el("td", {
@@ -312,7 +313,7 @@ function renderRouteModels() {
         ]),
       );
     });
-  if (!host.children.length) emptyRow(host, 6, t("没有匹配模型", "diag.noMatch"));
+  if (!host.children.length) emptyRow(host, 6, t("Không có mô hình phù hợp", "diag.noMatch"));
 }
 
 const pagerState = {
@@ -334,8 +335,8 @@ function renderRoute() {
 
 export default {
   id: "diagnostics",
-  title: "诊断",
-  sub: "请求测试、路由资格与运行流水。",
+  title: "Chẩn đoán",
+  sub: "Thử request, kiểm tra định tuyến và nhật ký vận hành.",
   init() {
     bindTabs($("#page-diagnostics"), (id) => {
       activeTab = id;
@@ -346,6 +347,7 @@ export default {
       }
       if (id === "ledger") renderLedger();
       if (id === "route") renderRoute();
+      if (id === "access") access.show();
     });
     logstream.bind();
     $("#play-protocol").addEventListener("change", resetTemplate);
@@ -361,7 +363,7 @@ export default {
     $("#play-reset").addEventListener("click", resetTemplate);
     $("#play-form").addEventListener("submit", run);
     $("#play-copy").addEventListener("click", () =>
-      copyText($("#play-output").textContent, t("原始响应已复制", "toast.play.copied")),
+      copyText($("#play-output").textContent, t("Đã sao chép phản hồi gốc", "toast.play.copied")),
     );
     $("#diagnostic-model-search").addEventListener("input", renderRouteModels);
     for (const name of ["requests", "attempts"]) {
@@ -406,6 +408,7 @@ export default {
     renderLedger();
     renderRoute();
     if (activeTab === "logs") logstream.setVisible(true);
+    if (activeTab === "access") access.show();
   },
   hide() {
     logstream.setVisible(false);

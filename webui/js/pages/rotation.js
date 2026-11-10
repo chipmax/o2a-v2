@@ -1,19 +1,19 @@
-// Page: 模型轮转 — sota/sweet alias groups, ordering, manual switch and attempts.
+// Page: model rotation — sota/sweet alias groups, ordering, manual switch and attempts.
 import { api, hasSession } from "../api.js";
 import { t, onChange } from "../i18n.js";
 import { $, el, emptyRow, localTime, toast } from "../ui.js";
 
 const reasons = () => ({
-  success: t("成功", "rotation.reason.success"),
-  client_canceled: t("调用方取消", "rotation.reason.clientCanceled"),
-  quota_or_rate_limit: t("额度不足 / 限流", "rotation.reason.quota"),
-  transport_error: t("连接错误", "rotation.reason.transport"),
-  first_output_timeout: t("首个输出超时", "rotation.reason.firstOutputTimeout"),
-  stream_error: t("输出中断", "rotation.reason.streamError"),
-  response_read_error: t("读取响应失败", "rotation.reason.readError"),
-  response_conversion_error: t("响应解析或转换失败", "rotation.reason.conversionError"),
-  request_conversion_error: t("请求转换失败", "rotation.reason.requestConversion"),
-  upstream_error: t("上游错误", "rotation.reason.upstreamError"),
+  success: t("Thành công", "rotation.reason.success"),
+  client_canceled: t("Bên gọi huỷ", "rotation.reason.clientCanceled"),
+  quota_or_rate_limit: t("Hết hạn mức / bị giới hạn tần suất", "rotation.reason.quota"),
+  transport_error: t("Lỗi kết nối", "rotation.reason.transport"),
+  first_output_timeout: t("Timeout output đầu tiên", "rotation.reason.firstOutputTimeout"),
+  stream_error: t("Output bị gián đoạn", "rotation.reason.streamError"),
+  response_read_error: t("Đọc phản hồi thất bại", "rotation.reason.readError"),
+  response_conversion_error: t("Phân tích hoặc chuyển đổi phản hồi thất bại", "rotation.reason.conversionError"),
+  request_conversion_error: t("Chuyển đổi request thất bại", "rotation.reason.requestConversion"),
+  upstream_error: t("Lỗi upstream", "rotation.reason.upstreamError"),
 });
 
 let data = null;
@@ -62,10 +62,10 @@ function renderGroup(group) {
         "tr",
         {},
         [
-          t("顺序", "rotation.col.order"),
-          t("模型", "common.model"),
-          t("状态 / 恢复时间", "rotation.col.state"),
-          t("操作", "common.action"),
+          t("Thứ tự", "rotation.col.order"),
+          t("Mô hình", "common.model"),
+          t("Trạng thái / thời điểm hồi phục", "rotation.col.state"),
+          t("Thao tác", "common.action"),
         ].map((text) => el("th", { text })),
       ),
     ]),
@@ -82,18 +82,18 @@ function renderGroup(group) {
     row.append(
       el("td", {
         text: !group.available[model]
-          ? t("已下架 / 暂不可用", "rotation.unavailable")
+          ? t("Đã gỡ khỏi danh mục / tạm không dùng được", "rotation.unavailable")
           : paused
-            ? t(`暂停至 ${localTime(until)}`, "rotation.pausedUntil", localTime(until))
+            ? t("Tạm dừng đến {0}", "rotation.pausedUntil", localTime(until))
             : model === group.current
-              ? t("当前使用", "rotation.inUse")
-              : t("可用", "state.available"),
+              ? t("Đang dùng", "rotation.inUse")
+              : t("Sẵn sàng", "state.available"),
       }),
     );
     const actions = el("div", { class: "rotation-actions" });
     for (const [text, delta] of [
-      [t("上移", "rotation.moveUp"), -1],
-      [t("下移", "rotation.moveDown"), 1],
+      [t("Lên", "rotation.moveUp"), -1],
+      [t("Xuống", "rotation.moveDown"), 1],
     ]) {
       const button = el("button", {
         type: "button",
@@ -116,8 +116,8 @@ function renderGroup(group) {
     const select = el("button", {
       type: "button",
       class: "btn btn-sm btn-ghost",
-      text: t("设为当前", "rotation.setCurrent"),
-      "aria-label": t(`使用 ${model}`, "rotation.useModel", model),
+      text: t("Đặt làm hiện tại", "rotation.setCurrent"),
+      "aria-label": t("Dùng {0}", "rotation.useModel", model),
       disabled: !group.available[model],
     });
     select.addEventListener("click", async () => {
@@ -136,7 +136,7 @@ function renderGroup(group) {
         }
         data.persistence_error = result.persistence_error;
         render();
-        toast(t("当前模型已切换", "toast.rotation.switched"));
+        toast(t("Đã chuyển mô hình hiện tại", "toast.rotation.switched"));
       } catch (error) {
         select.disabled = false;
         toast(error.message, true);
@@ -146,9 +146,9 @@ function renderGroup(group) {
     row.append(el("td", {}, [actions]));
     body.append(row);
   });
-  if (!group.order.length) emptyRow(body, 4, t("等待 Go 模型目录", "rotation.waitingCatalog"));
+  if (!group.order.length) emptyRow(body, 4, t("Đang chờ danh mục mô hình Go", "rotation.waitingCatalog"));
   const recent = el("div", { class: "rotation-switches" }, [
-    el("h3", { text: t("最近切换", "rotation.recentSwitches") }),
+    el("h3", { text: t("Chuyển đổi gần đây", "rotation.recentSwitches") }),
   ]);
   for (const item of (group.switches || []).slice(-5).reverse()) {
     recent.append(
@@ -160,19 +160,19 @@ function renderGroup(group) {
     );
   }
   if (!group.switches?.length)
-    recent.append(el("p", { text: t("尚无切换记录", "rotation.noSwitches") }));
+    recent.append(el("p", { text: t("Chưa có bản ghi chuyển đổi", "rotation.noSwitches") }));
   return el("section", { class: "section rotation-group" }, [
-    el("h2", { class: "section-title", text: group.id === "sota" ? "SOTA" : t("甜点", "rotation.sweet") }),
+    el("h2", { class: "section-title", text: group.id === "sota" ? "SOTA" : t("sweet", "rotation.sweet") }),
     el("div", { class: "field" }, [
-      el("label", { for: `rotation-alias-${group.id}`, text: t("调用别名", "rotation.aliasLabel") }),
+      el("label", { for: `rotation-alias-${group.id}`, text: t("Bí danh gọi", "rotation.aliasLabel") }),
       aliasInput,
     ]),
     el("p", {
       class: "rotation-current",
       text: t(
-        `当前模型：${group.current || t("等待可用模型", "rotation.waitingModel")}`,
+        "Mô hình hiện tại: {0}",
         "rotation.current",
-        group.current || t("等待可用模型", "rotation.waitingModel"),
+        group.current || t("đang chờ mô hình khả dụng", "rotation.waitingModel"),
       ),
     }),
     el("div", { class: "table-wrap" }, [table]),
@@ -185,7 +185,7 @@ function render() {
   const reasonMap = reasons();
   $("#rotation-status").textContent =
     data.persistence_error ||
-    t("状态已更新 · 两组独立轮转，所有调用方共享当前位置。", "rotation.status");
+    t("Đã cập nhật trạng thái · hai nhóm luân chuyển độc lập, mọi bên gọi dùng chung vị trí hiện tại.", "rotation.status");
   $("#rotation-timeout").value = data.first_output_seconds;
   const host = $("#rotation-groups");
   host.replaceChildren();
@@ -205,7 +205,7 @@ function render() {
     );
   }
   if (!data.attempts?.length)
-    emptyRow(attempts, 6, t("调用分组别名后显示最近 100 次尝试", "rotation.attemptsEmpty"));
+    emptyRow(attempts, 6, t("Gọi bằng bí danh nhóm để xem 100 lần thử gần nhất", "rotation.attemptsEmpty"));
 }
 
 async function save(event) {
@@ -219,7 +219,7 @@ async function save(event) {
     data = normalize(await api("/api/rotation", { method: "PUT", body: JSON.stringify(body) }));
     dirty = false;
     render();
-    toast(t("模型轮转配置已保存并生效", "toast.rotation.saved"));
+    toast(t("Đã lưu cấu hình luân chuyển mô hình và có hiệu lực", "toast.rotation.saved"));
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -229,12 +229,12 @@ async function save(event) {
 
 export default {
   id: "rotation",
-  title: "模型轮转",
-  sub: "共享当前模型、故障切换与尝试记录。",
+  title: "Luân chuyển mô hình",
+  sub: "Mô hình hiện tại dùng chung, chuyển khi lỗi và lịch sử thử.",
   init() {
     $("#rotation-refresh").addEventListener("click", () => {
       if (dirty) {
-        toast(t("有未保存的修改，请先保存后刷新", "toast.rotation.dirty"), true);
+        toast(t("Có thay đổi chưa lưu, hãy lưu trước khi làm mới", "toast.rotation.dirty"), true);
         return;
       }
       load();

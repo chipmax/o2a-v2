@@ -1,23 +1,22 @@
 // Interface language handling for the management console.
 //
-// The console ships with Simplified Chinese as its original language. That copy
-// stays in index.html and the page modules and is used whenever the active
-// locale has no entry in DICTIONARY, so switching languages never rewrites the
-// originals.
+// Vietnamese is the authored language. The page modules call t(vietnamese, key)
+// and the English dictionary supplies the translation; a missing English entry
+// falls back to Vietnamese, never to another language.
 //
 // Usage from markup (static text is re-applied on every switch):
-//   <h2 data-i18n="config.title">…original…</h2>
+//   <h2 data-i18n="config.title">…Vietnamese…</h2>
 //   <input data-i18n-attr="placeholder:logs.search" />
 // Usage from a page module:
 //   import { t } from "../i18n.js";
-//   t("配置已保存", "toast.config.saved")
-//   t(`${n} 个`, "apikeys.count", n)
+//   t("Cấu hình đã lưu và có hiệu lực ngay", "toast.config.saved")
+//   t("{0} khóa", "apikeys.count", n)
 const STORAGE_KEY = "opencode2api.ui.lang";
 const DEFAULT_LOCALE = "vi";
-const FLAGS = { "zh-CN": "🇨🇳", en: "🇺🇸", vi: "🇻🇳", it: "🇮🇹" };
-const SUPPORTED = ["zh-CN", "en", "vi", "it"];
-const LABELS = { "zh-CN": "简体中文", en: "English", vi: "Tiếng Việt", it: "Italiano" };
-const DATE_LOCALES = { "zh-CN": "zh-CN", en: "en-US", vi: "vi-VN", it: "it-IT" };
+const FLAGS = { en: "🇺🇸", vi: "🇻🇳" };
+const SUPPORTED = ["vi", "en"];
+const LABELS = { en: "English", vi: "Tiếng Việt" };
+const DATE_LOCALES = { en: "en-US", vi: "vi-VN" };
 const listeners = [];
 // Snapshot of the authored copy, so switching back restores it untouched.
 const originals = new WeakMap();
@@ -40,40 +39,47 @@ const DICTIONARY = {
 
       "sidebar.kicker": "Operations console",
       "sidebar.title": "Operations Handbook",
-      "nav.overview": "Operations desk",
+      "nav.overview": "Overview",
       "nav.guide": "First run",
       "nav.access": "Integration handbook",
       "nav.usage": "Token usage",
       "nav.playground": "Playground",
       "nav.diagnostics": "Routing diagnostics",
-      "nav.config": "Configuration center",
+      "nav.config": "Settings",
       "nav.logs": "Event log",
       "nav.account": "Account security",
-      "nav.model-quotas": "Models and quotas",
+      "nav.model-quotas": "Models & Keys",
       "nav.api-keys": "API Key management",
       "nav.rotation": "Model rotation",
-  "nav.egress": "Egress budget",
+      "nav.egress": "Egress & WARP",
       "nav.availability": "Free model availability",
       "nav.group.runtime": "Runtime",
       "nav.group.integration": "Integration",
       "nav.group.models": "Models",
       "nav.group.system": "System",
+      "quick.apiKeys": "Manage API keys",
+      "quick.diagnostics": "Diagnostics",
+      "quick.egress": "Egress & WARP",
       "overview.tab.summary": "Summary",
       "overview.tab.usage": "Usage",
+      "overview.tab.egress": "Egress & Relay",
       "overview.checklist.title": "Readiness checks",
       "overview.checklist.caption": "State comes from the current configuration and live resources.",
       "diagnostics.tab.playground": "Request test",
       "diagnostics.tab.ledger": "Request ledger",
       "diagnostics.tab.logs": "Event stream",
       "diagnostics.tab.route": "Routing and eligibility",
+      "diagnostics.tab.access": "Integration guide",
       "quotas.tab.quota": "Plan quota",
       "quotas.tab.free": "Free models",
+      "quotas.tab.rotation": "Model rotation",
       "config.tab.service": "Service",
       "config.tab.keys": "Secrets and anonymous",
       "config.tab.proxies": "Proxies",
       "config.tab.upstream": "Upstream and models",
       "config.tab.reasoning": "Reasoning and performance",
       "config.tab.logging": "Logging",
+      "config.tab.account": "Account",
       "usage.hour": "Last 60 minutes",
 
       "topbar.refresh": "Refresh now",
@@ -107,11 +113,12 @@ const DICTIONARY = {
       "page.account.sub": "A successful update revokes every admin session.",
       "page.model-quotas.title": "Models and quotas",
       "page.model-quotas.sub": "Available models, remaining shared plan quota, and reset times.",
-  "page.egress.title": "Egress budget",
-  "page.egress.sub": "Each /64 is a separate quota bucket per model family; see which exits can still serve.",
+  "page.egress.title": "Egress & WARP",
+  "page.egress.sub": "Internal WARP, usque proxies, peers, and the per-/64 budget.",
   "egress.title": "Egress /64 budget",
   "egress.caption": "The free tier counts per /64 and per model family; the window resets at 00:00 UTC.",
   "egress.refresh": "Refresh",
+  "egress.check": "Check proxies",
   "egress.pending": "Reading the pool state.",
   "egress.col.egress": "Egress /64",
   "egress.col.family": "Model family",
@@ -130,6 +137,39 @@ const DICTIONARY = {
   "egress.anyFamily": "all families",
   "egress.summary": "Tracking {0} rows · {1} exits ready · {2} /64s cooling · reset {3}",
   "egress.failed": "Could not read the budget: {0}",
+  "egress.metrics.warp": "WARP active",
+  "egress.metrics.warp.note": "Ready / standby / cooling",
+  "egress.metrics.proxies": "Healthy proxies",
+  "egress.metrics.proxies.note": "Usable / configured",
+  "egress.metrics.peers": "Ready peers",
+  "egress.metrics.peers.note": "Not cooling / total peers",
+  "egress.metrics.quota": "Tracked /64 rows",
+  "egress.metrics.quota.note": "Per model family in the current window",
+  "egress.sources.title": "Egress sources and IPs",
+  "egress.sources.caption": "Every WARP exit, proxy and peer with state, current load and cooldown.",
+  "egress.sources.filter.all": "All sources",
+  "egress.sources.filter.issues": "Needs attention",
+  "egress.sources.col.source": "Source",
+  "egress.sources.col.address": "IP / endpoint",
+  "egress.sources.col.state": "State",
+  "egress.sources.col.load": "In flight",
+  "egress.sources.col.cooling": "Cooling",
+  "egress.sources.empty": "No egress sources yet.",
+  "egress.sources.warming": "Registering exits; IPs appear once the pool is ready.",
+  "egress.sources.meta": "{0} source(s) · {1} need attention",
+  "egress.sources.warp": "WARP",
+  "egress.sources.proxy": "Proxy",
+  "egress.sources.peer": "Peer",
+  "egress.sources.outer": "outer",
+  "egress.sources.egress": "egress",
+  "egress.sources.pool": "rotating pool",
+  "egress.sources.checked": "checked {0}",
+  "egress.sources.tier": "tier {0}",
+  "egress.state.standby": "Standby",
+  "egress.state.blocked": "Blocked",
+  "egress.state.checking": "Checking",
+  "egress.state.unavailable": "Unavailable",
+  "egress.state.peerCooling": "Cooling",
       "page.api-keys.title": "API Key management",
       "page.api-keys.sub": "A separate access key for each caller.",
 
@@ -367,6 +407,15 @@ const DICTIONARY = {
       "quotas.col.week": "Weekly remaining · shared",
       "quotas.col.month": "Monthly remaining · shared",
       "quotas.col.action": "Action",
+      "quotas.col.context": "Context",
+      "quotas.context.catalog": "catalog",
+      "quotas.context.config": "config override",
+      "quotas.context.learned": "learned from traffic",
+      "quotas.context.observed": "largest accepted {0}",
+      "quotas.context.rejected": "rejected at {0}",
+      "quotas.contextProbe": "Measure ceiling",
+      "quotas.contextProbing": "Measuring…",
+      "quotas.contextProbeDone": "Measured {0} in {1} requests: context {2} → {3}.",
 
       "rotation.title": "SOTA / sweet model rotation",
       "rotation.caption":
@@ -468,6 +517,7 @@ const DICTIONARY = {
       "page.section": "Section {0}",
 
       "error.session": "Your session has expired",
+      "error.timeout": "The request timed out",
 
       "state.healthy": "Healthy",
       "state.unavailable": "Unavailable",
@@ -555,6 +605,10 @@ const DICTIONARY = {
       "quotas.catalogStale": "The model catalog is not up to date, showing the cache · ",
       "quotas.catalogUpdated": "Catalog updated at: {0}",
       "quotas.history": " (history)",
+      "quotas.free": "Free",
+      "quotas.freeChannel": "Free · does not use Go quota",
+      "quotas.freeNotApplicable": "Not applicable — free model",
+      "quotas.freeOnly": "No Go Key configured — the list below shows the models currently served by the free lane.",
       "quotas.copyName": "Copy name",
       "quotas.catalogPending": "The model catalog is not ready yet; please refresh later.",
 
@@ -617,6 +671,7 @@ const DICTIONARY = {
       "config.revealPrompt": "Re-enter the admin password",
 
       "toast.refreshed": "Status refreshed",
+      "toast.proxiesChecked": "Checked {0} proxies",
       "toast.copied": "Copied",
       "toast.copyDenied": "The browser denied the copy; select the text and copy it manually",
       "toast.example.copied": "Example copied",
@@ -652,40 +707,47 @@ const DICTIONARY = {
 
       "sidebar.kicker": "Bảng điều khiển vận hành",
       "sidebar.title": "Sổ tay vận hành",
-      "nav.overview": "Bàn vận hành",
+      "nav.overview": "Tổng quan",
       "nav.guide": "Khởi động lần đầu",
       "nav.access": "Sổ tay tích hợp",
       "nav.usage": "Mức dùng token",
       "nav.playground": "Playground",
       "nav.diagnostics": "Chẩn đoán định tuyến",
-      "nav.config": "Trung tâm cấu hình",
+      "nav.config": "Cài đặt",
       "nav.logs": "Nhật ký sự kiện",
       "nav.account": "Bảo mật tài khoản",
-      "nav.model-quotas": "Mô hình và hạn mức",
+      "nav.model-quotas": "Mô hình & Key",
       "nav.api-keys": "Quản lý API Key",
       "nav.rotation": "Luân chuyển mô hình",
-  "nav.egress": "Ngân sách /64",
+      "nav.egress": "Egress & WARP",
       "nav.availability": "Mô hình miễn phí",
       "nav.group.runtime": "Vận hành",
       "nav.group.integration": "Tích hợp",
       "nav.group.models": "Mô hình",
       "nav.group.system": "Hệ thống",
+      "quick.apiKeys": "Quản lý API Key",
+      "quick.diagnostics": "Chẩn đoán",
+      "quick.egress": "Egress & WARP",
       "overview.tab.summary": "Tổng quan",
       "overview.tab.usage": "Mức dùng",
+      "overview.tab.egress": "Nguồn ra & IP",
       "overview.checklist.title": "Kiểm tra sẵn sàng",
       "overview.checklist.caption": "Trạng thái lấy từ cấu hình hiện tại và tài nguyên thời gian thực.",
       "diagnostics.tab.playground": "Thử request",
       "diagnostics.tab.ledger": "Luồng request",
       "diagnostics.tab.logs": "Luồng sự kiện",
       "diagnostics.tab.route": "Định tuyến và điều kiện",
+      "diagnostics.tab.access": "Hướng dẫn kết nối",
       "quotas.tab.quota": "Hạn mức gói",
       "quotas.tab.free": "Mô hình miễn phí",
+      "quotas.tab.rotation": "Luân chuyển mô hình",
       "config.tab.service": "Dịch vụ",
       "config.tab.keys": "Khóa và ẩn danh",
       "config.tab.proxies": "Proxy",
       "config.tab.upstream": "Upstream và mô hình",
       "config.tab.reasoning": "Suy luận và hiệu năng",
       "config.tab.logging": "Nhật ký",
+      "config.tab.account": "Tài khoản",
       "usage.hour": "60 phút gần nhất",
 
       "topbar.refresh": "Làm mới ngay",
@@ -719,11 +781,12 @@ const DICTIONARY = {
       "page.account.sub": "Cập nhật xong sẽ thu hồi toàn bộ session quản trị.",
       "page.model-quotas.title": "Mô hình và hạn mức",
       "page.model-quotas.sub": "Mô hình khả dụng, hạn mức gói dùng chung và thời điểm reset.",
-  "page.egress.title": "Ngân sách egress",
-  "page.egress.sub": "Mỗi /64 là một xô quota riêng cho từng họ model; xem exit nào còn phục vụ được.",
+  "page.egress.title": "Egress & WARP",
+  "page.egress.sub": "WARP nội bộ, proxy usque, peer và ngân sách /64.",
   "egress.title": "Ngân sách egress /64",
   "egress.caption": "Free tier đếm theo từng /64 và từng họ model; cửa sổ reset lúc 00:00 UTC.",
   "egress.refresh": "Làm mới",
+  "egress.check": "Kiểm tra proxy",
   "egress.pending": "Đang đọc trạng thái pool.",
   "egress.col.egress": "Egress /64",
   "egress.col.family": "Họ model",
@@ -742,6 +805,39 @@ const DICTIONARY = {
   "egress.anyFamily": "mọi họ",
   "egress.summary": "Đang giữ {0} mục · {1} exit sẵn sàng · {2} /64 đang nghỉ · reset lúc {3}",
   "egress.failed": "Không đọc được ngân sách: {0}",
+  "egress.metrics.warp": "WARP đang chạy",
+  "egress.metrics.warp.note": "Sẵn sàng / dự phòng / đang nghỉ",
+  "egress.metrics.proxies": "Proxy khoẻ",
+  "egress.metrics.proxies.note": "Đang dùng được / tổng cấu hình",
+  "egress.metrics.peers": "Peer sẵn sàng",
+  "egress.metrics.peers.note": "Không còn cooldown / tổng peer",
+  "egress.metrics.quota": "Dòng /64 theo dõi",
+  "egress.metrics.quota.note": "Theo họ model trong cửa sổ hiện tại",
+  "egress.sources.title": "Nguồn ra và IP",
+  "egress.sources.caption": "Từng exit WARP, proxy và peer với trạng thái, tải hiện tại và thời gian nghỉ.",
+  "egress.sources.filter.all": "Tất cả nguồn",
+  "egress.sources.filter.issues": "Cần chú ý",
+  "egress.sources.col.source": "Nguồn",
+  "egress.sources.col.address": "IP / endpoint",
+  "egress.sources.col.state": "Trạng thái",
+  "egress.sources.col.load": "Đang chạy",
+  "egress.sources.col.cooling": "Nghỉ còn",
+  "egress.sources.empty": "Chưa có nguồn ra.",
+  "egress.sources.warming": "Đang đăng ký exit, IP sẽ xuất hiện khi pool sẵn sàng.",
+  "egress.sources.meta": "{0} nguồn · {1} cần chú ý",
+  "egress.sources.warp": "WARP",
+  "egress.sources.proxy": "Proxy",
+  "egress.sources.peer": "Peer",
+  "egress.sources.outer": "nguồn ngoài",
+  "egress.sources.egress": "egress",
+  "egress.sources.pool": "pool xoay",
+  "egress.sources.checked": "kiểm tra {0}",
+  "egress.sources.tier": "tier {0}",
+  "egress.state.standby": "Dự phòng",
+  "egress.state.blocked": "Bị chặn",
+  "egress.state.checking": "Đang kiểm tra",
+  "egress.state.unavailable": "Không dùng được",
+  "egress.state.peerCooling": "Đang nghỉ",
       "page.api-keys.title": "Quản lý API Key",
       "page.api-keys.sub": "Khóa truy cập riêng cho từng bên gọi.",
 
@@ -981,6 +1077,15 @@ const DICTIONARY = {
       "quotas.col.week": "Còn lại tuần · dùng chung",
       "quotas.col.month": "Còn lại tháng · dùng chung",
       "quotas.col.action": "Thao tác",
+      "quotas.col.context": "Ngữ cảnh",
+      "quotas.context.catalog": "danh mục",
+      "quotas.context.config": "đặt trong cấu hình",
+      "quotas.context.learned": "học từ lưu lượng",
+      "quotas.context.observed": "đã dùng {0}",
+      "quotas.context.rejected": "bị từ chối ở {0}",
+      "quotas.contextProbe": "Đo trần",
+      "quotas.contextProbing": "Đang đo…",
+      "quotas.contextProbeDone": "Đã đo {0} sau {1} lượt: ngữ cảnh {2} → {3}.",
 
       "rotation.title": "Luân chuyển mô hình SOTA / sweet",
       "rotation.caption":
@@ -1082,6 +1187,7 @@ const DICTIONARY = {
       "page.section": "Mục {0}",
 
       "error.session": "Phiên đăng nhập đã hết hạn",
+      "error.timeout": "Yêu cầu quá thời gian chờ",
 
       "state.healthy": "Khỏe",
       "state.unavailable": "Không dùng được",
@@ -1168,7 +1274,11 @@ const DICTIONARY = {
       "quotas.waiting": "Đang chờ dữ liệu hạn mức từ upstream",
       "quotas.catalogStale": "Danh mục mô hình chưa cập nhật, đang hiện cache · ",
       "quotas.catalogUpdated": "Danh mục cập nhật lúc: {0}",
-      "quotas.history": "（lịch sử）",
+      "quotas.history": " (lịch sử)",
+      "quotas.free": "Miễn phí",
+      "quotas.freeChannel": "Miễn phí · không dùng hạn mức Go",
+      "quotas.freeNotApplicable": "Không áp dụng — mô hình miễn phí",
+      "quotas.freeOnly": "Chưa cấu hình Go Key — danh sách dưới là các mô hình đang phục vụ được qua kênh miễn phí.",
       "quotas.copyName": "Sao chép tên",
       "quotas.catalogPending": "Danh mục mô hình chưa sẵn sàng, vui lòng làm mới sau",
 
@@ -1231,6 +1341,7 @@ const DICTIONARY = {
       "config.revealPrompt": "Nhập lại mật khẩu quản trị",
 
       "toast.refreshed": "Đã làm mới trạng thái",
+      "toast.proxiesChecked": "Đã kiểm tra {0} proxy",
       "toast.copied": "Đã sao chép",
       "toast.copyDenied": "Trình duyệt không cho phép sao chép, hãy chọn và sao chép thủ công",
       "toast.example.copied": "Đã sao chép ví dụ",
@@ -1247,641 +1358,6 @@ const DICTIONARY = {
       "toast.rotation.saved": "Đã lưu cấu hình luân chuyển mô hình và có hiệu lực",
       "toast.rotation.switched": "Đã chuyển mô hình hiện tại",
       "toast.rotation.dirty": "Có thay đổi chưa lưu, hãy lưu trước khi làm mới",
-    },
-    it: {
-      "doc.title": "opencode2api · Manuale operativo",
-      "lang.label": "Lingua",
-      "a11y.skip": "Vai al contenuto principale",
-
-      "login.eyebrow": "Manuale operativo admin / 2026",
-      "login.headline": "Protocolli, instradamento e stato di runtime su un'unica scrivania.",
-      "login.intro":
-        "Un control plane locale senza frontend esterno. Configura, verifica, collega, poi mantieni il Gateway facile da spiegare.",
-      "login.restricted": "Console riservata",
-      "login.title": "Accesso amministratore",
-      "login.username": "Nome utente",
-      "login.password": "Password",
-      "login.submit": "Entra nel Manuale operativo",
-
-      "sidebar.kicker": "Console operativa",
-      "sidebar.title": "Manuale operativo",
-      "nav.overview": "Scrivania operativa",
-      "nav.guide": "Prima esecuzione",
-      "nav.access": "Manuale di integrazione",
-      "nav.usage": "Consumo token",
-      "nav.playground": "Playground",
-      "nav.diagnostics": "Diagnostica instradamento",
-      "nav.config": "Centro configurazione",
-      "nav.logs": "Registro eventi",
-      "nav.account": "Sicurezza account",
-      "nav.model-quotas": "Modelli e quote",
-      "nav.api-keys": "Gestione API Key",
-      "nav.rotation": "Rotazione modelli",
-      "nav.egress": "Budget egress",
-      "nav.availability": "Disponibilità modelli gratuiti",
-      "nav.group.runtime": "Runtime",
-      "nav.group.integration": "Integrazione",
-      "nav.group.models": "Modelli",
-      "nav.group.system": "Sistema",
-      "overview.tab.summary": "Riepilogo",
-      "overview.tab.usage": "Consumo",
-      "overview.checklist.title": "Controlli di prontezza",
-      "overview.checklist.caption":
-        "Lo stato deriva dalla configurazione corrente e dalle risorse attive.",
-      "diagnostics.tab.playground": "Test richieste",
-      "diagnostics.tab.ledger": "Registro richieste",
-      "diagnostics.tab.logs": "Flusso eventi",
-      "diagnostics.tab.route": "Instradamento ed eleggibilità",
-      "quotas.tab.quota": "Quota del piano",
-      "quotas.tab.free": "Modelli gratuiti",
-      "config.tab.service": "Servizio",
-      "config.tab.keys": "Segreti e anonimo",
-      "config.tab.proxies": "Proxy",
-      "config.tab.upstream": "Upstream e modelli",
-      "config.tab.reasoning": "Ragionamento e prestazioni",
-      "config.tab.logging": "Registri",
-      "usage.hour": "Ultimi 60 minuti",
-
-      "topbar.refresh": "Aggiorna ora",
-      "topbar.logout": "Esci",
-      "theme.toggle": "Cambia tema",
-      "theme.auto": "Sistema",
-      "theme.light": "Chiaro",
-      "theme.dark": "Scuro",
-
-      "page.availability.title": "Disponibilità modelli gratuiti",
-      "page.availability.sub":
-        "Verificati ogni ora; i modelli a controllo manuale non sono coinvolti.",
-      "page.rotation.title": "Rotazione modelli",
-      "page.rotation.sub": "Modello corrente condiviso, failover su errore e storico dei tentativi.",
-      "page.overview.title": "Scrivania operativa",
-      "page.overview.sub": "L'ultima ora, i totali di processo e le risorse correnti.",
-      "page.guide.title": "Prima esecuzione",
-      "page.guide.sub": "Sei checkpoint dalla configurazione alla prima richiesta.",
-      "page.access.title": "Manuale di integrazione",
-      "page.access.sub": "Esempi per Chat, Responses, Anthropic e SDK.",
-      "page.usage.title": "Consumo token",
-      "page.usage.sub":
-        "Copertura, andamento al minuto, classifica modelli e distribuzione per Tier.",
-      "page.playground.title": "Playground",
-      "page.playground.sub":
-        "Tre protocolli di input che condividono instradamento e diagnostica reali del Gateway.",
-      "page.diagnostics.title": "Diagnostica instradamento",
-      "page.diagnostics.sub": "Metadati, eleggibilità dei modelli e ogni tentativo upstream.",
-      "page.config.title": "Centro configurazione",
-      "page.config.sub":
-        "Valida, poi salva in modo atomico e applica a caldo i campi modificabili.",
-      "page.logs.title": "Registro eventi",
-      "page.logs.sub": "Dati SSE strutturati dal ring buffer interno.",
-      "page.account.title": "Sicurezza account",
-      "page.account.sub": "Un aggiornamento riuscito revoca ogni sessione admin.",
-      "page.model-quotas.title": "Modelli e quote",
-      "page.model-quotas.sub":
-        "Modelli disponibili, quota condivisa residua del piano e orari di reset.",
-      "page.egress.title": "Budget egress",
-      "page.egress.sub":
-        "Ogni /64 è un bucket di quota separato per famiglia di modelli; mostra quali exit possono ancora servire.",
-      "egress.title": "Budget egress /64",
-      "egress.caption":
-        "Il free tier conta per /64 e per famiglia di modelli; la finestra si azzera alle 00:00 UTC.",
-      "egress.refresh": "Aggiorna",
-      "egress.pending": "Lettura dello stato del pool.",
-      "egress.col.egress": "Egress /64",
-      "egress.col.family": "Famiglia",
-      "egress.col.state": "Stato",
-      "egress.col.requests": "Richieste",
-      "egress.col.quota": "Quote esaurite",
-      "egress.col.cooling": "In pausa",
-      "egress.col.reset": "Reset",
-      "egress.state.cooling": "In pausa",
-      "egress.state.active": "Pronto",
-      "egress.state.idle": "Non usato",
-      "egress.minutes": "min",
-      "egress.hours": "h",
-      "egress.empty": "Nessun dato.",
-      "egress.emptySummary": "Il pool non ha servito richieste in questa sessione.",
-      "egress.anyFamily": "tutte le famiglie",
-      "egress.summary": "Righe {0} · {1} exit pronti · {2} /64 in pausa · reset {3}",
-      "egress.failed": "Impossibile leggere il budget: {0}",
-      "page.api-keys.title": "Gestione API Key",
-      "page.api-keys.sub": "Una chiave di accesso separata per ogni chiamante.",
-
-      "availability.title": "Verifica modelli gratuiti",
-      "availability.refresh": "Aggiorna stato",
-      "availability.probeScheduled":
-        "Una riverifica è stata programmata; i risultati si aggiorneranno al termine dei controlli.",
-      "availability.desc":
-        "Verifica i modelli il cui nome nei metadati contiene free o il cui prezzo è 0 e che non sono stati esclusi. Si prova prima il canale anonimo e solo dopo una Zen Key; un modello viene disabilitato quando è realmente guasto e ritentato dopo 24 ore. Gli errori transitori non aggiungono altri modelli disabilitati: un modello abilitato viene ritentato dopo 1 ora, mentre uno disabilitato conserva il motivo precedente ed è ritentato dopo 24 ore. Quando un modello viene riabilitato o passato al controllo manuale resta abilitato e non viene più verificato automaticamente; tornando in automatico, il successivo tick dello scheduler pianifica la verifica. System One usa un proprio insieme di domande di verifica 1+1. Con il livello impostato su auto viene applicato il livello massimo di ragionamento verificato.",
-      "availability.col.model": "Modello",
-      "availability.col.state": "Stato",
-      "availability.col.channel": "Canale / esito",
-      "availability.col.control": "Controllo",
-      "availability.col.effort": "Livello di ragionamento verificato",
-      "availability.col.checked": "Ultima verifica",
-      "availability.col.next": "Prossima verifica",
-      "availability.col.action": "Azione",
-
-      "overview.requests": "Richieste nell'ultima ora",
-      "overview.success": "Tasso di successo",
-      "overview.p95": "Latenza P95",
-      "overview.active": "Attive / in streaming",
-      "overview.hour": "Ultimi 60 minuti",
-      "overview.http2xx": "HTTP 2xx–3xx",
-      "overview.endToEnd": "Millisecondi end-to-end",
-      "overview.concurrent": "Richieste concorrenti",
-      "overview.proxy.title": "Nodi proxy",
-      "overview.proxy.caption": "Sono nodi proxy; non sono descritti come IP di uscita.",
-      "overview.proxy.col.node": "Nodo",
-      "overview.proxy.col.health": "Stato",
-      "overview.proxy.col.binding": "Associazione",
-      "overview.keys.title": "Pool di chiavi",
-      "overview.keys.caption":
-        "Sono mostrati solo gli ultimi 5 caratteri di una chiave e il suo stato di cooldown.",
-      "overview.keys.col.tail": "Ultimi caratteri",
-      "overview.keys.col.tier": "Tier",
-      "overview.keys.col.state": "Stato",
-      "overview.distribution.title": "Distribuzione richieste",
-      "overview.distribution.caption":
-        "Aggregato nell'ultima ora per endpoint, modello, Tier e codice di stato.",
-
-      "guide.title": "Controllo di deployment in 6 passi",
-      "guide.caption":
-        "Lo stato è letto dalla configurazione corrente e dalle risorse attive; nulla viene scritto nello storage del browser.",
-      "guide.step.login": "Accedi alla console admin",
-      "guide.step.login.desc": "La sessione corrente è stata verificata dal server.",
-      "guide.step.serverkey": "Configura una Server Key",
-      "guide.step.serverkey.desc": "I client usano la Server Key per raggiungere il Gateway.",
-      "guide.step.upstream": "Scegli un canale upstream",
-      "guide.step.upstream.desc": "Almeno una Zen / Go Key, oppure il canale anonimo abilitato.",
-      "guide.step.proxy": "Controlla i proxy",
-      "guide.step.proxy.desc": "Almeno un nodo proxy è ancora integro, oppure WARP trasporta il traffico dei modelli gratuiti.",
-      "guide.step.models": "Attendi il catalogo modelli",
-      "guide.step.access": "Copia un esempio di integrazione",
-      "guide.step.access.desc":
-        "Apri il Manuale di integrazione e sostituisci il modello e YOUR_API_KEY.",
-      "guide.done": "✓ Pronto",
-      "guide.todo": "○ Da completare",
-
-      "access.base": "Indirizzo base",
-      "access.protocols": "Tre protocolli",
-      "access.sdk": "Esempio SDK",
-      "access.notes": "Note di integrazione",
-      "access.base.title": "Indirizzo base",
-      "access.base.caption": "Gli esempi non contengono mai una Server Key reale.",
-      "access.base.label": "API Base derivata",
-      "access.model.label": "Modello di esempio",
-      "access.protocols.title": "Tre endpoint di protocollo",
-      "access.sdk.title": "Python e JavaScript",
-      "access.notes.title": "Note per l'integrazione",
-      "access.notes.auth":
-        "I client compatibili OpenAI usano <code>Authorization: Bearer YOUR_API_KEY</code>.",
-      "access.notes.anthropic":
-        "I client Anthropic possono usare <code>x-api-key</code> con il percorso <code>/v1/messages</code>.",
-      "access.notes.stream":
-        "Le richieste in streaming mantengono gli eventi del protocollo originale; il Gateway converte quando i protocolli differiscono.",
-      "access.notes.listen":
-        "Se il listener è associato a <code>0.0.0.0</code>, gli esempi usano l'hostname del browser corrente.",
-
-      "usage.coverage": "Copertura utilizzo",
-      "usage.coverage.note": "Richieste che riportano utilizzo token o ragionamento",
-      "usage.total": "Token totali",
-      "usage.cached": "Token in cache",
-      "usage.cached.note": "Hit di cache riportati dall'upstream",
-      "usage.reasoning": "Token di ragionamento",
-      "usage.reasoning.note": "Utilizzo del ragionamento riportato dall'upstream",
-      "usage.trend.title": "Andamento token al minuto",
-      "usage.trend.caption": "Ultimi 60 minuti; passa il mouse per input, output e totale.",
-      "usage.models.title": "Classifica modelli",
-      "usage.models.caption": "Ordinati per total_tokens.",
-      "usage.models.col.model": "Modello",
-      "usage.models.col.input": "Input",
-      "usage.models.col.output": "Output",
-      "usage.models.col.total": "Totale",
-      "usage.tiers.title": "Distribuzione per Tier",
-      "usage.tiers.caption": "Dove vanno i token Zen / Go.",
-      "usage.trend.peak": "Picco {0} token / minuto · ultimi {1} minuti",
-      "usage.trend.empty": "Nessun dato di andamento",
-
-      "playground.title": "Banco di prova a tre protocolli",
-      "playground.caption":
-        "Il server forza il non-streaming e instrada tramite il Gateway reale.",
-      "playground.protocol": "Protocollo di input",
-      "playground.model": "Modello",
-      "playground.key": "Chiave upstream",
-      "playground.key.auto":
-        "Instradamento automatico (anonimo / fallback Tier / rotazione chiavi)",
-      "playground.key.caption":
-        "Quando viene scelta una chiave specifica, si prova solo quella: nessun passaggio a un'altra chiave, a un altro Tier o al canale anonimo, e nessuna modifica allo stato di cooldown della chiave o all'integrità del proxy.",
-      "playground.relay": "Relay",
-      "playground.relay.auto": "Qualsiasi relay (routing normale)",
-      "playground.relay.caption":
-        "Fissare un relay invia esattamente un tentativo attraverso di esso, con sessione, system prompt e tool shaping reali: nessun failover, nessuna modifica a cooldown o integrità del proxy.",
-      "playground.request": "JSON della richiesta",
-      "playground.reset": "Reimposta esempio",
-      "playground.run": "Invia richiesta diagnostica",
-      "playground.result.title": "Esito diagnostica",
-      "playground.result.idle": "Nessuna richiesta inviata.",
-      "playground.output": "Risposta grezza del protocollo",
-
-      "diagnostics.metadata.title": "Metadati modello",
-      "diagnostics.metadata.caption":
-        "Stato della cache prezzi OpenCode da models.dev; un prezzo pari a 0 o un nome che contiene free basta per accedere al canale anonimo.",
-      "diagnostics.last.title": "Ultima esecuzione playground",
-      "diagnostics.last.caption":
-        "Nel processo admin corrente è conservata solo l'ultima esecuzione.",
-      "diagnostics.models.title": "Tabella di instradamento modelli",
-      "diagnostics.models.caption":
-        "Protocollo esplicito, fonte di eleggibilità anonima e come viene determinato il costo.",
-      "diagnostics.models.filter": "Filtra modelli",
-      "diagnostics.models.col.model": "Modello",
-      "diagnostics.models.col.protocol": "Protocollo nativo",
-      "diagnostics.models.col.route": "Instradamento",
-      "diagnostics.models.col.eligibility": "Eleggibilità anonima",
-      "diagnostics.models.col.source": "Fonte di valutazione",
-      "diagnostics.models.col.cost": "Costo input / output",
-      "diagnostics.requests.title": "Instradamento richieste",
-      "diagnostics.requests.caption":
-        "La coda della chiave o il canale anonimo effettivamente usati per richiesta; i 500 record più recenti, paginati.",
-      "diagnostics.attempts.title": "Tentativi upstream",
-      "diagnostics.attempts.caption":
-        "Ultimi caratteri della chiave, canale anonimo e nodo proxy sono mascherati; i 500 record più recenti, paginati.",
-      "diag.pager.prev": "Precedente",
-      "diag.pager.next": "Successiva",
-      "diag.pager.info": "Pagina {0} di {1} · {2} voci",
-      "diag.pager.size": "Righe per pagina",
-      "diagnostics.col.time": "Ora",
-      "diagnostics.col.model": "Modello",
-      "diagnostics.col.tier": "Tier",
-      "diagnostics.col.channel": "Canale",
-      "diagnostics.col.tail": "Ultimi caratteri",
-      "diagnostics.col.attempts": "Tentativi",
-      "diagnostics.col.state": "Stato",
-      "diagnostics.col.duration": "Durata",
-      "diagnostics.col.proxy": "Nodo proxy",
-
-      "config.server.title": "Server e console admin",
-      "config.server.caption": "Gli indirizzi di ascolto richiedono un riavvio dopo il salvataggio.",
-      "config.server.prefer": "Tier preferito per le chiavi di autenticazione",
-      "config.server.prefer.go": "Go (fallback su Zen in caso di errore)",
-      "config.server.prefer.zen": "Zen (fallback su Go in caso di errore)",
-      "config.server.session": "TTL sessione (minuti)",
-      "config.server.enabled": "Abilita WebUI (riavvio richiesto dopo la modifica)",
-      "config.secrets.title": "Segreti e canale anonimo",
-      "config.secrets.caption":
-        "I valori sensibili sono mascherati per impostazione predefinita; un valore svuotato ha effetto solo dopo il salvataggio.",
-      "config.secrets.reveal": "Mostra dopo nuova verifica",
-      "config.secrets.anonymous": "Abilita il canale anonimo Zen",
-      "config.secrets.add": "Una chiave per riga",
-      "config.proxy.title": "Nodi proxy",
-      "config.proxy.caption":
-        "Supporta URL direct, HTTP(S) e SOCKS. Aggiungi il suffisso #pool a una voce per contrassegnarla come pool proxy rotante: il gateway apre allora una nuova connessione per ogni tentativo, salta il cooldown e l'eviction dei nodi non integri, e la ritenta fino a retry.max_attempts volte.",
-      "config.proxy.add": "Aggiungi proxy (uno per riga)",
-      "config.warp.title": "Uscita WARP",
-      "config.warp.caption":
-        "Quando è attivo, il traffico dei modelli gratuiti (canale anonimo, Zen Key per modelli gratuiti, probe dei modelli gratuiti) esce attraverso un tunnel Cloudflare WARP in userspace e non usa alcun proxy; piano Go e modelli a pagamento mantengono i loro proxy. Un'uscita che risponde 429/403 viene ritirata e registrata di nuovo in background; una richiesta per modelli gratuiti continua a cambiare uscita finché non esaurisce retry.max_attempts, e solo allora l'ultimo 429 raggiunge il client.",
-      "config.warp.enabled": "Instrada il traffico dei modelli gratuiti tramite WARP",
-      "config.warp.pool": "Numero massimo di uscite WARP",
-      "config.warp.pool.hint":
-        "È un limite massimo, non un numero fisso: dopo la prima uscita, metà del valore (almeno una) viene pre-registrata in background; il ring attivo segue poi la concorrenza (un'uscita per richiesta in corso più una di riserva) e si riduce dopo 60 secondi di inattività.",
-      "config.warp.stack": "Stack di rete",
-      "config.warp.stack.dual": "Doppio stack",
-      "config.warp.source": "Prefisso sorgente IPv6 esterno (/64)",
-      "config.warp.source.hint":
-        "Usato solo con lo stack IPv6. Ogni uscita WARP associa un indirizzo sorgente da questo prefisso, quindi sostituire un'uscita sostituisce anche l'indirizzo pubblico; lascia vuoto per usare l'indirizzo sorgente predefinito dell'host.",
-      "config.upstream.title": "Upstream e instradamento protocolli",
-      "config.upstream.caption":
-        "anonymous userà ogni proxy disponibile; una mappatura esplicita di protocollo prevale sull'inferenza del protocollo dal nome del modello.",
-      "config.upstream.freeOnly":
-        "Espone solo modelli gratuiti (anche quando sono configurate Zen / Go Key)",
-      "config.upstream.activeProbes":
-        "Abilita i probe attivi in background per i modelli gratuiti (disabilitato per impostazione predefinita)",
-      "config.upstream.attempts": "Tentativi massimi per Key Tier",
-      "config.upstream.timeout": "Timeout richiesta (secondi)",
-      "config.upstream.refresh": "Intervallo di refresh modelli (secondi)",
-      "config.upstream.protocols": "Override protocollo modello (JSON)",
-      "config.reasoning.title": "Livello di ragionamento",
-      "config.reasoning.caption":
-        "Applicato solo quando il client non specifica un livello di ragionamento; gli override per modello hanno priorità. Scegliere “Disattivo” rimuove il ragionamento per le richieste che non lo richiedono.",
-      "config.reasoning.default": "Livello di ragionamento predefinito",
-      "config.reasoning.follow": "Segui il client",
-      "config.reasoning.auto": "auto (verifica il livello di ragionamento massimo disponibile)",
-      "config.reasoning.none": "Disattivo",
-      "config.reasoning.byModel": "Override per modello (JSON)",
-      "config.reasoning.byModelNote":
-        "I valori possono essere minimal, low, medium, high, xhigh, max o none; un oggetto vuoto significa nessun override.",
-      "config.performance.title": "Prestazioni e registri",
-      "config.performance.caption":
-        "Un hot reload conserva comunque i totali accumulati nel processo.",
-      "config.performance.idleTimeout": "Timeout di inattività (secondi)",
-      "config.performance.connect": "Timeout di connessione (secondi)",
-      "config.performance.cooldown": "Cooldown di errore (secondi)",
-      "config.performance.attemptTimeout": "Timeout del tentativo (secondi)",
-      "config.performance.attemptTimeoutHint": "0 = segui il timeout della richiesta",
-      "config.performance.firstEvent": "Timeout del primo evento SSE (secondi, 0 disabilita)",
-      "config.performance.level": "Livello di log",
-      "config.performance.ring": "Dimensione ring di log",
-      "config.performance.dump":
-        "Scrivi i dump delle richieste in uscita (mascherati, solo per tracciare retry e conversioni)",
-      "config.reload": "Ricarica dal disco",
-      "config.save": "Valida, salva e applica",
-
-      "logs.level.all": "Tutti i livelli",
-      "logs.component": "Modulo",
-      "logs.search": "Cerca eventi, Request ID, modello",
-      "logs.pause": "Pausa",
-      "logs.resume": "Riprendi",
-      "logs.gap": "I log più vecchi sono stati rimossi dalla memoria",
-      "logs.waiting": "In attesa di eventi di log…",
-
-      "quotas.title": "Quota del piano OpenCode Go",
-      "quotas.caption":
-        "Interrogata direttamente da OpenCode, in cache per 60 secondi. Tutti i modelli condividono una finestra di piano; le percentuali sono arrotondate dall'upstream.",
-      "quotas.refresh": "Aggiorna quota",
-      "quotas.loading": "Lettura…",
-      "quotas.pending": "La quota verrà letta all'apertura di questa pagina.",
-      "quotas.catalog.title": "Modelli disponibili",
-      "quotas.catalog.caption":
-        "I nomi dei modelli sono usati alla lettera per OPENAI_MODEL. La colonna quota riflette il piano selezionato sopra, non una quota per modello.",
-      "quotas.catalog.search": "Cerca nomi di modello…",
-      "quotas.col.model": "Nome modello",
-      "quotas.col.protocol": "Protocollo upstream",
-      "quotas.col.hour": "Residuo 5 ore · condiviso",
-      "quotas.col.week": "Residuo settimanale · condiviso",
-      "quotas.col.month": "Residuo mensile · condiviso",
-      "quotas.col.action": "Azione",
-
-      "rotation.title": "Rotazione modelli SOTA / sweet",
-      "rotation.caption":
-        "In caso di successo il modello corrente viene mantenuto. Quando la quota si esaurisce o si verifica un errore si passa in ordine, usando solo OpenCode Go.",
-      "rotation.refresh": "Aggiorna stato",
-      "rotation.usage":
-        "Mantieni la Base URL e l'API Key esistenti e imposta OPENAI_MODEL sull'alias sottostante. Ogni modello viene ritentato fino a 3 volte sugli errori ordinari, e una singola richiesta prova al massimo 3 modelli; un modello con quota esaurita viene saltato subito.",
-      "rotation.streaming":
-        "Una volta iniziato l'output, la risposta corrente resta su un solo modello. Un errore a metà stream termina quell'output e solo la richiesta successiva cambia modello. I modelli condividono la quota del piano, quindi cambiare modello non garantisce di sfuggire a un esaurimento quota.",
-      "rotation.timeout": "Attesa massima del primo output valido (secondi)",
-      "rotation.save": "Salva alias e ordine",
-      "rotation.saveNote":
-        "Il salvataggio ha effetto immediato; il riordino non interrompe mai una risposta già in streaming. La selezione manuale del modello corrente ha effetto immediato e azzera lo stato di pausa di quel modello.",
-      "rotation.attempts.title": "Tentativi recenti",
-      "rotation.col.time": "Ora",
-      "rotation.col.request": "Richiesta",
-      "rotation.col.alias": "Alias",
-      "rotation.col.model": "Modello effettivo",
-      "rotation.col.attempt": "Tentativo",
-      "rotation.col.result": "Esito",
-
-      "apikeys.create.title": "Crea una API Key per un chiamante",
-      "apikeys.create.caption":
-        "Usata per raggiungere il servizio B su questa macchina. Ogni applicazione può avere la propria chiave; creazione, abilitazione/disabilitazione ed eliminazione hanno effetto immediato.",
-      "apikeys.create.name": "Nome",
-      "apikeys.create.namePlaceholder": "es. il mio assistente note",
-      "apikeys.create.value": "Valore chiave personalizzato (opzionale)",
-      "apikeys.create.valuePlaceholder":
-        "Lascia vuoto per generarne una; un valore personalizzato deve avere 16–256 caratteri",
-      "apikeys.create.submit": "Crea API Key",
-      "apikeys.created.title": "Chiave creata",
-      "apikeys.created.caption":
-        "La chiave completa è mostrata una sola volta, subito dopo la creazione. Salvala subito nella variabile d'ambiente del chiamante.",
-      "apikeys.created.dismiss": "Salvata, chiudi",
-      "apikeys.created.copy": "Copia chiave",
-      "apikeys.created.copyEnv": "Copia variabile d'ambiente",
-      "apikeys.list.title": "Chiavi di accesso",
-      "apikeys.list.caption":
-        "Gestisci l'accesso al servizio B. Le chiavi upstream OpenCode Go restano nel Centro configurazione.",
-      "apikeys.list.refresh": "Aggiorna elenco",
-      "apikeys.col.name": "Nome",
-      "apikeys.col.tail": "Ultimi caratteri",
-      "apikeys.col.state": "Stato",
-      "apikeys.col.usage": "Utilizzo (ultima ora / totale)",
-      "apikeys.col.created": "Creata il",
-      "apikeys.col.action": "Azione",
-      "apikeys.col.legacy": "Già in configurazione",
-      "apikeys.col.policy": "Limiti",
-      "apikeys.policy.action": "Limiti",
-      "apikeys.policy.title": "Limiti di utilizzo",
-      "apikeys.policy.modelsLabel": "Modelli consentiti (ID separati da virgola; vuoto = tutti)",
-      "apikeys.policy.concurrencyLabel": "Richieste parallele (0 = illimitato)",
-      "apikeys.policy.dailyLabel": "Richieste al giorno (0 = illimitato)",
-      "apikeys.policy.hint": "I limiti valgono solo per questa chiave e sono immediati.",
-      "apikeys.policy.invalid": "Inserisci un numero intero maggiore o uguale a 0",
-      "apikeys.policy.none": "Nessun limite",
-      "apikeys.policy.models": "{0} modelli",
-      "apikeys.policy.concurrency": "{0} in parallelo",
-      "apikeys.policy.daily": "{0}/giorno",
-      "apikeys.note":
-        "Disabilitare ed eliminare fa sì che le nuove richieste dalle applicazioni corrispondenti restituiscano 401. Deve rimanere almeno una chiave abilitata.",
-
-      "account.title": "Aggiorna l'account admin",
-      "account.caption": "In caso di successo ogni sessione viene revocata e devi accedere di nuovo.",
-      "account.user": "Nuovo nome utente (vuoto per mantenere quello attuale)",
-      "account.current": "Password attuale",
-      "account.new": "Nuova password (vuoto per mantenere quella attuale, almeno 10 caratteri)",
-      "account.submit": "Aggiorna e accedi di nuovo",
-
-      "modal.eyebrow": "Valore sensibile",
-      "modal.title": "Configurazione sensibile",
-      "modal.close": "Chiudi",
-
-      "common.copy": "Copia",
-      "common.save": "Salva",
-      "common.cancel": "Annulla",
-      "common.confirm": "Conferma",
-      "common.rename": "Rinomina",
-      "common.delete": "Elimina",
-      "common.view": "Mostra",
-      "common.notReady": "Non ancora pronto",
-      "modal.revealTitle": "Mostra configurazione sensibile",
-      "common.clipboard": "Il browser non consente l'accesso agli appunti",
-      "common.empty": "Nessun dato",
-      "common.remove": "Rimuovi",
-      "config.chips.expand": "Mostra tutti ({0})",
-      "config.chips.collapse": "Comprimi",
-      "common.duration": "Durata",
-      "common.model": "Modello",
-      "common.action": "Azione",
-      "common.yes": "Sì",
-      "common.no": "No",
-      "common.none": "Nessuno",
-      "common.on": "Attivo",
-      "common.off": "Disattivo",
-      "common.allowed": "Consentito",
-      "common.denied": "Negato",
-      "common.unknown": "Sconosciuto",
-      "page.section": "Sezione {0}",
-
-      "error.session": "La tua sessione è scaduta",
-
-      "state.healthy": "Integro",
-      "state.unavailable": "Non disponibile",
-      "state.enabled": "Abilitato",
-      "state.disabled": "Disabilitato",
-      "state.cooling": "In cooldown",
-      "state.available": "Pronto",
-
-      "breakdown.endpoint": "Endpoint",
-      "breakdown.status": "Codice di stato",
-      "breakdown.model": "Modello",
-      "breakdown.empty": "Nessuna richiesta",
-
-      "guide.models.cached": "Catalogo dalla cache {0}, in attesa di un refresh in background.",
-      "guide.models.ready":
-        "Il catalogo upstream ha superato il primo refresh e ha modelli da servire.",
-
-      "usage.empty.models": "Nessun utilizzo token",
-      "usage.empty.tiers": "Nessun utilizzo per Tier",
-
-      "playground.key.cooling": " · in cooldown fino a {0}",
-      "playground.samplePrompt": "Spiega in una frase cosa sa fare questo modello.",
-      "play.httpStatus": "HTTP",
-      "play.mode": "Modalità test",
-      "play.mode.selected": "Chiave {0} specificata",
-      "play.mode.auto": "Instradamento automatico",
-      "play.testedKey": "Chiave testata",
-      "play.testedRelay": "Relay testato",
-      "play.keyVerdict": "Verdetto sulla chiave",
-      "play.keyVerdict.none": "L'instradamento automatico non ha un verdetto dedicato",
-      "play.key.usable": "Chiave utilizzabile",
-      "play.key.rejected": "Chiave rifiutata",
-      "play.key.rateLimited": "Chiave accettata ma limitata per frequenza",
-      "play.key.upstreamError": "Anomalia upstream, nessun verdetto sulla chiave",
-      "play.key.transportError": "Anomalia di rete o proxy, nessun verdetto sulla chiave",
-      "play.key.unavailable": "Chiave o runtime non disponibili",
-      "play.key.requestError": "La richiesta non è riuscita",
-      "play.actualRoute": "Instradamento effettivo",
-      "play.nativeProtocol": "Protocollo nativo",
-      "play.anonymousVerdict": "Verdetto anonimo",
-      "play.eligibility.allowed": "Consentito · {0}",
-      "play.eligibility.denied": "Negato · {0}",
-      "play.route.none": "Non instradato",
-      "play.state.ok": "Richiesta riuscita · HTTP {0}",
-      "play.state.failed": "Richiesta non riuscita · HTTP {0}",
-      "play.state.testingKey": "Test con la chiave specificata…",
-      "play.state.running": "Invio della richiesta tramite il Gateway…",
-      "play.state.failedToCall": "Impossibile raggiungere l'endpoint di diagnostica",
-
-      "diag.ready": "Pronto",
-      "diag.modelCount": "Modelli",
-      "diag.updatedAt": "Aggiornato il",
-      "diag.nextRefresh": "Prossimo refresh",
-      "diag.stale": "Obsoleto",
-      "diag.lastError": "Ultimo errore",
-      "diag.notUpdated": "Non aggiornato",
-      "diag.result": "Esito",
-      "diag.ok": "Successo",
-      "diag.failed": "Non riuscito",
-      "diag.route": "Instradamento",
-      "diag.state": "Stato",
-      "diag.noTrace": "Nessun dato di trace del playground",
-      "diag.streamError": "Streaming non riuscito",
-      "diag.clientCanceled": "Annullato dal client",
-      "diag.noRequests": "Nessuna richiesta instradata",
-      "diag.noAttempts": "Nessun tentativo upstream",
-      "diag.noMatch": "Nessun modello corrispondente",
-
-      "quotas.noKey": "Nessuna Go Key configurata",
-      "quotas.addKeyFirst": "Aggiungi prima una OpenCode Go Key nel Centro configurazione.",
-      "quotas.queryFailed":
-        "Query non riuscita: {0}. Il contenuto mostrato è solo il risultato della query precedente.",
-      "quotas.connected":
-        "Connesso a OpenCode · quota del piano condivisa. Le quote di più chiavi non si sommano.",
-      "quotas.error": "{0}; al momento la quota è sconosciuta.",
-      "quotas.staleError":
-        "{0}; le letture riuscite più recenti sono mostrate sotto e al momento la quota è sconosciuta.",
-      "quotas.updated": "Quota aggiornata il: {0} · cache 60s · fonte: OpenCode Go /v1/usage",
-      "quotas.lastSuccess":
-        "Ultima query riuscita: {0} · cache 60s · fonte: OpenCode Go /v1/usage",
-      "quotas.window.hour": "Finestra 5 ore",
-      "quotas.window.week": "Finestra settimanale",
-      "quotas.window.month": "Finestra mensile",
-      "quotas.window.aria": "Quota residua per {0}",
-      "quotas.remaining": "residuo",
-      "quotas.remainingHistory": "residuo (storico)",
-      "quotas.rateLimited": "limite raggiunto · ",
-      "quotas.resetsAt": "reset alle {0}",
-      "quotas.waiting": "In attesa dei dati sulla quota dall'upstream",
-      "quotas.catalogStale": "Il catalogo modelli non è aggiornato, mostro la cache · ",
-      "quotas.catalogUpdated": "Catalogo aggiornato il: {0}",
-      "quotas.history": " (storico)",
-      "quotas.copyName": "Copia nome",
-      "quotas.catalogPending": "Il catalogo modelli non è ancora pronto; aggiorna più tardi.",
-
-      "apikeys.loadFailed": "Lettura non riuscita: {0}",
-      "apikeys.count": "{0} chiavi",
-      "apikeys.enabledCount": "{0} chiavi abilitate",
-      "apikeys.times": "volte",
-      "apikeys.rename": "Rinomina",
-      "apikeys.namePrompt": "Nome della chiave",
-      "apikeys.enable": "Abilita",
-      "apikeys.disable": "Disabilita",
-      "apikeys.delete": "Elimina",
-      "apikeys.confirmDelete":
-        "Dopo aver eliminato “{0}”, le applicazioni che usano questa chiave perderanno l'accesso. Eliminarla davvero?",
-      "apikeys.empty": "Nessuna API Key",
-
-      "rotation.status":
-        "Stato aggiornato · i due gruppi di rotazione sono indipendenti e ogni chiamante condivide la posizione corrente.",
-      "rotation.sweet": "sweet",
-      "rotation.aliasLabel": "Alias di chiamata",
-      "rotation.current": "Modello corrente: {0}",
-      "rotation.waitingModel": "in attesa di un modello disponibile",
-      "rotation.col.order": "Ordine",
-      "rotation.col.state": "Stato / ora di ripresa",
-      "rotation.unavailable": "Rimosso dal catalogo / temporaneamente non disponibile",
-      "rotation.pausedUntil": "In pausa fino a {0}",
-      "rotation.inUse": "In uso",
-      "rotation.moveUp": "Su",
-      "rotation.moveDown": "Giù",
-      "rotation.setCurrent": "Imposta come corrente",
-      "rotation.useModel": "Usa {0}",
-      "rotation.waitingCatalog": "In attesa del catalogo modelli Go",
-      "rotation.recentSwitches": "Cambi recenti",
-      "rotation.noSwitches": "Nessun cambio registrato",
-      "rotation.attemptsEmpty":
-        "Chiama tramite un alias di gruppo per vedere i 100 tentativi più recenti",
-      "rotation.reason.success": "Riuscito",
-      "rotation.reason.clientCanceled": "Annullato dal chiamante",
-      "rotation.reason.quota": "Quota esaurita / limitata per frequenza",
-      "rotation.reason.transport": "Errore di connessione",
-      "rotation.reason.firstOutputTimeout": "Timeout del primo output",
-      "rotation.reason.streamError": "Output interrotto",
-      "rotation.reason.readError": "Lettura della risposta non riuscita",
-      "rotation.reason.conversionError": "Analisi o conversione della risposta non riuscita",
-      "rotation.reason.requestConversion": "Conversione della richiesta non riuscita",
-      "rotation.reason.upstreamError": "Errore upstream",
-
-      "availability.pending": "In attesa di verifica",
-      "availability.manual": "Manuale",
-      "availability.auto": "Automatico",
-      "availability.unverified": "Non verificato",
-      "availability.manualControl": "Controllo manuale, non verificato automaticamente",
-      "availability.restore": "Riabilita",
-      "availability.switchAuto": "Torna ad automatico",
-      "availability.switchManual": "Passa a manuale",
-      "availability.noneEligible":
-        "Nessun modello nel catalogo corrente è idoneo come gratuito.",
-
-      "config.restartNotice":
-        "Salvato ma non ancora in vigore: {0}. L'API corrente è {1}, la WebUI è {2}. Riavvia il processo.",
-      "config.revealPrompt": "Reinserisci la password admin",
-
-      "toast.refreshed": "Stato aggiornato",
-      "toast.copied": "Copiato",
-      "toast.copyDenied":
-        "Il browser ha negato la copia; seleziona il testo e copialo manualmente",
-      "toast.example.copied": "Esempio copiato",
-      "toast.config.saved": "Configurazione salvata e già in vigore",
-      "toast.config.restart": "Applicato; riavvio necessario per {0}",
-      "toast.config.reloaded": "Configurazione ricaricata dal disco",
-      "toast.config.reloadedRestart":
-        "Configurazione ricaricata dal disco; i campi di ascolto richiedono un riavvio",
-      "toast.account.updated": "Account aggiornato, accedi di nuovo",
-      "toast.play.invalidJson": "Il JSON della richiesta non è valido: {0}",
-      "toast.play.copied": "Risposta grezza copiata",
-      "toast.apikeys.saved": "Salvato e già in vigore",
-      "toast.apikeys.created": "API Key creata",
-      "toast.rotation.saved": "Configurazione di rotazione modelli salvata e in vigore",
-      "toast.rotation.switched": "Modello corrente cambiato",
-      "toast.rotation.dirty": "Ci sono modifiche non salvate; salva prima di aggiornare",
     },
   };
 
@@ -1900,22 +1376,29 @@ const lookup = (key) => {
 
 const interpolate = (value, args) => (args.length ? fill(value, args) : value);
 
-// t maps an authored Simplified Chinese string to the active locale. The
-// original text is returned whenever the dictionary has no entry, so a page
-// module is always readable without consulting the dictionary.
+// Chinese characters must never reach the console, even when a dictionary
+// entry is missing: fall back to the message key instead of the old Chinese
+// source string.
+const hasCJK = (value) => /[\u3400-\u9fff]/.test(value);
+
+// t maps an authored Vietnamese string to the active locale. The Vietnamese
+// text is returned whenever the dictionary has no entry, so a page module is
+// always readable without consulting the dictionary.
 export const t = (original, key, ...args) => {
   const value = lookup(key);
-  return interpolate(value === undefined ? original : value, args);
+  if (value !== undefined) return interpolate(value, args);
+  return hasCJK(original) ? key : original;
 };
 
 // apply re-renders every node carrying a static translation attribute. Any
 // node created after a language switch is picked up by the next apply() call.
 export const apply = (root = document) => {
   const dictionary = DICTIONARY[locale] || {};
+  const fallback = DICTIONARY[DEFAULT_LOCALE] || {};
+  const valueFor = (key, original) => dictionary[key] ?? fallback[key] ?? (hasCJK(original) ? "" : original);
   root.querySelectorAll("[data-i18n]").forEach((node) => {
     if (!originals.has(node)) originals.set(node, node.innerHTML);
-    const value = dictionary[node.dataset.i18n];
-    node.innerHTML = value === undefined ? originals.get(node) : value;
+    node.innerHTML = valueFor(node.dataset.i18n, originals.get(node));
   });
   root.querySelectorAll("[data-i18n-attr]").forEach((node) => {
     const targets = node.dataset.i18nAttr.split(",").map((pair) => pair.trim().split(":"));
@@ -1926,8 +1409,7 @@ export const apply = (root = document) => {
       );
     const snapshot = originals.get(node);
     targets.forEach(([attribute, key], index) => {
-      const value = dictionary[key];
-      node.setAttribute(attribute, value === undefined ? snapshot[index] : value);
+      node.setAttribute(attribute, valueFor(key, snapshot[index]));
     });
   });
 };
@@ -1966,18 +1448,6 @@ const stored = () => {
   }
 };
 
-const browserLocale = () => {
-  const candidates = [...(navigator.languages || []), navigator.language].filter(Boolean);
-  for (const candidate of candidates) {
-    const normalized = String(candidate).toLowerCase();
-    if (normalized.startsWith("zh")) return "zh-CN";
-    if (normalized.startsWith("vi")) return "vi";
-    if (normalized.startsWith("en")) return "en";
-    if (normalized.startsWith("it")) return "it";
-  }
-  return "";
-};
-
 // init fills the selectors, applies the stored locale and translates the static
 // markup. It never notifies listeners: the shell imports this module after its
 // pages are registered, so the first render already happens in the right locale.
@@ -1995,7 +1465,7 @@ export const init = () => {
     );
     node.onchange = (event) => setLocale(event.target.value);
   });
-  const initial = SUPPORTED.includes(stored()) ? stored() : browserLocale();
+  const initial = SUPPORTED.includes(stored()) ? stored() : DEFAULT_LOCALE;
   if (initial) setLocale(initial, false);
   else apply();
   syncSelectors();

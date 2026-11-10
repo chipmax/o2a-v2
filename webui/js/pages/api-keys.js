@@ -1,4 +1,4 @@
-// Page: API Key 管理 — create, rename, enable/disable and delete caller keys.
+// Page: API Key management — create, rename, enable/disable and delete caller keys.
 import { api, derivedAPIBase, hasSession } from "../api.js";
 import { loadConfig } from "../data.js";
 import * as store from "../store.js";
@@ -21,7 +21,7 @@ async function load() {
     }
   } catch (error) {
     $("#api-key-status").textContent = t(
-      `读取失败：${error.message}`,
+      "Đọc thất bại: {0}",
       "apikeys.loadFailed",
       error.message,
     );
@@ -42,7 +42,7 @@ async function mutate(id, method, body, button) {
     lastKeys = data.keys;
     render(data.keys);
     await loadConfig();
-    toast(t("已保存并立即生效", "toast.apikeys.saved"));
+    toast(t("Đã lưu và có hiệu lực ngay", "toast.apikeys.saved"));
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -54,15 +54,15 @@ function policySummary(key) {
   const parts = [];
   const models = key.allow_models || [];
   if (models.length) {
-    parts.push(t(`允许 {0} 个模型`, "apikeys.policy.models", models.length));
+    parts.push(t("{0} mô hình", "apikeys.policy.models", models.length));
   }
   if (key.max_concurrency) {
-    parts.push(t(`并发 {0}`, "apikeys.policy.concurrency", key.max_concurrency));
+    parts.push(t("{0} song song", "apikeys.policy.concurrency", key.max_concurrency));
   }
   if (key.daily_requests) {
-    parts.push(t(`每天 {0} 次`, "apikeys.policy.daily", key.daily_requests));
+    parts.push(t("{0} lượt/ngày", "apikeys.policy.daily", key.daily_requests));
   }
-  return parts.length ? parts.join(" · ") : t("不限", "apikeys.policy.none");
+  return parts.length ? parts.join(" · ") : t("Không giới hạn", "apikeys.policy.none");
 }
 
 // editPolicy opens the per-key limit dialog: allowed models, concurrent
@@ -87,26 +87,26 @@ function editPolicy(key, button) {
   });
   const body = el("div", { class: "stack" }, [
     el("div", { class: "field" }, [
-      el("label", { text: t("允许的模型", "apikeys.policy.modelsLabel") }),
+      el("label", { text: t("Mô hình được phép (ID cách nhau bằng dấu phẩy; trống = tất cả)", "apikeys.policy.modelsLabel") }),
       models,
     ]),
     el("div", { class: "field" }, [
-      el("label", { text: t("并发请求数", "apikeys.policy.concurrencyLabel") }),
+      el("label", { text: t("Số yêu cầu song song (0 = không giới hạn)", "apikeys.policy.concurrencyLabel") }),
       concurrency,
     ]),
     el("div", { class: "field" }, [
-      el("label", { text: t("每天请求数", "apikeys.policy.dailyLabel") }),
+      el("label", { text: t("Số yêu cầu mỗi ngày (0 = không giới hạn)", "apikeys.policy.dailyLabel") }),
       daily,
     ]),
-    el("p", { class: "section-caption", text: t("限额只作用于这个密钥，保存后立即生效。", "apikeys.policy.hint") }),
+    el("p", { class: "section-caption", text: t("Hạn mức chỉ áp dụng cho khoá này và có hiệu lực ngay.", "apikeys.policy.hint") }),
   ]);
   openDialog({
-    title: t("使用限额", "apikeys.policy.title"),
+    title: t("Hạn mức sử dụng", "apikeys.policy.title"),
     body,
     actions: [
-      { label: t("取消", "common.cancel") },
+      { label: t("Huỷ", "common.cancel") },
       {
-        label: t("保存", "common.save"),
+        label: t("Lưu", "common.save"),
         kind: "btn-primary",
         onClick: (close) => {
           const maxConcurrency = Number(String(concurrency.value).trim() || "0");
@@ -117,7 +117,7 @@ function editPolicy(key, button) {
             !Number.isInteger(dailyRequests) ||
             dailyRequests < 0
           ) {
-            toast(t("请输入 0 或更大的整数", "apikeys.policy.invalid"), true);
+            toast(t("Vui lòng nhập số nguyên từ 0 trở lên", "apikeys.policy.invalid"), true);
             return;
           }
           const allowModels = String(models.value)
@@ -139,9 +139,9 @@ function editPolicy(key, button) {
 
 function render(keys) {
   keys = keys || [];
-  $("#api-key-count").textContent = t(`${keys.length} 个`, "apikeys.count", keys.length);
+  $("#api-key-count").textContent = t("{0} khóa", "apikeys.count", keys.length);
   $("#api-key-status").textContent = t(
-    `${keys.filter((key) => key.enabled).length} 个已启用`,
+    "{0} khóa đang bật",
     "apikeys.enabledCount",
     keys.filter((key) => key.enabled).length,
   );
@@ -150,35 +150,35 @@ function render(keys) {
   for (const key of keys) {
     const usage = key.usage || {};
     const summary = (value = {}) =>
-      `${formatNumber(value.requests)} ${t("次", "apikeys.times")} · ${formatNumber(value.total_tokens)} tokens`;
-    const rename = el("button", { type: "button", class: "btn btn-sm btn-ghost", text: t("重命名", "common.rename") });
+      `${formatNumber(value.requests)} ${t("lần", "apikeys.times")} · ${formatNumber(value.total_tokens)} tokens`;
+    const rename = el("button", { type: "button", class: "btn btn-sm btn-ghost", text: t("Đổi tên", "common.rename") });
     rename.addEventListener("click", async () => {
       const name = await promptDialog({
-        title: t("重命名 API Key", "common.rename"),
-        label: t("密钥名称", "apikeys.namePrompt"),
+        title: t("Đổi tên", "common.rename"),
+        label: t("Tên khóa", "apikeys.namePrompt"),
         value: key.name,
-        confirmLabel: t("保存", "common.save"),
+        confirmLabel: t("Lưu", "common.save"),
       });
       if (name !== null) mutate(key.id, "PATCH", { name }, rename);
     });
     const toggle = el("button", {
       type: "button",
       class: "btn btn-sm btn-ghost",
-      text: key.enabled ? t("停用", "apikeys.disable") : t("启用", "apikeys.enable"),
+      text: key.enabled ? t("Tắt", "apikeys.disable") : t("Bật", "apikeys.enable"),
     });
     toggle.addEventListener("click", () => mutate(key.id, "PATCH", { enabled: !key.enabled }, toggle));
-    const policy = el("button", { type: "button", class: "btn btn-sm btn-ghost", text: t("限额", "apikeys.policy.action") });
+    const policy = el("button", { type: "button", class: "btn btn-sm btn-ghost", text: t("Hạn mức", "apikeys.policy.action") });
     policy.addEventListener("click", () => editPolicy(key, policy));
-    const remove = el("button", { type: "button", class: "btn btn-sm btn-danger", text: t("删除", "common.delete") });
+    const remove = el("button", { type: "button", class: "btn btn-sm btn-danger", text: t("Xoá", "common.delete") });
     remove.addEventListener("click", async () => {
       const ok = await confirmDialog({
-        title: t("删除 API Key", "common.delete"),
+        title: t("Xoá", "common.delete"),
         message: t(
-          `删除「${key.name}」后，使用它的应用将无法继续访问。确定删除？`,
+          "Sau khi xoá “{0}”, các ứng dụng đang dùng khóa này sẽ không truy cập được. Xoá thật chứ?",
           "apikeys.confirmDelete",
           key.name,
         ),
-        confirmLabel: t("删除", "common.delete"),
+        confirmLabel: t("Xoá", "common.delete"),
         danger: true,
       });
       if (ok) mutate(key.id, "DELETE", null, remove);
@@ -189,16 +189,16 @@ function render(keys) {
         el("td", { class: "mono", text: key.display }),
         el("td", {
           class: `status ${key.enabled ? "ok" : "warn"}`,
-          text: key.enabled ? t("已启用", "state.enabled") : t("已停用", "state.disabled"),
+          text: key.enabled ? t("Đang bật", "state.enabled") : t("Đang tắt", "state.disabled"),
         }),
         el("td", { text: `${summary(usage.last_hour)} / ${summary(usage.lifetime)}` }),
         el("td", { text: policySummary(key) }),
-        el("td", { text: key.created_at ? localTime(key.created_at) : t("已有配置", "apikeys.col.legacy") }),
+        el("td", { text: key.created_at ? localTime(key.created_at) : t("Đã có trong cấu hình", "apikeys.col.legacy") }),
         el("td", {}, [el("div", { class: "key-actions" }, [rename, policy, toggle, remove])]),
       ]),
     );
   }
-  if (!keys.length) emptyRow(host, 7, t("暂无 API Key", "apikeys.empty"));
+  if (!keys.length) emptyRow(host, 7, t("Chưa có API Key", "apikeys.empty"));
 }
 
 async function create(event) {
@@ -223,7 +223,7 @@ async function create(event) {
     lastKeys = data.keys;
     render(data.keys);
     await loadConfig();
-    toast(t("API Key 已创建", "toast.apikeys.created"));
+    toast(t("Đã tạo API Key", "toast.apikeys.created"));
   } catch (error) {
     toast(error.message, true);
   } finally {
@@ -241,8 +241,8 @@ function resetCreated() {
 
 export default {
   id: "api-keys",
-  title: "API Key 管理",
-  sub: "给每个调用方独立的访问密钥。",
+  title: "Quản lý API Key",
+  sub: "Cấp khoá truy cập riêng cho từng ứng dụng.",
   init() {
     $("#api-key-form").addEventListener("submit", create);
     $("#api-key-refresh").addEventListener("click", load);

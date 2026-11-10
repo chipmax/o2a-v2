@@ -462,6 +462,13 @@ textarea {
   margin-top: var(--sp-4);
 }
 
+.quick-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
 .key-actions {
   display: flex;
   flex-wrap: wrap;

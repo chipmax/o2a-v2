@@ -1,0 +1,10 @@
+[Unit]
+Description=o2a allowance probe at 00:03 UTC (07:03 Asia/Saigon)
+
+[Timer]
+OnCalendar=*-*-* 00:03:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

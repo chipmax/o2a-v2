@@ -1,0 +1,10 @@
+[Unit]
+Description=o2a egress harvest (admission-tested free exits)
+After=network-online.target o2a-egress-singbox.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/o2a-v2/egress-sync/egress-harvest.py --workdir /opt/o2a-v2/egress --limit 200 --plain-limit 900 --keep 24 --workers 36
+Nice=10
+TimeoutStartSec=1800

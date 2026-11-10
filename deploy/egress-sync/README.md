@@ -50,6 +50,41 @@ Do not enable this lane in production until the missing admission step exists:
 one pinned admin diagnostic (`POST /api/debug/inference` with `relay.name`)
 whose `http_status` must be 200 before an exit is kept.
 
+## Admission sweep, 2026-11-10 (the definitive measurement)
+
+`egress-harvest.py` is the admission-gated version: it probes every candidate
+with the real free-tier request and keeps only exits that answer 200.
+
+| Stage | Count | Result |
+| --- | --- | --- |
+| Public `IP:port` candidates from 19 GitHub lists | 15,231 unique | — |
+| Reachable (egress IP via `api.ipify.org`) | 353 (339 unique IPs) | — |
+| Reached `opencode.ai` and answered | 107 | 107 × 429, **0 × 200** |
+| sing-box nodes + plain proxies through `egress-harvest.py` | 1,000 tested | 23 × 429, 977 unreachable, **0 × 200** |
+| Tor circuits (30 + 60, `IsolateSOCKSAuth` rotation) | 84 unique exit IPs | 84 × 429, **0 × 200** |
+
+Every status 429 carries `Retry-After` computed to exactly **00:00 UTC**
+(44,488 s at 11:38 UTC; 31,108 s at 15:21 UTC) and the body
+`FreeUsageLimitError`.
+
+Conclusion: the free tier is a **daily bucket per egress IP that resets at
+00:00 UTC (07:00 Asia/Saigon)**, and the whole public pool (proxies, Tor,
+WARP) is already spent for the day. Rotation inside the public pool buys
+nothing; only **fresh, private** egress IPs have quota. See
+`../egress-selfhost/README.vi.md` for the self-hosted options.
+
+## Tools
+
+- `egress-harvest.py` — fetch → render sing-box → admission-test → publish only
+  200s (`--dry-run` parses sources without probing).
+- `quota-probe.py` — send free-tier requests through one egress until 429 and
+  report the allowance and reset time. It spends that IP's daily quota, so run
+  it on a spare IP, not on production.
+- `o2a-egress-harvest.timer` — 00:06 UTC and every 3 h (after the reset the pool
+  is at its freshest).
+- `o2a-quota-probe.timer` — installed but **disabled** on purpose: at 00:03 UTC
+  it would consume VPS2's fresh allowance.
+
 ## Notes
 
 - Public exits are untrusted: use them for free-tier traffic only, never for

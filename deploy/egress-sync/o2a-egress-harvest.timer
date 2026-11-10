@@ -1,0 +1,11 @@
+[Unit]
+Description=o2a egress harvest schedule (07:06 Asia/Saigon, then every 3h)
+
+[Timer]
+OnCalendar=*-*-* 00:06:00 UTC
+OnCalendar=*-*-* 03,06,09,12,15,18,21:06:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

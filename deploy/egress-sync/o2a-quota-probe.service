@@ -1,0 +1,10 @@
+[Unit]
+Description=o2a free-tier allowance probe (per egress IP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/o2a-v2/egress-sync/quota-probe.py --egress direct --max 800 --pause 0.3 --out /opt/o2a-v2/egress/quota.json
+Nice=10
+TimeoutStartSec=1800

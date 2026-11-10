@@ -37,9 +37,9 @@ Fingerprint là 16 ký tự hex đầu của SHA-256 khoá, xem ở trang **Kho�
 | Trường | Kiểu | Mặc định | Ý nghĩa |
 | --- | --- | --- | --- |
 | `warp.enabled` | bool | `false` | Bật egress Cloudflare WARP (userspace WireGuard). Bật mà không lên được tunnel thì tiến trình báo lỗi thay vì chạy tiếp. |
-| `warp.pool_size` | int | `2` | Số exit WARP giữ nóng, 1–32. Quota free tier tính **theo IP exit**, nên pool lớn hơn = nhiều "xô" quota hơn. 16 là mức đang dùng. |
+| `warp.pool_size` | int | `2` | Số exit WARP giữ nóng, 1–32. Quota free tier tính **theo IP exit**, nên pool lớn hơn = nhiều "xô" quota hơn. Bản đang chạy dùng 4. |
 | `warp.stack` | string | `ipv6` | `ipv6` (khuyến nghị) hoặc `ipv4`. |
-| `warp.source_ipv6` | string | `""` | Prefix ngoài (thường /64) để mỗi exit bắt socket từ một địa chỉ khác nhau. Bắt buộc khi `stack=ipv6` muốn xoay IP. |
+| `warp.source_ipv6` | string | `""` | Prefix ngoài (thường /64) để mỗi exit bắt socket từ một địa chỉ khác nhau. Bắt buộc khi `stack=ipv6` muốn xoay IP. Khi để trống, gateway ưu tiên endpoint IPv4 để máy chỉ có IPv4 (WSL, NAT) vẫn lên được tunnel; khi có prefix, endpoint IPv6 được ưu tiên và IPv4 giữ làm dự phòng. |
 
 Đăng ký WARP được lưu ở `config.json.warp-state.json` (0600). Restart trong vòng 45s
 sẽ bỏ qua probe (tunnel cũ còn giữ session) và đăng ký mới; restart sau đó sẽ thử
@@ -52,6 +52,24 @@ dùng lại, tối đa 4s cho toàn bộ giai đoạn probe.
 | `proxies` | string[] | `["direct"]` | Danh sách proxy tĩnh: `direct`, `http://…`, `socks5://…`, hoặc `#file:…`. |
 | `proxyfile` | string | `""` | File chứa thêm proxy (mỗi dòng một proxy). Không lưu vào config. |
 | `proxy_bindings` | object | — | Ghim một khoá upstream vào một proxy cụ thể. |
+
+### 3.1 Giám sát usque
+
+Khi các exit WARP chạy bằng `usque` (SOCKS5 nội bộ), cài watchdog để một
+tunnel chết không nằm im trong danh sách proxy:
+
+```bash
+sudo install -m 0755 scripts/usque-watchdog.sh /opt/usque/usque-watchdog.sh
+sudo install -m 0644 scripts/usque-watchdog.service /etc/systemd/system/
+sudo install -m 0644 scripts/usque-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now usque-watchdog.timer
+```
+
+Watchdog probe từng cổng trong `USQUE_PORTS` (mặc định `13001`–`13008`) qua
+`https://www.cloudflare.com/cdn-cgi/trace`; cổng lỗi được `systemctl restart
+usque@<port>.service`. o2a vẫn chạy health check riêng định kỳ 2 phút và đánh
+dấu proxy lỗi ngay khi có traffic thật thất bại.
 
 ## 4. Upstream và retry
 
@@ -71,7 +89,16 @@ dùng lại, tối đa 4s cho toàn bộ giai đoạn probe.
 | `models.protocols` | object | `{}` | Ghi đè protocol upstream theo model id (`chat`, `responses`, `anthropic`, `systemone`). |
 | `models.free_only` | bool | `false` | Chỉ phục vụ mô hình miễn phí (bản này bật `true` → 11 mô hình). |
 | `models.active_probes` | bool | `false` | Probe chủ động để đo sẵn sàng (tốn quota); mặc định học thụ động từ request thật. |
+| `models.context_overrides` | object | `{}` | Giá trị khởi điểm cho `context`/`input`/`output` quảng cáo trong `/v1/models`. Traffic thật có thể nâng hoặc hạ `context` quanh giá trị này. |
 | `models.anonymous_backoff` | object | — | Cầu dao lane miễn phí: `threshold` (6), `base_hours` (1), `max_hours` (24). |
+
+`context_overrides` chỉ đổi con số **quảng cáo** cho discovery; gateway không chặn
+request theo giới hạn đó. `context` là seed: một success lớn hơn có thể nâng con số
+lên (trừ 5% an toàn), một lỗi context 400/413/422 có thể hạ xuống (trừ 10%).
+Quan sát lấy từ upstream cục bộ, peer, `/v1/systemone` và alias rotation; response
+lỗi context được kèm header `X-Context-Limit`. Quan sát được lưu ở
+`<config>.context-limits.json` và dùng lại sau restart; xoá file này để quay về
+seed/catalog.
 
 ## 6. Hiệu năng
 
@@ -89,6 +116,18 @@ dùng lại, tối đa 4s cho toàn bộ giai đoạn probe.
 | `performance.free_tier_block_seconds` | int | `900` | Thời gian loại một exit bị free tier chặn IP. |
 | `performance.model_timeouts` | object | `{}` | Hạn riêng theo model (giây), ghi đè `attempt_timeout_seconds`. |
 
+### Peer dự phòng
+
+| Trường | Kiểu | Mặc định | Ý nghĩa |
+| --- | --- | --- | --- |
+| `peers[].name` | string | — | Tên peer trong log, telemetry và header `X-Peer`. |
+| `peers[].base_url` | string | — | Gốc API của peer, không kèm `/v1`. |
+| `peers[].key` | string | — | Server Key của peer, thay cho credential của client khi chuyển tiếp. |
+| `peers[].tier` | int | `1` | Tier thấp thử trước; cùng tier xoay vòng. |
+| `peers[].timeout_seconds` | int | `180` | Chỉ giới hạn thời gian chờ **header** của peer. Stream SSE đã mở không bị cắt khi vượt ngưỡng này. |
+| `peers[].cooldown_seconds` | int | `60` | Thời gian tạm nghỉ sau 401/403/5xx; 429 ưu tiên `Retry-After`. |
+| `peers[].models` | string[] | `[]` | Giới hạn model peer phục vụ; rỗng là tất cả. |
+
 ## 7. Ghi log và WebUI
 
 | Trường | Kiểu | Mặc định | Ý nghĩa |
@@ -96,6 +135,7 @@ dùng lại, tối đa 4s cho toàn bộ giai đoạn probe.
 | `logging.level` | string | `info` | `debug`, `info`, `warn`, `error`. |
 | `logging.ring_size` | int | `2000` | Số sự kiện log giữ trong bộ nhớ cho WebUI (100–50000). |
 | `logging.dump_request_bodies` | bool | `false` | Ghi body gửi upstream (đã che bí mật, cắt ngắn) — chỉ bật khi debug. |
+| `storage.usage_sqlite` | string | `""` | Đường dẫn file SQLite lưu lịch sử usage; rỗng là tắt. Nên dùng đường dẫn tuyệt đối trong thư mục riêng (ví dụ `/opt/o2a/usage/usage.sqlite`) để file WAL/SHM không bị người khác đọc. |
 | `webui.enabled` | bool | `true` | Bật WebUI quản trị. **Cần restart** khi đổi. |
 | `webui.listen` | string | `0.0.0.0:8081` | Địa chỉ WebUI. **Cần restart**. |
 | `webui.username` | string | — | Tài khoản đăng nhập. |
@@ -109,10 +149,12 @@ dùng lại, tối đa 4s cho toàn bộ giai đoạn probe.
 | `reasoning.effort` | string | `""` | Mức suy luận mặc định khi client không nêu (`none`/`auto`/`low`…`high`). |
 | `reasoning.effort_by_model` | object | `{}` | Ghi đè theo model. |
 | `rotation.sota.alias` | string | `sota` | Tên alias luân chuyển "mạnh nhất". |
-| `rotation.sota.order` | string[] | — | Danh sách model theo thứ tự ưu tiên. |
+| `rotation.sota.order` | string[] | 5 model gợi ý | Thứ tự ưu tiên. Có thể rút gọn hoặc đổi tùy ý; model không còn trong catalog tự chuyển sang trạng thái không khả dụng thay vì làm hỏng cấu hình. |
 | `rotation.sweet.alias` | string | `sweet` | Alias luân chuyển "nhẹ/nhanh". |
-| `rotation.sweet.order` | string[] | `[]` | Thứ tự cho alias thứ hai. |
+| `rotation.sweet.order` | string[] | `[]` | Thứ tự ban đầu; model mới trong catalog được tự động thêm vào cuối. |
 | `rotation.first_output_seconds` | int | `30` | Nếu model đầu chưa ra chữ trong N giây thì chuyển model kế. |
+
+Hạn mức ngày của từng Server Key và bảng ngân sách egress `/64` được lưu cạnh file cấu hình (`config.json.quota.json`, `config.json.egress-quota.json`) và giữ nguyên qua restart trong cùng ngày UTC. File egress cũng tự xoá bộ đếm khi sang ngày mới.
 
 ## 9. Cấu hình đang chạy (VPS2, đã che bí mật)
 
@@ -138,6 +180,7 @@ dùng lại, tối đa 4s cho toàn bộ giai đoạn probe.
     "model_timeouts": {}
   },
   "logging": { "level": "info", "ring_size": 1000, "dump_request_bodies": false },
+  "storage": { "usage_sqlite": "/opt/o2a/usage/usage.sqlite" },
   "webui": { "enabled": true, "listen": "127.0.0.1:8092", "username": "admin", "session_ttl_minutes": 720 },
   "prefer": "go",
   "reasoning": { "effort": "high" }

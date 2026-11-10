@@ -38,6 +38,7 @@ type proxyTransport struct {
 	healthy      atomic.Bool
 	checking     atomic.Bool
 	blockedUntil atomic.Int64
+	lastChecked  atomic.Int64
 }
 
 // proxyTransports holds every configured proxy route, indexed by
@@ -82,12 +83,127 @@ type anonymousNodes struct {
 	breakerStrikes atomic.Int32
 	consecutive    atomic.Int32
 	probing        atomic.Bool
+	// walls tracks a model family's short-lived rate-limit wall across
+	// requests. Once two independent 429/quota answers land inside the
+	// window, the lane spends one short probe instead of walking every exit
+	// and then falls through to the authenticated tiers.
+	wallMu sync.Mutex
+	walls  map[string]*anonymousWall
 }
 
 type anonymousBackoff struct {
 	threshold int32
 	base      time.Duration
 	max       time.Duration
+}
+
+const (
+	anonymousWallThreshold    = 2
+	anonymousWallWindow       = time.Minute
+	anonymousWallCooldown     = time.Minute
+	anonymousWallProbeTimeout = 8 * time.Second
+)
+
+// anonymousWall records rate-limit evidence for one model family. The
+// upstream quota is scoped to a two-character model family and an egress
+// block, so a wall seen for "de" says nothing about "gl".
+type anonymousWall struct {
+	hits  int
+	first time.Time
+	until time.Time
+}
+
+// wallFamily returns the quota family key used by the free tier and the
+// egress board: the first two characters of the model ID.
+func wallFamily(model string) string {
+	if len(model) > 2 {
+		return model[:2]
+	}
+	return model
+}
+
+// noteWall records one rate-limit signal for model. It reports whether the
+// family is now inside a wall.
+func (p *anonymousNodes) noteWall(model string, now time.Time) bool {
+	if p == nil || model == "" {
+		return false
+	}
+	p.wallMu.Lock()
+	defer p.wallMu.Unlock()
+	if p.walls == nil {
+		p.walls = make(map[string]*anonymousWall)
+	}
+	key := wallFamily(model)
+	wall := p.walls[key]
+	if wall == nil {
+		wall = &anonymousWall{}
+		p.walls[key] = wall
+	}
+	if now.Before(wall.until) {
+		return true
+	}
+	if wall.first.IsZero() || now.Sub(wall.first) > anonymousWallWindow {
+		wall.hits = 1
+		wall.first = now
+		return false
+	}
+	wall.hits++
+	if wall.hits < anonymousWallThreshold {
+		return false
+	}
+	wall.until = now.Add(anonymousWallCooldown)
+	wall.hits = 0
+	wall.first = time.Time{}
+	return true
+}
+
+// wallActive reports whether model's family is in its short fast-fail window.
+func (p *anonymousNodes) wallActive(model string, now time.Time) bool {
+	if p == nil || model == "" {
+		return false
+	}
+	p.wallMu.Lock()
+	defer p.wallMu.Unlock()
+	wall := p.walls[wallFamily(model)]
+	if wall == nil {
+		return false
+	}
+	if !wall.until.IsZero() && now.Before(wall.until) {
+		return true
+	}
+	if !wall.until.IsZero() {
+		wall.until = time.Time{}
+		wall.hits = 0
+		wall.first = time.Time{}
+	}
+	return false
+}
+
+// clearWall closes the wall after a successful attempt.
+func (p *anonymousNodes) clearWall(model string) {
+	if p == nil || model == "" {
+		return
+	}
+	p.wallMu.Lock()
+	defer p.wallMu.Unlock()
+	delete(p.walls, wallFamily(model))
+}
+
+// wallProbeTimeout caps one probe attempt while a wall is open. A zero
+// configured timeout stays zero: the wall must not turn the first-event wait
+// on for a deployment that disabled it.
+func (p *anonymousNodes) wallProbeTimeout(model string, base time.Duration) time.Duration {
+	if p == nil || base <= 0 || model == "" {
+		return base
+	}
+	now := time.Now()
+	p.wallMu.Lock()
+	defer p.wallMu.Unlock()
+	wall := p.walls[wallFamily(model)]
+	if wall == nil || wall.until.IsZero() || !now.Before(wall.until) {
+		return base
+	}
+	return min(base, anonymousWallProbeTimeout)
 }
 
 type anonymousNode struct {
@@ -441,6 +557,25 @@ const maxAnonymousQuotaCooldown = 24 * time.Hour
 // base cooldown up to 8x. An upstream Retry-After is honoured in full (bounded
 // by one day) and flagged as a quota cooldown, because a spent quota window
 // does not reopen when the proxy recovers.
+// MarkQuotaSpent keeps an exit out of rotation until the free tier's counting
+// window resets after a 200 quota document. A 2xx response is not evidence
+// that the exit is broken, so MarkFailure would leave it in rotation; the
+// spent bucket is what makes it unusable. A Retry-After header wins when the
+// upstream supplies one.
+func (p *anonymousNodes) MarkQuotaSpent(node *anonymousNode, resp *http.Response) {
+	if node == nil || (node.proxy != nil && node.proxy.pool) {
+		return
+	}
+	delay := quotaResetAfter(time.Now())
+	if resp != nil {
+		if retryAfter := parseRetryAfter(resp.Header.Get("Retry-After")); retryAfter > 0 {
+			delay = min(retryAfter, maxAnonymousQuotaCooldown)
+		}
+	}
+	node.cooldownUntil.Store(time.Now().Add(delay).UnixNano())
+	node.quotaCooldown.Store(true)
+}
+
 func (p *anonymousNodes) MarkFailure(node *anonymousNode, resp *http.Response, err error) {
 	if node == nil || (node.proxy != nil && node.proxy.pool) {
 		return
@@ -563,15 +698,28 @@ type proxyHealthResult struct {
 // from the test URL proves that the route is reachable and restores the
 // proxy; any error keeps it unhealthy.
 func (p *proxyTransports) CheckHealth(ctx context.Context, target string, timeout time.Duration) []proxyHealthResult {
+	return p.check(ctx, target, timeout, false)
+}
+
+// CheckAll concurrently probes every non-pool proxy, including proxies still
+// marked healthy. A healthy flag is only an assumption until the route is
+// exercised: an external tunnel can die while its local SOCKS listener stays
+// open. Checking all routes periodically is therefore required to detect a
+// silent outage instead of waiting for real traffic to fail.
+func (p *proxyTransports) CheckAll(ctx context.Context, target string, timeout time.Duration) []proxyHealthResult {
+	return p.check(ctx, target, timeout, true)
+}
+
+func (p *proxyTransports) check(ctx context.Context, target string, timeout time.Duration, includeHealthy bool) []proxyHealthResult {
 	results := make(chan proxyHealthResult, len(p.items))
 	checks := 0
 	for _, proxy := range p.items {
-		if proxy.pool || proxy.healthy.Load() || !proxy.checking.CompareAndSwap(false, true) {
+		if proxy.pool || !proxy.checking.CompareAndSwap(false, true) {
 			continue
 		}
-		// A real request may have restored the proxy between the first health
-		// read and claiming this check.
-		if proxy.healthy.Load() {
+		// A real request may have restored the proxy between the health read
+		// and claiming this check. A full sweep deliberately ignores that flag.
+		if !includeHealthy && proxy.healthy.Load() {
 			proxy.checking.Store(false)
 			continue
 		}
@@ -592,7 +740,10 @@ func (p *proxyTransports) CheckHealth(ctx context.Context, target string, timeou
 // marks the proxy healthy, a proxy-route failure marks it unhealthy, and any
 // other error leaves the flag as it is.
 func (p *proxyTransports) checkClaimedProxy(ctx context.Context, proxy *proxyTransport, target string, timeout time.Duration) proxyHealthResult {
-	defer proxy.checking.Store(false)
+	defer func() {
+		proxy.lastChecked.Store(time.Now().UnixNano())
+		proxy.checking.Store(false)
+	}()
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, target, nil)

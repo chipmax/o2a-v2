@@ -86,7 +86,7 @@ Hai giới hạn thật của upstream (đo, không sửa được bằng code):
 
 ### ✅ Trang “Ngân sách /64” trong WebUI
 
-- `GET /api/egress-quota` + `webui/js/pages/egress.js`, i18n vi/en/it.
+- `GET /api/egress-quota` + `webui/js/pages/egress.js`, i18n vi/en.
 - Mỗi dòng: egress /64, họ model, trạng thái (sẵn sàng/đang nghỉ/chưa dùng),
   số request, số lần hết quota, thời gian nghỉ còn lại, mốc reset UTC.
 
@@ -101,25 +101,29 @@ Hai giới hạn thật của upstream (đo, không sửa được bằng code):
 
 ## 4. Đề xuất tiếp (theo ưu tiên)
 
-### P1 — Alias luân chuyển biết quota
+### ✅ P1 — Alias luân chuyển biết quota (bản cơ bản, 2026-11-09)
 
-`sota`/`sweet` hiện chọn model theo thứ tự cố định. Khi họ `de…` đã hết xô, chuyển
-ngay sang họ còn hạn (ví dụ `ic…`, `gl…`) thay vì thử rồi 429.
+`FailQuota` tạm nghỉ **toàn bộ họ model 2 ký tự** khi một model bị 429 và chuyển
+`Current` sang họ còn hạn (ví dụ `ic…`, `gl…`) thay vì thử anh em cùng xô. Phần chọn
+theo bảng quota còn lại (số request còn lại từng /64) vẫn là việc tiếp theo.
 
 ### P1 — Bảng "ngân sách /64" nâng cấp (đã có bản cơ bản)
 
 - Thêm biểu đồ theo giờ và lịch sử 7 ngày (hiện chỉ giữ trong bộ nhớ, reset khi restart).
 
-### P1 — Lưu usage bằng SQLite (pure Go: `modernc.org/sqlite`)
+### ✅ P1 — Lưu usage bằng SQLite (bản cơ bản, 2026-11-09)
 
-- Hiện telemetry chỉ nằm trong RAM, restart là mất.
-- Bảng: ngày, khoá, model, tier, status, in/out token, latency.
-- Dùng cho: biểu đồ 7 ngày trong WebUI, xuất CSV, tính hạn mức ngày chính xác.
+- `internal/telemetry/store.go` dùng `modernc.org/sqlite`, WAL, hàng đợi nền.
+- Bảng `usage_requests`: thời điểm, request/session, server key, model, tier, key upstream,
+  channel, proxy, attempts, status, latency, outcome, token vào/ra/cache/reasoning/total.
+- Bật bằng `storage.usage_sqlite`; lỗi/đầy hàng đợi không chặn request.
+- Còn tiếp: biểu đồ 7 ngày trong WebUI, xuất CSV, tính hạn mức ngày chính xác.
 
-### P1 — `/metrics` Prometheus
+### ✅ P1 — `/metrics` Prometheus (bản cơ bản, 2026-11-09)
 
-`requests_total{status,tier,model}`, `quota_429_total{reason}`, `warp_exits{state}`,
-`request_duration_seconds` (histogram). Rất rẻ, dùng được với Grafana/Uptime Kuma.
+Đã có `requests_total`, `tokens_total`, `request_duration_seconds`, model/tier/status,
+upstream attempts, proxy/WARP health và catalog size. Còn tiếp: `quota_429_total{reason}`
+và histogram thật thay cho phân vị xấp xỉ từ summary hiện tại.
 
 ### P2 — SSE guard (giảm `stream_failed`)
 
@@ -151,3 +155,86 @@ DSH/opencode, cùng script đổi nhanh (PowerShell/bash).
 2. **zen-gate**: có tắt hẳn 2 service `zen-gate`, `zen-gate6` và gỡ các tier zen trong router
    không? (Hiện vẫn chạy nhưng không còn được o2a-v2 dùng; router còn dùng cho model Kilo.)
 3. **P0 gộp router**: làm ngay trong binary hay giữ router Python thêm một thời gian?
+
+## 5. Cập nhật 2026-11-09 — health, UI gọn, usque watchdog
+
+### Đã triển khai
+
+- **Health check toàn bộ proxy khi khởi động và mỗi 2 phút**: trước đây chỉ kiểm tra
+  proxy đang unhealthy sau một lỗi traffic; usque chết mà SOCKS listener vẫn mở nên
+  proxy "healthy" giả. `CheckAll` nay thăm cả 8 exit, ghi `last_checked` và đánh dấu
+  unhealthy trước khi request thật mất.
+- **`POST /api/proxies/check` + nút “Kiểm tra proxy”** trên trang Egress: chạy một
+  lượt kiểm tra thủ công, trả số route đã thử; UI tự refresh monitor và hiện giờ kiểm tra.
+- **WebUI 4 mục**: Tổng quan · Mô hình & Key · Egress & WARP · Cài đặt. API Key và
+  Chẩn đoán thành thao tác nhanh ở Tổng quan. Bỏ các mục nav trùng/không còn trang.
+- **Cache/version**: asset tĩnh vẫn `Cache-Control: no-cache`; thêm header
+  `X-O2A-Build` để đối chiếu binary đang chạy.
+- **usque watchdog**: `scripts/usque-watchdog.{sh,service,timer}` + `--always-reconnect`
+  trong `scripts/usque-run-socks`; probe 8 cổng mỗi 2 phút, restart service chết.
+- **WARP nội bộ tạm tắt trên host này**: host WSL không còn route IPv6 toàn cầu; pool
+  IPv6 không dựng lại được, IPv4 dựng được nhưng request free tier timeout. Lane free
+  đang đi qua 8 exit usque và đã smoke-test 200. Khi có IPv6 thật, bật lại
+  `warp.enabled` + `warp.stack=ipv6` để có thêm các xô /64.
+
+### Đề xuất P1 — đánh giá `Deury08/warp-minimal`
+
+Repo tham khảo: <https://github.com/Deury08/warp-minimal> (MIT, Go 1.26+).
+
+Điểm mạnh đáng lấy:
+
+- MASQUE QUIC/UDP 443 (cùng transport 1.1.1.1), không cần root/TUN.
+- Pool preload toàn bộ, tự thay exit chết, backoff đăng ký 10–60s.
+- Xoay ngay khi 429/403 hoặc lỗi socket; cooldown theo /64 (IPv6) hoặc /32 (IPv4).
+- `POST /swap` đổi đúng một exit, `X-Warp-Exit` cho biết exit phục vụ; `/health` JSON.
+- uTLS Bun ClientHello và PMTUD cho upload lớn.
+
+Đề xuất tích hợp (không thay usque ngay):
+
+1. Chạy `warp-minimal` như sidecar HTTP proxy nội bộ cạnh usque; thêm vài endpoint
+   `http://127.0.0.1:8789` vào `proxies` để so sánh tỷ lệ 429 và TTFB trong 1–2 ngày.
+2. Nếu thắng, thay dần usque bằng một pool MASQUE do warp-minimal quản lý; o2a giữ
+   health check + quota board, chỉ đổi danh sách proxy.
+3. Chỉ nhúng code MASQUE vào binary nếu cần bỏ sidecar; chi phí là quic-go + gVisor
+   (~vài MB, thêm bề mặt bảo trì), nên để sau khi số liệu chứng minh lợi ích.
+
+Tiêu chí nghiệm thu: 8/8 exit health, free request 200 trong <10s, không tăng 429
+sau 24h, RSS tăng <50MB, và restart không làm mất toàn bộ pool.
+
+### Đo thử 2026-11-09 (sidecar cách ly, cổng 18789)
+
+- Build từ `main` (`go1.26.0`), chạy MASQUE IPv6, pool 2; `/health` báo 2/2 exit
+  healthy sau ~8 giây. `curl -x` tới `cloudflare.com/cdn-cgi/trace` trả `warp=on`,
+  IPv6 `2a09:bac5:…`, colo HKG.
+- Qua o2a tạm (chỉ proxy MASQUE, 3 request `deepseek-v4.1-flash-free`): cả 3 trả
+  HTTP 200 nhưng **leg anonymous đều 429**, sau đó fallback Zen key; TTFB 2.6–16.5s.
+- Cùng 3 request qua usque đang chạy: 3/3 `anon:200`, TTFB 1.1–1.8s.
+- Kết luận: MASQUE chạy được nhưng chưa thay usque cho làn free; giữ sidecar tách
+  riêng, không thêm vào `proxies` production. Cần thử lại với exit /64 thật hoặc
+  sau 24h trước khi đổi.
+
+## 6. Cập nhật 2026-11-09 — ổn định WebUI và hiển thị egress
+
+- **Model list không hiện khi mở trang**: API hạn mức có thể treo qua tunnel/SSH;
+  `load()` giữ cờ `loading` vĩnh viễn nên lần mở sau không thử lại. `api()` nay có
+  timeout cứng bằng `Promise.race` + `AbortController` (mặc định 30s, hạn mức 15s,
+  các tác vụ dài như kiểm tra proxy/lưu cấu hình có timeout riêng), nên nút và trang
+  luôn thoát trạng thái “Đang đọc…” và có thể bấm lại.
+- **Monitor 3s chồng request**: `refreshMonitor()` bỏ qua lượt mới khi lượt trước còn
+  chạy; tránh dồn request khi tunnel chậm và tránh reset kết nối.
+- **Tổng quan không hiện IP WARP**: khi pool vừa restart, `warp.active=0` và
+  `warp.egress` rỗng; trang chỉ hiện `—`. Nay lấy thêm `/64` từ `warp.exits` (kể cả
+  exit đang cooling) và hiển thị trạng thái “Đang nghỉ / chờ”.
+- **i18n**: chỉ còn `vi` và `en`; xoá toàn bộ copy tiếng Trung khỏi WebUI, README và
+  tài liệu quản trị. Nav còn 4 mục: Tổng quan · Mô hình & Key · Egress & WARP · Cài đặt.
+- **Test quota song song ổn định**: `TestConcurrentQuotaLimit` dùng ngân sách upstream
+  60s, chờ đủ 2 request thực sự tới upstream, reset quota toàn cục trước mỗi lượt và
+  gom lỗi goroutine qua channel. `go test -race` 5 lượt và `-count=50` đều pass; trước
+  đó timeout 5s làm test flake dưới race detector.
+- **Phân biệt khoá cổng**: router `8090` dùng mục `keys` riêng trong
+  `/opt/o2a-router/config.json`; gateway `6363` dùng `server_keys` của o2a-v2. Gửi khoá
+  sai cổng trả `401` dù cả hai đều đúng ở cổng còn lại.
+- **Rò socket khi fallback 400/404**: router đọc body lỗi mềm nhưng không đóng response
+  upstream; nay đóng trong `finally`. Test 100 request fallback: 200/200,
+  `X-Router-Upstream: b`, FD giữ nguyên 4 → 4. Cùng lỗi được đóng ở nhánh transport
+  failure và proxy WebUI.

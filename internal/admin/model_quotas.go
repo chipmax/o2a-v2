@@ -64,13 +64,13 @@ func decodeQuota(reader io.Reader) (map[string]quotaWindow, error) {
 		} `json:"usage"`
 	}
 	if err := json.NewDecoder(io.LimitReader(reader, 1<<20)).Decode(&body); err != nil {
-		return nil, errors.New("OpenCode 返回的额度格式无法识别")
+		return nil, errors.New("OpenCode returned an unrecognised quota document")
 	}
 	result := map[string]quotaWindow{}
 	for _, name := range []string{"rolling", "weekly", "monthly"} {
 		item, ok := body.Usage[name]
 		if !ok || item.Percent == nil || *item.Percent < 0 || *item.Percent > 100 || item.ResetsAt.IsZero() || (item.Status != "ok" && item.Status != "rate-limited") {
-			return nil, errors.New("OpenCode 返回的额度窗口不完整")
+			return nil, errors.New("OpenCode returned an incomplete quota window")
 		}
 		result[name] = quotaWindow{Status: item.Status, UsedPercent: *item.Percent, RemainingPercent: 100 - *item.Percent, ResetsAt: item.ResetsAt}
 	}
@@ -83,7 +83,7 @@ func decodeQuota(reader io.Reader) (map[string]quotaWindow, error) {
 func fetchQuota(ctx context.Context, endpoint, key string) (map[string]quotaWindow, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, errors.New("额度查询地址无效")
+		return nil, errors.New("invalid quota endpoint")
 	}
 	// The Go lane is a v2 lane: report the v2 CLI identity and a canonical
 	// session pinned to the key instead of anything naming the gateway.
@@ -97,19 +97,19 @@ func fetchQuota(ctx context.Context, endpoint, key string) (map[string]quotaWind
 	client := &http.Client{Timeout: 12 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, errors.New("暂时无法连接 OpenCode，请稍后刷新")
+		return nil, errors.New("cannot reach OpenCode right now; refresh again later")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
 		switch resp.StatusCode {
 		case 401:
-			return nil, errors.New("Go API Key 无效或已被撤销")
+			return nil, errors.New("the Go API key is invalid or revoked")
 		case 403:
-			return nil, errors.New("此 Key 未获准读取 Go 套餐额度")
+			return nil, errors.New("this key is not allowed to read Go plan quota")
 		case 429:
-			return nil, errors.New("额度查询过于频繁，请稍后刷新")
+			return nil, errors.New("quota queries are rate-limited; refresh again later")
 		default:
-			return nil, fmt.Errorf("OpenCode 额度接口返回 HTTP %d", resp.StatusCode)
+			return nil, fmt.Errorf("OpenCode quota endpoint returned HTTP %d", resp.StatusCode)
 		}
 	}
 	return decodeQuota(resp.Body)
@@ -188,17 +188,42 @@ func (a *Server) handleModelQuotas(w http.ResponseWriter, r *http.Request) {
 	type modelView struct {
 		ID       string `json:"id"`
 		Protocol string `json:"protocol"`
+		Tier     string `json:"tier"`
+		Free     bool   `json:"free"`
+		// ContextWindow and ContextSource describe what /v1/models advertises
+		// for this model; the observations say why it is what it is.
+		ContextWindow   int    `json:"context_window,omitempty"`
+		ContextObserved int    `json:"context_observed,omitempty"`
+		ContextRejected int    `json:"context_rejected,omitempty"`
+		ContextSource   string `json:"context_source,omitempty"`
 	}
 	models := []modelView{}
 	for _, model := range all {
-		if model.AvailableGo && model.RouteError == "" {
-			protocol := model.NativeProtocols[config.TierGo]
-			models = append(models, modelView{ID: model.Model, Protocol: string(protocol)})
+		// Include every model the current credentials can actually route,
+		// not only the Go plan. With anonymous enabled and no Go keys this is
+		// the free-model list, which is exactly what the console should show.
+		if model.RouteError != "" || model.Tier == "" {
+			continue
 		}
+		protocol := model.NativeProtocol
+		if native, ok := model.NativeProtocols[model.Tier]; ok {
+			protocol = native
+		}
+		view := modelView{
+			ID: model.Model, Protocol: string(protocol), Tier: string(model.Tier),
+			Free: model.AnonymousEligibility.Allowed,
+		}
+		if info, ok := a.manager.ContextLimitInfo(model.Model); ok {
+			view.ContextWindow = info.Context
+			view.ContextObserved = info.Observed
+			view.ContextRejected = info.RejectedAt
+			view.ContextSource = info.Source
+		}
+		models = append(models, view)
 	}
 	httpx.WriteJSON(w, 200, map[string]any{
 		"models": models, "accounts": accounts, "scope": "shared_subscription", "source": endpoint,
 		"cache_seconds": 60, "catalog": a.manager.Resources().Models,
-		"note": "OpenCode 返回套餐共享额度，未提供逐模型独立余额；多个 Go Key 可能属于同一套餐，不能相加。百分比由上游取整。",
+		"note": "OpenCode reports a shared plan quota, not a per-model balance; multiple Go keys may belong to the same plan and must not be added together. Upstream rounds the percentages.",
 	})
 }

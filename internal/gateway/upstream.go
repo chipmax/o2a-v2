@@ -461,6 +461,10 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	// then reports errDeterministicClientRejection so the caller keeps this
 	// 4xx instead of replacing it with a later tier's answer.
 	halted := false
+	// quotaSpent records that an exit answered 200 with the free tier's quota
+	// document. The response must not be forwarded as a success even when it
+	// is the last one the walk keeps.
+	quotaSpent := false
 	cursor := g.anonymous.CursorForOffset(ids.Session, attemptOffset)
 	limit := min(g.anonymous.Len(), g.maxAnonymousExits())
 	if g.anonymous.HasPool() && g.cfg.Retry.MaxAttempts > limit {
@@ -487,6 +491,12 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	isTitle := isTitleGenerationBody(rawBody)
 	if isTitle {
 		limit = 1
+	}
+	if g.anonymous.wallActive(route.ID, time.Now()) {
+		// Two 429/quota answers already showed this family is walled. Spend a
+		// single short probe so a reset or a fresh exit is still noticed, then
+		// let the authenticated tiers answer instead of walking every exit.
+		limit = min(limit, 1)
 	}
 	// The anonymous free tier only serves agent-shaped streaming requests
 	// carrying the required tool definitions (anything else is rejected with 403
@@ -548,8 +558,14 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 				req.Close = true
 			}
 			setRequestCredential(ctx, config.TierZen, "anonymous", "anonymous", true, node.proxy)
+			firstEventTimeout := time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds) * time.Second
+			attemptTimeout := g.attemptTimeoutFor(route.ID)
+			if g.anonymous.wallActive(route.ID, time.Now()) {
+				firstEventTimeout = g.anonymous.wallProbeTimeout(route.ID, firstEventTimeout)
+				attemptTimeout = g.anonymous.wallProbeTimeout(route.ID, attemptTimeout)
+			}
 			started := time.Now()
-			resp, err := doInferenceAttempt(g.inferenceClient(node.proxy, baseURL, route.ID), req, time.Duration(g.cfg.Performance.FirstEventTimeoutSeconds)*time.Second, g.attemptTimeoutFor(route.ID))
+			resp, err := doInferenceAttempt(g.inferenceClient(node.proxy, baseURL, route.ID), req, firstEventTimeout, attemptTimeout)
 			duration := time.Since(started)
 			if ctx.Err() != nil {
 				// The parent budget expired while this attempt was in flight. Its
@@ -562,9 +578,21 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 				break
 			}
 			nodeResp, nodeErr = resp, err
+			quotaDocument := err == nil && resp != nil && resp.StatusCode/100 == 2 && isQuotaErrorDocument(resp)
+			if quotaDocument {
+				// The v2 lane answers 200 with an error document once the
+				// egress bucket is spent. Treating it as success forwarded a
+				// body the client cannot parse and left the exit in rotation.
+				nodeErr = errFreeTierQuotaSpent
+				lastResponse, lastErr = resp, nodeErr
+				quotaSpent = true
+				g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, node.proxy, resp, nodeErr, duration)
+				g.logger.Warn("free tier answered 200 with a quota error document; rotating the exit", "component", "upstream", "event", "free_tier_quota_document", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "upstream", config.RedactURL(baseURL), "proxy", config.RedactURL(node.proxy.name))
+				break
+			}
 			g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, "anonymous", "anonymous", true, node.proxy, resp, err, duration)
 			if err == nil && resp.StatusCode/100 == 2 {
-				g.observeAnonymousResult(ctx, node, resp, nil)
+				g.observeAnonymousResult(ctx, route.ID, node, resp, nil)
 				g.logger.Debug("anonymous upstream accepted request", "component", "upstream", "event", "anonymous_attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "upstream", config.RedactURL(baseURL), "key_id", "anonymous", "channel", "anonymous", "anonymous", true, "proxy", config.RedactURL(node.proxy.name), "status", resp.StatusCode, "duration_ms", duration.Milliseconds())
 				return resp, nil, attempts
 			}
@@ -611,7 +639,13 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 		if ctx.Err() != nil {
 			break
 		}
-		g.observeAnonymousResult(ctx, node, nodeResp, nodeErr)
+		g.observeAnonymousResult(ctx, route.ID, node, nodeResp, nodeErr)
+		if g.anonymous.wallActive(route.ID, time.Now()) {
+			// The family is walled: another exit in this walk would spend the
+			// same request budget for the same 429. Leave the last response for
+			// the caller and fall through to the authenticated tiers.
+			break
+		}
 		if g.anonymous.Open() {
 			// This attempt tripped the breaker (or another request did):
 			// continuing the walk would keep probing a lane that is now
@@ -640,6 +674,9 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 		// the block instead would hide the real cause.
 		if halted {
 			return lastResponse, errDeterministicClientRejection, attempts
+		}
+		if quotaSpent {
+			return lastResponse, errFreeTierQuotaSpent, attempts
 		}
 		if blocked {
 			return lastResponse, errFreeTierIPBlocked, attempts
@@ -1181,27 +1218,40 @@ func (g *Gateway) observeKeyResult(ctx context.Context, nodes *upstreamNodes, no
 // observeAnonymousResult is the anonymous counterpart of observeKeyResult: it
 // syncs the proxy's health and clears or extends the anonymous node's
 // per-proxy cooldown, except for diagnostic requests.
-func (g *Gateway) observeAnonymousResult(ctx context.Context, node *anonymousNode, resp *http.Response, err error) {
+func (g *Gateway) observeAnonymousResult(ctx context.Context, model string, node *anonymousNode, resp *http.Response, err error) {
 	if isDiagnosticRequest(ctx) {
 		return
 	}
 	status := upstreamStatus(resp)
 	g.syncProxyResult(ctx, node.proxy, status, err)
+	if errors.Is(err, errFreeTierQuotaSpent) {
+		// A 200 quota document is a spent bucket, not a broken exit: retire it
+		// until the UTC window resets and let the request fall through to a
+		// keyed tier. It is rate-limit evidence for the family, but not a lane
+		// failure that should trip the hours-long breaker.
+		g.anonymous.MarkQuotaSpent(node, resp)
+		g.anonymous.noteWall(model, time.Now())
+		return
+	}
 	if err == nil && status/100 == 2 {
 		g.anonymous.MarkSuccess(node)
 		g.anonymous.NoteSuccess()
-	} else {
-		g.anonymous.MarkFailure(node, resp, err)
-		if resp != nil && peekNetworkAbuseBlock(resp) {
-			// An IP block is scoped to this exit; doAnonymousUpstream marks it
-			// blocked and opens the lane breaker only when no exit is left.
-			// Counting it here as well would stop the other exits early.
-			return
-		}
-		if pause, tripped := g.anonymous.NoteFailure(); tripped {
-			g.logger.Warn("anonymous lane circuit breaker opened",
-				"component", "upstream", "event", "anonymous_breaker_open", "status", status, "paused_for", pause.String())
-		}
+		g.anonymous.clearWall(model)
+		return
+	}
+	g.anonymous.MarkFailure(node, resp, err)
+	if status == http.StatusTooManyRequests {
+		g.anonymous.noteWall(model, time.Now())
+	}
+	if resp != nil && peekNetworkAbuseBlock(resp) {
+		// An IP block is scoped to this exit; doAnonymousUpstream marks it
+		// blocked and opens the lane breaker only when no exit is left.
+		// Counting it here as well would stop the other exits early.
+		return
+	}
+	if pause, tripped := g.anonymous.NoteFailure(); tripped {
+		g.logger.Warn("anonymous lane circuit breaker opened",
+			"component", "upstream", "event", "anonymous_breaker_open", "status", status, "paused_for", pause.String())
 	}
 }
 

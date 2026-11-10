@@ -121,21 +121,26 @@ type UpstreamAttempt struct {
 // because a single request can try several keys before it succeeds. A request
 // that never reached an upstream is recorded too, with Channel "not_routed".
 type UpstreamRequest struct {
-	Time        time.Time `json:"time"`
-	RequestID   string    `json:"request_id"`
-	Session     string    `json:"session,omitempty"`
-	ServerKeyID string    `json:"server_key_id,omitempty"`
-	Model       string    `json:"model"`
-	Tier        string    `json:"tier,omitempty"`
-	KeyID       string    `json:"key_id,omitempty"`
-	Channel     string    `json:"channel"`
-	Anonymous   bool      `json:"anonymous"`
-	Proxy       string    `json:"proxy_node,omitempty"`
-	Attempts    int       `json:"attempts"`
-	Status      int       `json:"status"`
-	DurationMS  int64     `json:"duration_ms"`
-	Success     bool      `json:"success"`
-	Outcome     string    `json:"outcome"`
+	Time            time.Time `json:"time"`
+	RequestID       string    `json:"request_id"`
+	Session         string    `json:"session,omitempty"`
+	ServerKeyID     string    `json:"server_key_id,omitempty"`
+	Model           string    `json:"model"`
+	Tier            string    `json:"tier,omitempty"`
+	KeyID           string    `json:"key_id,omitempty"`
+	Channel         string    `json:"channel"`
+	Anonymous       bool      `json:"anonymous"`
+	Proxy           string    `json:"proxy_node,omitempty"`
+	Attempts        int       `json:"attempts"`
+	Status          int       `json:"status"`
+	DurationMS      int64     `json:"duration_ms"`
+	Success         bool      `json:"success"`
+	Outcome         string    `json:"outcome"`
+	InputTokens     uint64    `json:"input_tokens,omitempty"`
+	OutputTokens    uint64    `json:"output_tokens,omitempty"`
+	CachedTokens    uint64    `json:"cached_tokens,omitempty"`
+	ReasoningTokens uint64    `json:"reasoning_tokens,omitempty"`
+	TotalTokens     uint64    `json:"total_tokens,omitempty"`
 }
 
 // attemptBucket holds the upstream attempts of one minute, like metricBucket.
@@ -291,6 +296,16 @@ type Metrics struct {
 	attemptBuckets  [60]attemptBucket
 	recentRequests  upstreamRequestBuffer
 	recentAttempts  upstreamAttemptBuffer
+	requestSink     func(UpstreamRequest)
+}
+
+// SetRequestSink installs a callback for every completed routed request. The
+// callback must not block: it runs after the monitor's lock is released, but
+// still on the request goroutine.
+func (m *Metrics) SetRequestSink(sink func(UpstreamRequest)) {
+	m.mu.Lock()
+	m.requestSink = sink
+	m.mu.Unlock()
 }
 
 // Monitor creates an empty Metrics whose uptime starts now.
@@ -327,6 +342,11 @@ func (m *Metrics) Record(endpoint string, status int, duration time.Duration, me
 	} else {
 		m.errors.Add(1)
 	}
+	tokens := TokenCounts{}
+	if meta != nil {
+		tokens = tokenCounts(meta.Usage)
+	}
+	var completed *UpstreamRequest
 	minute := time.Now().Unix() / 60
 	m.mu.Lock()
 	bucket := &m.buckets[minute%60]
@@ -363,7 +383,6 @@ func (m *Metrics) Record(endpoint string, status int, duration time.Duration, me
 				bucket.usageReported++
 				m.lifetimeUsage.Reported++
 			}
-			tokens := tokenCounts(meta.Usage)
 			addTokenCounts(&bucket.tokens, tokens)
 			addTokenCounts(&m.lifetimeUsage.Tokens, tokens)
 			addTokenMap(bucket.usageModels, meta.Model, tokens)
@@ -380,7 +399,8 @@ func (m *Metrics) Record(endpoint string, status int, duration time.Duration, me
 				Time: time.Now().UTC(), RequestID: meta.Request, Session: meta.Session, ServerKeyID: meta.ServerKeyID, Model: meta.Model, Tier: meta.Tier,
 				KeyID: meta.KeyID, Channel: meta.Channel, Anonymous: meta.Anonymous, Proxy: meta.Proxy,
 				Attempts: meta.Attempts, Status: status, DurationMS: max(duration.Milliseconds(), 0),
-				Success: success,
+				Success: success, InputTokens: tokens.Input, OutputTokens: tokens.Output,
+				CachedTokens: tokens.Cached, ReasoningTokens: tokens.Reasoning, TotalTokens: tokens.Total,
 			}
 			if request.Channel == "" {
 				request.Channel = "not_routed"
@@ -394,9 +414,14 @@ func (m *Metrics) Record(endpoint string, status int, duration time.Duration, me
 			}
 			m.recentRequests.PruneBefore(request.Time.Add(-time.Hour))
 			m.recentRequests.Add(request)
+			completed = &request
 		}
 	}
+	sink := m.requestSink
 	m.mu.Unlock()
+	if completed != nil && sink != nil {
+		sink(*completed)
+	}
 }
 
 // requestSucceeded reports whether a request counts as a success: a 2xx or 3xx

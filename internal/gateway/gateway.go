@@ -106,11 +106,21 @@ type Gateway struct {
 	freeTierBlock time.Duration
 	// refreshMu prevents overlapping catalog refreshes across concurrent or scheduled callers.
 	refreshMu sync.Mutex
+	// rotationSyncMu guards the cached catalog revision and Go key count used
+	// to skip rebuilding the rotation availability map on every request.
+	rotationSyncMu sync.Mutex
+	rotationSynced bool
+	rotationAt     time.Time
+	rotationGoKeys int
+	rotationAvail  uint64
 	// peers are other o2a gateways this one falls back to when every local
 	// lane fails, so a single listen address serves the whole fleet.
 	peers *peerPool
 	// quota records per-egress free-tier spend for the budget page.
 	quota *quotaBoard
+	// contextLimits persists what live traffic has proven about each model's
+	// usable context. The controller shares one board across hot reloads.
+	contextLimits *models.ContextLimits
 	// peerFirst holds, per model family, the moment its local free-tier bucket
 	// resets after the upstream reported it spent. While it is in the future,
 	// requests for that family go to a peer first.
@@ -148,6 +158,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 	catalog := models.Catalog(cfg.Prefer, cfg.Models.Protocols)
 	catalog.SetRefreshInterval(time.Duration(cfg.Models.RefreshSeconds) * time.Second)
 	catalog.SetFreeOnly(cfg.Models.FreeOnly)
+	contextLimits, _ := models.OpenContextLimits("")
 	return &Gateway{
 		cfg:            cfg,
 		rotation:       rotationManager,
@@ -162,7 +173,8 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 		attemptTimeout: attemptDeadline(cfg),
 		freeTierBlock:  time.Duration(cfg.Performance.FreeTierBlockSeconds) * time.Second,
 		peers:          newPeerPool(cfg.Peers),
-		quota:          newQuotaBoard(),
+		quota:          egressQuota,
+		contextLimits:  contextLimits,
 	}, nil
 }
 
@@ -190,6 +202,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/messages", g.authenticate(g.handleInference(wire.Anthropic)))
 	mux.HandleFunc("POST /v1/systemone", g.authenticate(g.handleSystemOne))
 	mux.HandleFunc("GET /healthz", g.handleHealth)
+	mux.HandleFunc("GET /metrics", g.handleMetrics)
 	return telemetry.Recover(g.logger, mux)
 }
 
@@ -228,23 +241,27 @@ func (g *Gateway) authenticate(next http.HandlerFunc) http.HandlerFunc {
 		if isDiagnosticRequest(r.Context()) {
 			caller = telemetry.PlaygroundServerKey
 		}
-		release, refusal := quota.acquire(caller, g.cfg.PolicyByID(caller))
-		if refusal != nil {
-			protocol := wire.Chat
-			if r.URL.Path == "/v1/messages" {
-				protocol = wire.Anthropic
-			}
-			seconds := int((refusal.retryAfter + time.Second - 1) / time.Second)
-			w.Header().Set("Retry-After", strconv.Itoa(seconds))
-			wire.WriteError(w, protocol, http.StatusTooManyRequests, refusal.message, refusal.code, "")
-			return
-		}
-		defer release()
 		if meta := telemetry.MetaFromRequest(r); meta != nil {
 			meta.ServerKeyID = caller
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), callerContextKey{}, caller)))
 	}
+}
+
+// acquireQuota applies the caller's per-key policy to one inference request.
+// It is called by the inference handlers after the model-name checks, not by
+// authenticate: listing models, rejected requests and malformed bodies must
+// not consume a daily budget or hold a concurrency slot.
+func (g *Gateway) acquireQuota(w http.ResponseWriter, r *http.Request, external wire.Protocol) (func(), bool) {
+	caller := callerScope(r.Context())
+	release, refusal := quota.acquire(caller, g.cfg.PolicyByID(caller))
+	if refusal == nil {
+		return release, true
+	}
+	seconds := int((refusal.retryAfter + time.Second - 1) / time.Second)
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	wire.WriteError(w, external, http.StatusTooManyRequests, refusal.message, refusal.code, "")
+	return nil, false
 }
 
 type callerContextKey struct{}
@@ -301,6 +318,7 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 		meta := telemetry.MetaFromRequest(r)
 		if meta != nil {
 			meta.Model = model
+			meta.RequestBytes = int64(len(body))
 		}
 		if model == "" {
 			wire.WriteError(w, external, http.StatusBadRequest, "model is required", "invalid_request_error", "model")
@@ -311,6 +329,11 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			return
 		}
 		if id := g.rotation.GroupID(model); id != "" {
+			release, ok := g.acquireQuota(w, r, external)
+			if !ok {
+				return
+			}
+			defer release()
 			g.handleRotation(w, r, external, payload, id, model)
 			return
 		}
@@ -322,8 +345,21 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 		if !g.catalog.Supported(model) {
 			// A peer may know a model this instance does not: forward before
 			// answering "unknown model", so one address stays authoritative.
-			if g.tryPeers(r.Context(), w, r, body, model, ids.Request) {
-				return
+			// Only that forwarding path is an inference request; a local 404
+			// does not spend the caller's budget.
+			if g.peers.Len() > 0 {
+				release, ok := g.acquireQuota(w, r, external)
+				if !ok {
+					return
+				}
+				defer release()
+				if served, status := g.tryPeersStatus(r.Context(), w, r, body, model, config.Tier(""), ids.Request); served {
+					if status/100 != 2 {
+						quota.refund(callerScope(r.Context()))
+					}
+					return
+				}
+				quota.refund(callerScope(r.Context()))
 			}
 			// A model the catalog has never heard of is a bad model NAME: 404
 			// tells a client to pick a different model. A model the catalog
@@ -364,6 +400,11 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				wire.WriteError(w, external, http.StatusBadRequest, "this model uses System One decisions, not chat; send state and typed questions to /v1/systemone", "invalid_request_error", "model")
 				return
 			}
+			release, ok := g.acquireQuota(w, r, external)
+			if !ok {
+				return
+			}
+			defer release()
 			g.forwardSystemOne(w, r, body, payload, model, route)
 			return
 		}
@@ -372,11 +413,16 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			wire.WriteError(w, external, http.StatusBadRequest, err.Error(), "invalid_request_error", "")
 			return
 		}
+		release, ok := g.acquireQuota(w, r, external)
+		if !ok {
+			return
+		}
+		defer release()
 		stream := jsonutil.BoolAt(payload, "stream")
 		// The local bucket of this model family is spent for the rest of its
 		// window: ask a peer first instead of rotating exits that cannot serve.
 		if g.peers.Len() > 0 && !isDiagnosticRequest(r.Context()) && g.localBucketSpent(model) {
-			if g.tryPeers(r.Context(), w, r, body, model, ids.Request) {
+			if g.tryPeers(r.Context(), w, r, body, model, route.Tier, ids.Request) {
 				return
 			}
 		}
@@ -397,7 +443,9 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				g.markLocalQuotaSpent(model, now, now.Add(quotaResetAfter(now)))
 			}
 			if !errors.Is(err, errDeterministicClientRejection) && !isDiagnosticRequest(requestCtx) {
-				if g.tryPeers(requestCtx, w, r, body, model, ids.Request) {
+				// Peer forwarding has its own header wait; the local request
+				// budget must not cut a peer's long stream.
+				if g.tryPeers(r.Context(), w, r, body, model, upstreamRoute.Tier, ids.Request) {
 					return
 				}
 			}
@@ -491,7 +539,7 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			if g.peers.Len() > 0 && !isDiagnosticRequest(r.Context()) &&
 				(resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 ||
 					resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
-				if g.tryPeers(r.Context(), w, r, body, model, ids.Request) {
+				if g.tryPeers(r.Context(), w, r, body, model, upstreamRoute.Tier, ids.Request) {
 					return
 				}
 			}
@@ -504,6 +552,27 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				g.logger.Warn("upstream rejected the gateway credential", "component", "upstream", "event", "upstream_credential_rejected", "request_id", ids.Request, "tier", upstreamRoute.Tier, "status", resp.StatusCode)
 				wire.WriteError(w, external, http.StatusBadGateway, "the upstream rejected the gateway's own credential; check the upstream key configured for this tier", "upstream_credential_rejected", ids.Request)
 				return
+			}
+			if bodyPrefix := peekResponseBody(resp); isContextLengthResponse(resp.StatusCode, bodyPrefix) {
+				advertised := g.contextLimit(model, upstreamRoute.Tier)
+				if advertised > 0 {
+					// Agents that read headers can compact immediately instead
+					// of replaying the same oversized body.
+					w.Header().Set("X-Context-Limit", strconv.Itoa(advertised))
+				}
+				requestBytes := int64(len(body))
+				if meta != nil && meta.RequestBytes > 0 {
+					requestBytes = meta.RequestBytes
+				}
+				estimate := 0
+				applied := false
+				if !isDiagnosticRequest(r.Context()) && g.contextLimits != nil {
+					estimate, applied = g.contextLimits.ObserveRejection(model, upstreamRoute.Tier, requestBytes, bodyPrefix, advertised)
+					if applied {
+						w.Header().Set("X-Context-Limit", strconv.Itoa(g.contextLimit(model, upstreamRoute.Tier)))
+					}
+				}
+				g.logger.Warn("upstream context limit exceeded", "component", "upstream", "event", "context_limit_exceeded", "request_id", ids.Request, "model", model, "tier", upstreamRoute.Tier, "advertised", advertised, "estimated_tokens", estimate, "advertisement_updated", applied)
 			}
 			copyErrorResponse(w, external, resp, ids.Request)
 			return
@@ -532,6 +601,9 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			}
 			if meta != nil {
 				meta.Usage, meta.UsageReported = usage, usageReported
+				if err == nil && usageReported && usage.Input > 0 && g.contextLimits != nil && !isDiagnosticRequest(r.Context()) {
+					g.contextLimits.ObserveSuccess(model, upstreamRoute.Tier, usage.Input, meta.RequestBytes)
+				}
 				if err != nil {
 					meta.Outcome = "stream_error"
 					if wire.ClientCanceled(r.Context(), err) {
@@ -565,6 +637,9 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 		responseBody = wire.RenameResponseTool(responseBody, upstreamRoute.Protocol, toolRenames)
 		if usage, reported := wire.ResponseUsage(upstreamRoute.Protocol, responseBody); meta != nil {
 			meta.Usage, meta.UsageReported = usage, reported
+			if reported && usage.Input > 0 && g.contextLimits != nil && !isDiagnosticRequest(r.Context()) {
+				g.contextLimits.ObserveSuccess(model, upstreamRoute.Tier, usage.Input, meta.RequestBytes)
+			}
 		}
 		if external != upstreamRoute.Protocol {
 			responseBody, err = wire.ConvertResponse(upstreamRoute.Protocol, external, responseBody)
@@ -598,6 +673,7 @@ func (g *Gateway) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 	model := jsonutil.StringAt(payload, "model")
 	if meta := telemetry.MetaFromRequest(r); meta != nil {
 		meta.Model = model
+		meta.RequestBytes = int64(len(body))
 	}
 	if model == "" {
 		wire.WriteError(w, wire.SystemOne, http.StatusBadRequest, "model is required", "invalid_request_error", "model")
@@ -627,6 +703,11 @@ func (g *Gateway) handleSystemOne(w http.ResponseWriter, r *http.Request) {
 		wire.WriteError(w, wire.SystemOne, http.StatusBadRequest, fmt.Sprintf("the model does not use the %s protocol", wire.SystemOne), "invalid_request_error", "model")
 		return
 	}
+	release, ok := g.acquireQuota(w, r, wire.SystemOne)
+	if !ok {
+		return
+	}
+	defer release()
 	g.forwardSystemOne(w, r, body, payload, model, route)
 }
 
@@ -698,6 +779,10 @@ func (g *Gateway) forwardSystemOne(w http.ResponseWriter, r *http.Request, body 
 	}
 	w.Header().Set("x-request-id", ids.Request)
 	if resp.StatusCode/100 != 2 {
+		prefix := peekResponseBody(resp)
+		if !isDiagnosticRequest(r.Context()) {
+			g.noteContextRejection(w, model, upstreamRoute.Tier, resp.StatusCode, prefix, int64(len(body)))
+		}
 		copyErrorResponse(w, wire.SystemOne, resp, ids.Request)
 		return
 	}
@@ -718,6 +803,9 @@ func (g *Gateway) forwardSystemOne(w http.ResponseWriter, r *http.Request, body 
 	}
 	if usage, reported := wire.ResponseUsage(upstreamRoute.Protocol, responseBody); meta != nil {
 		meta.Usage, meta.UsageReported = usage, reported
+		if reported && usage.Input > 0 && g.contextLimits != nil && !isDiagnosticRequest(r.Context()) {
+			g.contextLimits.ObserveSuccess(model, upstreamRoute.Tier, usage.Input, meta.RequestBytes)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)

@@ -1,0 +1,10 @@
+[Unit]
+Description=Probe and restart dead usque WARP exits
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/usque/usque-watchdog.sh
+User=root
+NoNewPrivileges=yes
+SuccessExitStatus=1

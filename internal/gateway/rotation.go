@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,6 +25,16 @@ import (
 // serve right now: every model with a Go route except System One models, and
 // none while no Go key is configured.
 func (g *Gateway) syncRotation() {
+	g.rotationSyncMu.Lock()
+	defer g.rotationSyncMu.Unlock()
+	at, goKeys := g.catalog.UpdatedAt(), g.goNodes.Len()
+	var availabilityVersion uint64
+	if g.availability != nil {
+		availabilityVersion = g.availability.Version()
+	}
+	if g.rotationSynced && at.Equal(g.rotationAt) && goKeys == g.rotationGoKeys && availabilityVersion == g.rotationAvail {
+		return
+	}
 	available := map[string]bool{}
 	for _, model := range g.catalog.List() {
 		if route, err := g.catalog.RouteForTier(model, config.TierGo, false, g.goNodes.Len() > 0); err == nil && route.Protocol != wire.SystemOne {
@@ -31,6 +42,10 @@ func (g *Gateway) syncRotation() {
 		}
 	}
 	g.rotation.Sync(available)
+	g.rotationSynced = true
+	g.rotationAt = at
+	g.rotationGoKeys = goKeys
+	g.rotationAvail = availabilityVersion
 }
 
 // RotationSnapshot resyncs the rotation groups with the current catalog and
@@ -78,6 +93,7 @@ type groupAttempt struct {
 	quota, committed bool
 	pause            time.Duration
 	reason           string
+	contextLimit     int
 }
 
 // handleRotation serves a request addressed to a rotation group alias on the
@@ -103,6 +119,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 	}
 	visited := map[string]bool{}
 	ordinaryModels, total := 0, 0
+	contextLimit := 0
 	for ctx.Err() == nil {
 		token, ok := g.rotation.Select(id, visited)
 		if !ok {
@@ -125,6 +142,9 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				meta.UsageReported = false
 			}
 			result := g.rotationAttempt(ctx, w, r, external, payload, alias, route, ids, total)
+			if result.contextLimit > 0 {
+				contextLimit = result.contextLimit
+			}
 			outcome := result.reason
 			if result.err == nil {
 				outcome = "success"
@@ -138,7 +158,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				}
 			}
 			g.rotation.Record(rotation.Attempt{Request: ids.Request, Alias: alias, Model: token.Model, Number: total, Outcome: outcome})
-			if state := g.rotation.Snapshot(); state.PersistenceError != "" {
+			if g.rotation.PersistenceError() != "" {
 				g.logger.Error("rotation state persistence failed", "component", "rotation", "event", "rotation_persistence_failed")
 			}
 			g.logger.Info("model rotation attempt", "component", "rotation", "event", "rotation_attempt", "request_id", ids.Request, "alias", alias, "model", token.Model, "attempt", total, "reason", outcome)
@@ -154,9 +174,10 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				}
 				pause := 15 * time.Second
 				if result.quota {
-					pause = result.pause
+					g.rotation.FailQuota(token, result.pause, result.reason)
+				} else {
+					g.rotation.Fail(token, pause, result.reason)
 				}
-				g.rotation.Fail(token, pause, result.reason)
 				return
 			}
 			if ctx.Err() != nil {
@@ -164,7 +185,7 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 				break
 			}
 			if result.quota {
-				g.rotation.Fail(token, result.pause, result.reason)
+				g.rotation.FailQuota(token, result.pause, result.reason)
 				break
 			}
 			if !counted {
@@ -183,10 +204,13 @@ func (g *Gateway) handleRotation(w http.ResponseWriter, r *http.Request, externa
 		return
 	}
 	status := http.StatusServiceUnavailable
-	message := "该分组暂无可用模型（已暂停、下架、额度不足或重试次数已用尽），请稍后重试"
+	message := "no model in this rotation group is usable right now (paused, unavailable, out of quota, or retry budget exhausted); try again later"
 	if ctx.Err() != nil {
 		status = http.StatusGatewayTimeout
-		message = "分组请求整体超时"
+		message = "the rotation group request timed out"
+	}
+	if contextLimit > 0 {
+		w.Header().Set("X-Context-Limit", strconv.Itoa(contextLimit))
 	}
 	wire.WriteError(w, external, status, message, "rotation_unavailable", ids.Request)
 }
@@ -200,7 +224,7 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 	result := groupAttempt{reason: "upstream_error", pause: 60 * time.Second}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
-	seconds := g.rotation.Snapshot().FirstOutputSeconds
+	seconds := g.rotation.FirstOutputSeconds()
 	timer := time.AfterFunc(time.Duration(seconds)*time.Second, cancel)
 	defer timer.Stop()
 	copyPayload := make(map[string]any, len(payload))
@@ -276,6 +300,9 @@ func (g *Gateway) rotationAttempt(parent context.Context, w http.ResponseWriter,
 	}
 	if resp.StatusCode/100 != 2 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if !isDiagnosticRequest(original.Context()) {
+			result.contextLimit, _ = g.observeContextRejection(route.ID, route.Tier, resp.StatusCode, b, max(original.ContentLength, 0))
+		}
 		result.err = fmt.Errorf("upstream HTTP %d", resp.StatusCode)
 		result.quota = quotaError(resp.StatusCode, string(b))
 		result.reason = fmt.Sprintf("http_%d", resp.StatusCode)

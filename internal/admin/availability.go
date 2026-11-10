@@ -1,7 +1,11 @@
 package admin
 
 import (
+	"context"
 	"net/http"
+	"strings"
+	"time"
+
 	"opencode2api/internal/httpx"
 )
 
@@ -19,6 +23,46 @@ func (a *Server) handleAvailability(w http.ResponseWriter, r *http.Request) {
 func (a *Server) handleProbeModels(w http.ResponseWriter, r *http.Request) {
 	a.manager.RequestAvailabilitySweep()
 	a.handleAvailability(w, r)
+}
+
+// handleContextProbe measures the model's real context window by sending real
+// requests through the gateway. It refuses while live streams are active (a
+// probe is heavy and the free lane is shared) unless force is set, and it runs
+// at most one probe at a time. The observation board is updated as attempts
+// land, so the result also survives a cancelled HTTP client.
+func (a *Server) handleContextProbe(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Model       string `json:"model"`
+		MaxRequests int    `json:"max_requests"`
+		Force       bool   `json:"force"`
+	}
+	if err := decodeAdminJSON(w, r, &input); err != nil {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	input.Model = strings.TrimSpace(input.Model)
+	if input.Model == "" {
+		writeAdminError(w, http.StatusBadRequest, "invalid_request", "model is required")
+		return
+	}
+	if !input.Force && a.monitor != nil && a.monitor.Snapshot().ActiveStreams > 0 {
+		writeAdminError(w, http.StatusConflict, "gateway_busy", "live streams are active; retry when idle or send force")
+		return
+	}
+	if !a.probeRunning.CompareAndSwap(false, true) {
+		writeAdminError(w, http.StatusTooManyRequests, "probe_running", "a context probe is already running")
+		return
+	}
+	defer a.probeRunning.Store(false)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Minute)
+	defer cancel()
+	result, err := a.manager.ProbeContext(ctx, input.Model, input.MaxRequests)
+	if err != nil {
+		writeAdminError(w, http.StatusBadGateway, "context_probe_failed", a.manager.Redact(err.Error()))
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	httpx.WriteJSON(w, http.StatusOK, result)
 }
 
 // handleRestoreModel returns a disabled free model to manual control, which

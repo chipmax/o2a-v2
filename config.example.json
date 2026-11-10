@@ -26,7 +26,8 @@
     "refresh_seconds": 300,
     "protocols": {},
     "free_only": false,
-    "active_probes": false
+    "active_probes": false,
+    "context_overrides": {}
   },
   "performance": {
     "max_idle_conns": 2048,
@@ -45,6 +46,9 @@
     "level": "info",
     "ring_size": 2000,
     "dump_request_bodies": false
+  },
+  "storage": {
+    "usage_sqlite": "usage/usage.sqlite"
   },
   "webui": {
     "enabled": true,

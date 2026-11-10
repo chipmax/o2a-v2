@@ -19,7 +19,7 @@ const (
 	// that never touched OpenCode. checkClaimedProxy counts any HTTP response
 	// as success, so a 404 from the origin still proves the tunnel reaches it.
 	proxyHealthCheckURL      = "https://opencode.ai/"
-	proxyHealthCheckInterval = 15 * time.Minute
+	proxyHealthCheckInterval = 2 * time.Minute
 	proxyHealthCheckTimeout  = 10 * time.Second
 )
 
@@ -113,17 +113,20 @@ func (g *Gateway) restoreProxy(proxy *proxyTransport) (zenMoved, goMoved int) {
 	return zenMoved, goMoved
 }
 
-// StartProxyHealthChecks rechecks unhealthy proxies every
-// proxyHealthCheckInterval until ctx is canceled. There is no check at
-// startup, since every proxy starts healthy.
+// StartProxyHealthChecks probes every proxy at startup and then every
+// proxyHealthCheckInterval until ctx is canceled. A proxy starts healthy by
+// assumption, but its SOCKS listener can stay open after the upstream tunnel
+// has died; a full sweep turns that silent failure into an unhealthy state
+// before a real client request is lost.
 func (g *Gateway) StartProxyHealthChecks(ctx context.Context) {
 	check := func() {
-		results := g.transports.CheckHealth(ctx, proxyHealthCheckURL, proxyHealthCheckTimeout)
+		results := g.transports.CheckAll(ctx, proxyHealthCheckURL, proxyHealthCheckTimeout)
 		for _, result := range results {
 			g.applyProxyHealthResult(result, "scheduled health check", 0)
 		}
 	}
 	go func() {
+		check()
 		ticker := time.NewTicker(proxyHealthCheckInterval)
 		defer ticker.Stop()
 		for {
@@ -135,6 +138,16 @@ func (g *Gateway) StartProxyHealthChecks(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// CheckProxiesNow probes every proxy immediately and returns how many routes
+// were checked. It is used by the management console's "check now" action.
+func (g *Gateway) CheckProxiesNow(ctx context.Context) int {
+	results := g.transports.CheckAll(ctx, proxyHealthCheckURL, proxyHealthCheckTimeout)
+	for _, result := range results {
+		g.applyProxyHealthResult(result, "manual health check", 0)
+	}
+	return len(results)
 }
 
 // applyProxyHealthResult acts on one health check: a pass restores a proxy

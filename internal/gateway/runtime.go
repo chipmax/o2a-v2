@@ -69,8 +69,10 @@ type RuntimeController struct {
 	availabilitySweep chan struct{}
 	// warpPool is the pool shared by successive runtimes when the WARP size
 	// and stack are unchanged. warpKey is the identity used for that reuse.
-	warpPool *warp.Pool
-	warpKey  string
+	warpPool      *warp.Pool
+	warpKey       string
+	usage         *telemetry.UsageStore
+	contextLimits *modelcatalog.ContextLimits
 }
 
 // EffectiveListeners are the listener settings the running process actually
@@ -87,11 +89,30 @@ type EffectiveListeners struct {
 // loads the persisted rotation state and the model catalog cache; and starts
 // the pricing metadata refresh and the free-model availability checks. It
 // fails when the rotation config does not validate against the catalog.
-func RuntimeManager(root context.Context, configPath string, cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, hub *telemetry.LogBroker, redactor *config.Redactor, level *slog.LevelVar) (*RuntimeController, error) {
-	manager := &RuntimeController{
+func RuntimeManager(root context.Context, configPath string, cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, hub *telemetry.LogBroker, redactor *config.Redactor, level *slog.LevelVar) (manager *RuntimeController, err error) {
+	manager = &RuntimeController{
 		configPath: configPath, root: root, logger: logger, monitor: monitor, hub: hub, redactor: redactor, level: level,
 		effective: EffectiveListeners{API: cfg.Listen, WebUI: cfg.WebUI.Listen, WebUIEnabled: cfg.WebUI.Enabled},
 	}
+	usage, err := telemetry.OpenUsageStore(cfg.Storage.UsageSQLite, logger)
+	if err != nil {
+		return nil, err
+	}
+	if usage != nil {
+		manager.usage = usage
+		monitor.SetRequestSink(usage.Append)
+		defer func() {
+			if err != nil {
+				monitor.SetRequestSink(nil)
+				usage.Close()
+			}
+		}()
+	}
+	contextLimits, contextErr := modelcatalog.OpenContextLimits(modelcatalog.ContextLimitStatePath(configPath))
+	if contextErr != nil && logger != nil {
+		logger.Warn("context limit observations could not be loaded; starting empty", "component", "models", "event", "context_limits_load_failed", "path", modelcatalog.ContextLimitStatePath(configPath), "error", contextErr)
+	}
+	manager.contextLimits = contextLimits
 	manager.metadata = modelcatalog.PricingStore(configPath, logger)
 	// OpenCode metadata refreshes ride the active runtime's healthy proxy
 	// transports and fall back to the registry's direct client when none are
@@ -129,6 +150,15 @@ func RuntimeManager(root context.Context, configPath string, cfg config.Config, 
 		return nil, err
 	}
 	manager.rotation = rotationManager
+	// Per-key daily budgets live outside the runtime so a hot reload keeps
+	// them, and on disk so a process restart does not reset them.
+	quotaPath, egressQuotaPath := "", ""
+	if configPath != "" {
+		quotaPath = configPath + ".quota.json"
+		egressQuotaPath = configPath + ".egress-quota.json"
+	}
+	ConfigureQuotaState(quotaPath)
+	ConfigureEgressQuota(egressQuotaPath)
 	runtime, err := manager.build(cfg)
 	if err != nil {
 		return nil, err
@@ -215,6 +245,9 @@ func (m *RuntimeController) build(cfg config.Config) (*gatewayRuntime, error) {
 	gateway.catalog.SetPricingStore(m.metadata)
 	gateway.catalog.SetAvailabilityStore(availability)
 	gateway.availability = availability
+	if m.contextLimits != nil {
+		gateway.contextLimits = m.contextLimits
+	}
 	gateway.catalog.SetCachePath(modelcatalog.CatalogCachePath(m.configPath))
 	return &gatewayRuntime{config: cfg, gateway: gateway, availability: availability, handler: gateway.Handler(), cancel: func() {}, warpPool: warpPool, warpKey: warpKey, warpCreated: warpCreated}, nil
 }
@@ -448,6 +481,14 @@ func (m *RuntimeController) Reload() (ApplyResult, error) {
 // Shutdown stops the free-model availability checks and the current runtime's
 // background loops.
 func (m *RuntimeController) Shutdown() {
+	SaveQuotaState()
+	SaveEgressQuota()
+	if m.rotation != nil {
+		m.rotation.Save()
+	}
+	if m.contextLimits != nil {
+		m.contextLimits.Save()
+	}
 	if m.availabilityCancel != nil {
 		m.availabilityCancel()
 	}
@@ -459,6 +500,11 @@ func (m *RuntimeController) Shutdown() {
 		m.warpPool = nil
 		m.warpKey = ""
 	}
+	if m.usage != nil {
+		m.monitor.SetRequestSink(nil)
+		m.usage.Close()
+		m.usage = nil
+	}
 }
 
 // ResourceSnapshot is the operator view of the current runtime's models, keys,
@@ -469,18 +515,20 @@ type ResourceSnapshot struct {
 	Proxies   []ProxyStatus                 `json:"proxies"`
 	Anonymous bool                          `json:"anonymous"`
 	Warp      *WarpStatus                   `json:"warp,omitempty"`
+	Peers     []map[string]any              `json:"peers,omitempty"`
 	Metadata  modelcatalog.MetadataSnapshot `json:"metadata"`
 }
 
 // WarpStatus is the operator view of the WARP egress pool.
 type WarpStatus struct {
-	Enabled bool     `json:"enabled"`
-	Stack   string   `json:"stack"`
-	Size    int      `json:"size"`
-	Active  int      `json:"active"`
-	Standby int      `json:"standby"`
-	Cooling int      `json:"cooling"`
-	Egress  []string `json:"egress,omitempty"`
+	Enabled bool             `json:"enabled"`
+	Stack   string           `json:"stack"`
+	Size    int              `json:"size"`
+	Active  int              `json:"active"`
+	Standby int              `json:"standby"`
+	Cooling int              `json:"cooling"`
+	Egress  []string         `json:"egress,omitempty"`
+	Exits   []warp.ExitState `json:"exits,omitempty"`
 }
 
 // KeyStatus describes one upstream key by its display ID (its last five
@@ -501,13 +549,16 @@ type KeyStatus struct {
 // to it. Anonymous reports whether the anonymous lane, which uses every
 // proxy, is enabled.
 type ProxyStatus struct {
-	Index     int    `json:"index"`
-	Address   string `json:"address"`
-	Healthy   bool   `json:"healthy"`
-	Checking  bool   `json:"checking"`
-	ZenKeys   int    `json:"zen_keys"`
-	GoKeys    int    `json:"go_keys"`
-	Anonymous bool   `json:"anonymous"`
+	Index        int        `json:"index"`
+	Address      string     `json:"address"`
+	Healthy      bool       `json:"healthy"`
+	Checking     bool       `json:"checking"`
+	Pool         bool       `json:"pool,omitempty"`
+	LastChecked  *time.Time `json:"last_checked,omitempty"`
+	BlockedUntil *time.Time `json:"blocked_until,omitempty"`
+	ZenKeys      int        `json:"zen_keys"`
+	GoKeys       int        `json:"go_keys"`
+	Anonymous    bool       `json:"anonymous"`
 }
 
 // Resources reports the current runtime's servable models, per-key state and
@@ -531,7 +582,15 @@ func (m *RuntimeController) Resources() ResourceSnapshot {
 	goBindings := append([]int(nil), gateway.goNodes.bindingCount...)
 	gateway.goNodes.bindingsMu.Unlock()
 	for _, proxy := range gateway.transports.items {
-		status := ProxyStatus{Index: proxy.index, Address: config.RedactURL(proxy.name), Healthy: proxy.healthy.Load(), Checking: proxy.checking.Load(), Anonymous: gateway.cfg.Anonymous}
+		status := ProxyStatus{Index: proxy.index, Address: config.RedactURL(proxy.name), Healthy: proxy.healthy.Load(), Checking: proxy.checking.Load(), Pool: proxy.pool, Anonymous: gateway.cfg.Anonymous}
+		if checked := proxy.lastChecked.Load(); checked > 0 {
+			at := time.Unix(0, checked)
+			status.LastChecked = &at
+		}
+		if blocked := proxy.blockedUntil.Load(); blocked > time.Now().UnixNano() {
+			until := time.Unix(0, blocked)
+			status.BlockedUntil = &until
+		}
 		if proxy.index < len(zenBindings) {
 			status.ZenKeys = zenBindings[proxy.index]
 		}
@@ -545,10 +604,22 @@ func (m *RuntimeController) Resources() ResourceSnapshot {
 		result.Warp = &WarpStatus{
 			Enabled: true, Stack: snapshot.Stack, Size: snapshot.Size,
 			Active: snapshot.Active, Standby: snapshot.Standby, Cooling: snapshot.Cooling,
-			Egress: snapshot.Egress,
+			Egress: snapshot.Egress, Exits: gateway.warp.States(),
 		}
 	}
+	result.Peers = gateway.peers.peerSnapshot()
 	return result
+}
+
+// CheckProxies probes every configured proxy route now and returns the number
+// of routes that were available to check. The management console uses this to
+// replace the old cached 8/8 reading with an on-demand end-to-end result.
+func (m *RuntimeController) CheckProxies(ctx context.Context) int {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil || runtime.gateway.transports == nil {
+		return 0
+	}
+	return runtime.gateway.CheckProxiesNow(ctx)
 }
 
 // EgressQuota reports the free-tier bucket board: which egress /64s the pool

@@ -22,8 +22,9 @@ type PeerConfig struct {
 	// Tier orders peers: lower is tried first. Peers with the same tier are
 	// tried round-robin, so a pair of equal machines shares the load.
 	Tier int `json:"tier,omitempty"`
-	// TimeoutSeconds bounds one forwarded attempt, headers through the last
-	// streamed byte. Zero uses 180.
+	// TimeoutSeconds bounds the wait for a peer's response headers, not an
+	// established event stream. Zero uses 180. A long stream therefore keeps
+	// flowing even when it outlives this value.
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 	// CooldownSeconds is how long a peer that answered 401/403/5xx stays out
 	// of rotation. A 429 honours its Retry-After instead, clamped to 15 minutes.

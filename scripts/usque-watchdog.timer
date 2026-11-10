@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically check usque WARP exits
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Unit=usque-watchdog.service
+
+[Install]
+WantedBy=timers.target

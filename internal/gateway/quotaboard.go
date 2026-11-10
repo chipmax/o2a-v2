@@ -1,6 +1,8 @@
 package gateway
 
 import (
+	"encoding/json"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -35,15 +37,120 @@ type EgressQuotaSnapshot struct {
 }
 
 // quotaBoard remembers, per egress and model family, how often the free tier
-// answered and how often it refused. It is in-memory on purpose: the counters
-// reset at the same UTC midnight the upstream uses.
+// answered and how often it refused. Counters are scoped to the UTC day the
+// upstream uses and are persisted so a restart in the same day keeps the
+// budget page honest.
 type quotaBoard struct {
-	mu      sync.Mutex
-	entries map[string]*EgressQuotaEntry
+	mu       sync.Mutex
+	entries  map[string]*EgressQuotaEntry
+	path     string
+	lastSave time.Time
+	day      string
 }
 
+// egressQuota is process-wide so a hot reload does not erase the board.
+var egressQuota = newQuotaBoard()
+
 func newQuotaBoard() *quotaBoard {
-	return &quotaBoard{entries: make(map[string]*EgressQuotaEntry)}
+	return &quotaBoard{entries: make(map[string]*EgressQuotaEntry), day: utcDay(time.Now())}
+}
+
+type quotaBoardFile struct {
+	Version int                         `json:"version"`
+	Day     string                      `json:"day"`
+	Entries map[string]EgressQuotaEntry `json:"entries"`
+}
+
+// ConfigureEgressQuota attaches the persistence file and restores today's
+// counters. Entries from an earlier UTC day are discarded.
+func ConfigureEgressQuota(path string) { egressQuota.configurePath(path) }
+
+// SaveEgressQuota flushes the board; shutdown calls it after listeners close.
+func SaveEgressQuota() { egressQuota.save() }
+
+func (b *quotaBoard) configurePath(path string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.path == path {
+		return
+	}
+	b.path = path
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var file quotaBoardFile
+	if json.Unmarshal(data, &file) != nil || file.Version != 1 {
+		return
+	}
+	today := utcDay(time.Now())
+	if file.Day != today {
+		b.entries = make(map[string]*EgressQuotaEntry)
+		b.day = today
+		return
+	}
+	entries := make(map[string]*EgressQuotaEntry, len(file.Entries))
+	for key, entry := range file.Entries {
+		entry.State = ""
+		entry.CoolingSeconds = 0
+		entry.ResetAt = time.Time{}
+		entries[key] = &entry
+	}
+	b.entries = entries
+	b.day = today
+}
+
+func (b *quotaBoard) save() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.saveLocked(time.Now())
+}
+
+func (b *quotaBoard) saveLocked(now time.Time) {
+	if b.path == "" {
+		return
+	}
+	entries := make(map[string]EgressQuotaEntry, len(b.entries))
+	for key, entry := range b.entries {
+		copied := *entry
+		copied.State = ""
+		copied.CoolingSeconds = 0
+		copied.ResetAt = time.Time{}
+		entries[key] = copied
+	}
+	data, err := json.Marshal(quotaBoardFile{Version: 1, Day: b.day, Entries: entries})
+	if err != nil {
+		return
+	}
+	tmp := b.path + ".tmp"
+	if os.WriteFile(tmp, data, 0o600) != nil {
+		return
+	}
+	if err := os.Rename(tmp, b.path); err != nil {
+		_ = os.Remove(tmp)
+		return
+	}
+	b.lastSave = now
+}
+
+func (b *quotaBoard) maybeSaveLocked(now time.Time) {
+	if b.path == "" || now.Sub(b.lastSave) < 10*time.Second {
+		return
+	}
+	b.saveLocked(now)
+}
+
+func (b *quotaBoard) rollLocked(now time.Time) {
+	today := utcDay(now)
+	if b.day == today {
+		return
+	}
+	b.entries = make(map[string]*EgressQuotaEntry)
+	b.day = today
+	b.lastSave = time.Time{}
 }
 
 // record folds one attempt's outcome into the board.
@@ -58,6 +165,7 @@ func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, now
 	key := egress + "|" + family
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.rollLocked(now)
 	entry, ok := b.entries[key]
 	if !ok {
 		entry = &EgressQuotaEntry{Egress: egress, Family: family}
@@ -69,6 +177,7 @@ func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, now
 	}
 	entry.LastStatus = status
 	entry.LastSeen = now.UTC()
+	b.maybeSaveLocked(now)
 }
 
 // snapshot merges the counters with the pool's live exit states: an exit the
@@ -90,6 +199,7 @@ func (b *quotaBoard) snapshot(states []warp.ExitState, now time.Time) EgressQuot
 	families := map[string]bool{}
 	if b != nil {
 		b.mu.Lock()
+		b.rollLocked(now)
 		for _, entry := range b.entries {
 			copied := *entry
 			copied.ResetAt = resetAt

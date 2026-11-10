@@ -42,6 +42,7 @@ type Config struct {
 	Models            ModelsConfig                 `json:"models"`
 	Performance       PerformanceConfig            `json:"performance"`
 	Logging           LoggingConfig                `json:"logging"`
+	Storage           StorageConfig                `json:"storage,omitempty"`
 	WebUI             WebUIConfig                  `json:"webui"`
 	Prefer            Tier                         `json:"prefer"`
 	Reasoning         ReasoningConfig              `json:"reasoning"`
@@ -169,6 +170,20 @@ type ModelsConfig struct {
 	// every further trip up to MaxHours. An absent block leaves the lane
 	// unpaused, which is the previous behavior.
 	AnonymousBackoff *AnonymousBackoffConfig `json:"anonymous_backoff,omitempty"`
+	// ContextOverrides publishes different limits in /v1/models than the
+	// capability catalog states. The free tier enforces looser context than it
+	// advertises (measured: a model advertised at 200k served 308k input
+	// tokens), so a deployment can tell clients what actually works without
+	// patching each one. Zero fields keep the catalog value.
+	ContextOverrides map[string]ModelLimits `json:"context_overrides,omitempty"`
+}
+
+// ModelLimits overrides the per-model limits advertised to discovery clients.
+// A zero field keeps the catalog value.
+type ModelLimits struct {
+	Context int `json:"context,omitempty"`
+	Input   int `json:"input,omitempty"`
+	Output  int `json:"output,omitempty"`
 }
 
 // AnonymousBackoffConfig tunes the keyless lane's circuit breaker. Zero fields
@@ -214,6 +229,14 @@ type LoggingConfig struct {
 	// so retry and translation problems can be diagnosed without patching the
 	// binary. Off by default: the bodies contain conversation content.
 	DumpRequestBodies bool `json:"dump_request_bodies"`
+}
+
+// StorageConfig selects the long-lived usage database. UsageSQLite is the
+// path to a SQLite file; an empty value disables persistence. Relative paths
+// are resolved from the process working directory, so an absolute path is
+// recommended for a service.
+type StorageConfig struct {
+	UsageSQLite string `json:"usage_sqlite,omitempty"`
 }
 
 // WebUIConfig configures the management WebUI. Password is a plaintext
@@ -482,6 +505,9 @@ func Normalize(path string, cfg Config) (Config, error) {
 			return Config{}, fmt.Errorf("models.protocols contains invalid mapping %q: %q", model, protocol)
 		}
 	}
+	if err := normalizeContextOverrides(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := normalizeReasoning(&cfg); err != nil {
 		return Config{}, err
 	}
@@ -492,6 +518,34 @@ func Normalize(path string, cfg Config) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// normalizeContextOverrides trims the model IDs, rejects limits outside the
+// range the gateway can serve and drops entries that override nothing.
+func normalizeContextOverrides(cfg *Config) error {
+	if len(cfg.Models.ContextOverrides) == 0 {
+		cfg.Models.ContextOverrides = nil
+		return nil
+	}
+	if len(cfg.Models.ContextOverrides) > 128 {
+		return fmt.Errorf("models.context_overrides lists %d entries, at most 128 are supported", len(cfg.Models.ContextOverrides))
+	}
+	limits := make(map[string]ModelLimits, len(cfg.Models.ContextOverrides))
+	for raw, limit := range cfg.Models.ContextOverrides {
+		model := strings.TrimSpace(raw)
+		if model == "" {
+			return errors.New("models.context_overrides: model IDs must not be empty")
+		}
+		if limit.Context < 0 || limit.Context > 10000000 || limit.Input < 0 || limit.Input > 10000000 || limit.Output < 0 || limit.Output > 1000000 {
+			return fmt.Errorf("models.context_overrides[%s] limits are out of range", model)
+		}
+		if limit.Context == 0 && limit.Input == 0 && limit.Output == 0 {
+			return fmt.Errorf("models.context_overrides[%s] overrides nothing", model)
+		}
+		limits[model] = limit
+	}
+	cfg.Models.ContextOverrides = limits
+	return nil
 }
 
 // normalizePeers trims and defaults the peer list, then rejects duplicate names
@@ -642,6 +696,13 @@ func Clone(cfg Config) Config {
 			protocols[key] = value
 		}
 		cfg.Models.Protocols = protocols
+	}
+	if cfg.Models.ContextOverrides != nil {
+		limits := make(map[string]ModelLimits, len(cfg.Models.ContextOverrides))
+		for model, limit := range cfg.Models.ContextOverrides {
+			limits[model] = limit
+		}
+		cfg.Models.ContextOverrides = limits
 	}
 	if cfg.Reasoning.EffortByModel != nil {
 		efforts := make(map[string]string, len(cfg.Reasoning.EffortByModel))

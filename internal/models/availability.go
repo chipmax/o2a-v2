@@ -49,15 +49,26 @@ type Availability struct {
 // available and which ones an operator put under manual control. It is
 // persisted as JSON at path, or kept in memory only when path is empty.
 type AvailabilityRegistry struct {
-	mu    sync.RWMutex
-	path  string
-	items map[string]Availability
+	mu       sync.RWMutex
+	path     string
+	items    map[string]Availability
+	lastSave time.Time
+	version  uint64
+}
+
+// Version returns a counter that changes whenever a record's enabled state or
+// manual control changes. Callers that cache route availability use it to
+// notice a passive or active probe result without polling every record.
+func (s *AvailabilityRegistry) Version() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.version
 }
 
 // AvailabilityStore loads the registry from path. A missing file starts an
 // empty registry; an unreadable or malformed one is an error.
 func AvailabilityStore(path string) (*AvailabilityRegistry, error) {
-	s := &AvailabilityRegistry{path: path, items: map[string]Availability{}}
+	s := &AvailabilityRegistry{path: path, items: map[string]Availability{}, version: 1}
 	if path != "" {
 		b, err := os.ReadFile(path)
 		if err == nil {
@@ -140,6 +151,7 @@ func (s *AvailabilityRegistry) SetManual(model string, manual bool, now time.Tim
 		}
 		return err
 	}
+	s.version++
 	return nil
 }
 
@@ -203,7 +215,9 @@ func (s *AvailabilityRegistry) Record(model string, generation uint64, success b
 			item.NextCheck = now.Add(FailedModelCheckInterval)
 		}
 		s.items[model] = item
-		return s.saveLocked()
+		err := s.saveLocked()
+		s.version++
+		return err
 	}
 	item.CheckedAt, item.Reason, item.Channel = now, reason, channel
 	item.ProbeVersion = 1
@@ -218,7 +232,9 @@ func (s *AvailabilityRegistry) Record(model string, generation uint64, success b
 	}
 	item.NextCheck = now.Add(interval)
 	s.items[model] = item
-	return s.saveLocked()
+	err := s.saveLocked()
+	s.version++
+	return err
 }
 
 // RecordPassiveObservation updates model availability based on real user traffic.
@@ -231,6 +247,7 @@ func (s *AvailabilityRegistry) RecordPassiveObservation(model string, success bo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	item := s.items[model]
+	previous := item
 	if item.Manual {
 		return nil
 	}
@@ -248,7 +265,12 @@ func (s *AvailabilityRegistry) RecordPassiveObservation(model string, success bo
 		item.NextCheck = now.Add(FailedModelCheckInterval)
 	}
 	s.items[model] = item
-	return s.saveLocked()
+	if previous.Model == "" || previous.ProbeVersion == 0 || previous.Disabled != item.Disabled || previous.Reason != item.Reason {
+		err := s.saveLocked()
+		s.version++
+		return err
+	}
+	return s.maybeSaveLocked(now)
 }
 
 // IsModelUnavailableReason reports whether status and response body contain authoritative
@@ -269,6 +291,11 @@ func IsModelUnavailableReason(status int, body string) bool {
 	}
 	return false
 }
+
+// availabilitySaveInterval bounds how often passive traffic rewrites the
+// availability file. Every successful free-model request updates the in-memory
+// record, but only an availability change or this interval needs an fsync.
+const availabilitySaveInterval = 30 * time.Second
 
 // It is a no-op without a path. The caller holds s.mu for writing.
 func (s *AvailabilityRegistry) saveLocked() error {
@@ -293,5 +320,16 @@ func (s *AvailabilityRegistry) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), s.path)
+	if err := os.Rename(f.Name(), s.path); err != nil {
+		return err
+	}
+	s.lastSave = time.Now()
+	return nil
+}
+
+func (s *AvailabilityRegistry) maybeSaveLocked(now time.Time) error {
+	if s.path == "" || now.Sub(s.lastSave) < availabilitySaveInterval {
+		return nil
+	}
+	return s.saveLocked()
 }

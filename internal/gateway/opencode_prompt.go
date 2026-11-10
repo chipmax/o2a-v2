@@ -2,11 +2,8 @@ package gateway
 
 import (
 	_ "embed"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	wire "opencode2api/internal/protocol"
@@ -40,25 +37,13 @@ Use the skill tool to load a skill when a task matches its description.
   </skill>
 </available_skills>`
 
-var (
-	opencodeEnvOnce sync.Once
-	opencodeWorkDir string
-)
-
 // opencodeEnvironment renders the <env> block the CLI puts after its base
-// prompt. The working directory is resolved once per process; a platform
-// without one falls back to the official container path.
+// prompt. The gateway deliberately omits the CLI's working-directory lines:
+// they would expose the service account's filesystem (for example
+// C:\Windows\System32) and tell the model to inspect paths that do not exist
+// for the caller. The upstream only needs the agent-shaped prompt; platform
+// and date keep the block in the official shape without leaking host paths.
 func opencodeEnvironment(model string) string {
-	opencodeEnvOnce.Do(func() {
-		directory := ""
-		if current, err := os.Getwd(); err == nil {
-			directory = filepath.Clean(strings.TrimSpace(current))
-		}
-		if directory == "" || directory == "." {
-			directory = "/workspace"
-		}
-		opencodeWorkDir = directory
-	})
 	apiModel := strings.TrimSpace(strings.TrimPrefix(model, "opencode/"))
 	if apiModel == "" {
 		apiModel = "unknown"
@@ -71,9 +56,6 @@ func opencodeEnvironment(model string) string {
 		"You are powered by the model named " + apiModel + ". The exact model ID is opencode/" + apiModel,
 		"Here is some useful information about the environment you are running in:",
 		"<env>",
-		"  Working directory: " + opencodeWorkDir,
-		"  Workspace root folder: " + opencodeWorkDir,
-		"  Is directory a git repo: yes",
 		"  Platform: " + platform,
 		"  Today's date: " + time.Now().UTC().Format("Mon Jan 02 2006"),
 		"</env>",

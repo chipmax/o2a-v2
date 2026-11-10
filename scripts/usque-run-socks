@@ -1,0 +1,26 @@
+#!/bin/bash
+# Launch one usque WARP MASQUE exit as a local SOCKS5 listener.
+# Keep this mapping in sync with the ports configured in o2a's proxies list.
+set -eu
+
+port="${1:?port is required}"
+case "$port" in
+13001) n=2 ;;
+13002) n=3 ;;
+13003) n=4 ;;
+13004) n=6 ;;
+13005) n=8 ;;
+13006) n=9 ;;
+13007) n=10 ;;
+13008) n=7 ;;
+*) n=$((port - 13000)) ;;
+esac
+
+cfg="/opt/usque/n${n}/config.json"
+if [ ! -f "$cfg" ]; then
+  cfg="/opt/usque/config.json"
+fi
+
+# A SOCKS listener can stay open after its MASQUE tunnel dies. Reconnect
+# eagerly so a dead tunnel recovers without waiting for an operator restart.
+exec /opt/usque/usque socks --always-reconnect -c "$cfg" -p "$port" -b 127.0.0.1

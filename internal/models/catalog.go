@@ -505,6 +505,14 @@ func (c *ModelCatalog) modelIDsLocked() []string {
 	return sortedSetKeys(seen)
 }
 
+// UpdatedAt returns the time the catalog last accepted a live refresh. A
+// zero value means no refresh has completed yet.
+func (c *ModelCatalog) UpdatedAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.updatedAt
+}
+
 // Snapshot summarizes the catalog without route filtering.
 func (c *ModelCatalog) Snapshot() CatalogSnapshot {
 	c.mu.RLock()

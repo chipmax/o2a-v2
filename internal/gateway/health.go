@@ -3,6 +3,7 @@ package gateway
 import (
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	"opencode2api/internal/buildinfo"
@@ -182,6 +183,69 @@ func (g *Gateway) reasoningEfforts(model string, route modelcatalog.Route) []str
 	return slices.Clone(reasoningLevels)
 }
 
+// modelLimits applies models.context_overrides and live context observations
+// to the metadata a discovery client sees. The free tier enforces looser
+// limits than its catalog states, so the listing follows what this deployment
+// has measured instead of a client-side hard-code. The override is the initial
+// seed: traffic can raise it after a larger success and lower it after a
+// context-limit rejection.
+func (g *Gateway) modelLimits(model string, tier config.Tier, md modelcatalog.Metadata) modelcatalog.Metadata {
+	limit, ok := g.cfg.Models.ContextOverrides[model]
+	seed := 0
+	if ok {
+		if limit.Context > 0 {
+			seed = limit.Context
+			md.ContextWindow = limit.Context
+		}
+		if limit.Input > 0 {
+			md.MaxInput = limit.Input
+		}
+		if limit.Output > 0 {
+			md.MaxOutput = limit.Output
+		}
+	}
+	if g.contextLimits != nil {
+		md.ContextWindow = g.contextLimits.Advertised(model, tier, md.ContextWindow, seed)
+	}
+	return md
+}
+
+// contextLimit is the window currently advertised for model on tier. It is
+// used to annotate context-limit errors and to tell the observation board what
+// the client was working with when its request failed.
+func (g *Gateway) contextLimit(model string, tier config.Tier) int {
+	md := g.catalog.MetadataForTier(model, tier)
+	return g.modelLimits(model, tier, md).ContextWindow
+}
+
+// observeContextRejection records a context-length rejection and reports the
+// resulting advertised window and whether the observation changed it. It does
+// not touch the response, so a retry loop can learn without leaking the header
+// onto a later successful attempt.
+func (g *Gateway) observeContextRejection(model string, tier config.Tier, status int, body []byte, requestBytes int64) (int, bool) {
+	if tier == "" || g.contextLimits == nil || g.catalog == nil || !isContextLengthResponse(status, body) {
+		return 0, false
+	}
+	advertised := g.contextLimit(model, tier)
+	_, applied := g.contextLimits.ObserveRejection(model, tier, requestBytes, body, advertised)
+	if applied {
+		advertised = g.contextLimit(model, tier)
+	}
+	return advertised, applied
+}
+
+// noteContextRejection records a context-length rejection and writes the
+// resulting X-Context-Limit header. It reports the advertised window and
+// whether the observation changed the advertisement. A caller must still
+// forward the rejection; this helper only learns from it.
+func (g *Gateway) noteContextRejection(w http.ResponseWriter, model string, tier config.Tier, status int, body []byte, requestBytes int64) (int, bool) {
+	advertised, applied := g.observeContextRejection(model, tier, status, body, requestBytes)
+	if advertised > 0 {
+		w.Header().Set("X-Context-Limit", strconv.Itoa(advertised))
+	}
+	return advertised, applied
+}
+
 // handleModels lists every servable model with its tier-scoped metadata in
 // the OpenAI list shape, plus, when Go keys are configured, one entry per
 // rotation group alias that has a Go-routable model.
@@ -194,6 +258,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, _ *http.Request) {
 		// Tier-scoped metadata: the advertised context window must match
 		// the tier that will serve the request (anonymous ⇒ Zen).
 		md := g.catalog.MetadataForTier(model, route.Tier)
+		md = g.modelLimits(model, route.Tier, md)
 		entry := map[string]any{
 			"id": model, "object": "model", "created": now, "owned_by": "opencode",
 			"metadata":        md,

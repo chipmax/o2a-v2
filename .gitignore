@@ -20,6 +20,8 @@ coverage.out
 # Local credentials, deployment backups, and verification artifacts
 .local/
 *.availability.json
+*.context-limits.json
+*.context-limits.json.tmp
 
 # WARP registrations and their atomic-write temp file (contain tunnel keys)
 *.warp-state.json

@@ -1,6 +1,6 @@
 # opencode2api
 
-[English](README.md) | [简体中文](README.zh-CN.md) | [Tiếng Việt](README.vi.md) | [Italiano](README.it.md)
+[English](README.md) | [Tiếng Việt](README.vi.md)
 
 > **Personal fork `o2a-v2`** — based on upstream 1.4.7 (MIT).
 > Highlights: Vietnamese-first WebUI, **per-API-key limits** (model allow-list,
@@ -28,9 +28,11 @@ The executable includes the WebUI. Running the service requires no Node.js runti
 - Configuration hot reload with validation before switching new requests to a replacement gateway.
 - Go subscription quota dashboard with remaining percentages, reset times, and available models.
 - Local API key creation, naming, enabling, disabling, and deletion with immediate updates.
-- Sticky `sota` / `sweet` model groups with ordering, failure fallback, streaming protection, and persisted state.
+- Sticky `sota` / `sweet` model groups with catalog-driven ordering, failure fallback, streaming protection, and persisted state.
+- Per-key daily/concurrency budgets and the egress `/64` budget board survive restarts within the same UTC day.
+- A five-page Vietnamese/English console: overview (egress sources and IPs plus the egress budget), models (quota, free models, rotation), API keys, diagnostics (with integration guide), and configuration (with account security).
 
-See the [management console guide (Chinese)](docs/management.zh-CN.md) for the new pages and configuration.
+See [docs/CONFIG.vi.md](docs/CONFIG.vi.md) for every configuration field and page.
 
 ## Sponsors
 
@@ -146,6 +148,7 @@ Send `Authorization: Bearer YOUR_LOCAL_API_KEY` or `x-api-key: YOUR_LOCAL_API_KE
 | POST   | `/v1/messages`         | Anthropic Messages.                                       |
 | POST   | `/v1/systemone`        | System One structured decisions.                          |
 | GET    | `/healthz`             | Readiness and resource summary.                           |
+| GET    | `/metrics`             | Prometheus text metrics for requests, tokens and health.  |
 
 Discover an available model first:
 
@@ -265,7 +268,7 @@ The upstream free quota is scoped to the egress block, so rotation only helps wh
 
 ### Official system prompt
 
-Every shaped free-model request carries the OpenCode CLI's own system prompt — its base instructions, the `<env>` block, and the built-in skill listing — because the free tier validates agent-shaped traffic. The v1 `/zen` lane uses the 1.x tool names; `/inference` and `/zen/go` use the 2.x names. The environment block names the requested model, the gateway's working directory, the platform, and a UTC date.
+Every shaped free-model request carries the OpenCode CLI's own system prompt — its base instructions, the `<env>` block, and the built-in skill listing — because the free tier validates agent-shaped traffic. The v1 `/zen` lane uses the 1.x tool names; `/inference` and `/zen/go` use the 2.x names. The environment block names the requested model, the platform, and a UTC date. It deliberately omits the CLI's working-directory lines: the gateway must not expose its service account's filesystem (for example `C:\Windows\System32`) or tell the model to inspect paths that do not exist for the caller.
 
 Injection is protocol-aware: Chat system and developer messages are folded into one leading `system` message, Anthropic receives a `system` value (a string, or a leading text block when the caller sent blocks), and Responses receives `instructions`. A body whose system content already contains the marker `You are opencode, an interactive CLI tool` is passed through, so a client that sends the official prompt never gets a second copy. Free models served by a Zen or Go key receive the same shaping even though they still leave through that tier's proxy.
 
@@ -421,6 +424,7 @@ The per-attempt header timeout is capped by the request timeout. Set it below th
 | `logging.level`               | `info`; accepts `debug`, `info`, `warn`, `error`.             |
 | `logging.ring_size`           | `2000`; range 100–50,000.                                     |
 | `logging.dump_request_bodies` | `false`. Requires `debug` logging to emit outbound bodies.    |
+| `storage.usage_sqlite`        | Empty disables persistence; path to a SQLite usage database.  |
 | `webui.enabled`               | `false` when omitted; the example sets it to `true`.          |
 | `webui.listen`                | `0.0.0.0:8081`.                                               |
 | `webui.username`              | Required when the WebUI is enabled; the example uses `admin`. |
@@ -470,14 +474,14 @@ After execution, the management endpoint returns HTTP 200 with the actual result
 
 ### Interface language
 
-The WebUI loads its translations from `webui/js/i18n.js`. It ships with **简体中文** (default), **English**, **Tiếng Việt**, and **Italiano**. The original Simplified Chinese copy lives in `index.html` and `webui/js/` and stays the fallback for every string without a translation, so adding a language never rewrites the original.
+The WebUI loads its translations from `webui/js/i18n.js`. It ships with **Tiếng Việt** (default) and **English**. Vietnamese is also the fallback for every string without a translation, so the UI never falls back to Chinese.
 
 - The selector sits in the topbar, and on the login card.
 - The choice is stored in `localStorage` under `opencode2api.ui.lang`.
 - Switching re-renders both static text (`data-i18n`, `data-i18n-attr`) and JavaScript-generated text without reloading the page.
 - Dates and times follow the selected locale as well.
 
-To add a language, add one block to `DICTIONARY` in `webui/js/i18n.js`, then register its code in `SUPPORTED`, `LABELS`, `FLAGS`, and `DATE_LOCALES`, and add it to the `browserLocale` detection chain.
+To add a language, add one block to `DICTIONARY` in `webui/js/i18n.js`, then register its code in `SUPPORTED`, `LABELS`, `FLAGS`, and `DATE_LOCALES`.
 
 ### Saving and reloading
 
@@ -500,6 +504,7 @@ Token statistics use reported usage only. Input tokens include cache reads and w
 | Live log ring                                             | Process memory; size set by `logging.ring_size`.                                             |
 | Structured logs                                           | JSON on stdout; collect externally for durable history.                                      |
 | Configuration and previous version                        | `config.json` and `config.json.bak`.                                                         |
+| Usage history                                             | SQLite at `storage.usage_sqlite` when configured; persistent until deleted.                  |
 | Model directory cache                                     | `config.json.models.catalog.json`.                                                           |
 | Price/deprecation cache                                   | `config.json.models.dev.json`.                                                               |
 
@@ -513,6 +518,12 @@ Cache filenames are based on the actual configuration path. Lifetime counters me
 - HTTP 200: ready, including when a usable catalog cache is stale. In that case the model status is `stale` and overall status is `degraded`.
 
 The staleness threshold is twice `models.refresh_seconds`, with a minimum of 60 seconds. Readiness is a discovery and resource check; it does not verify that an upstream key will accept the next inference.
+
+### Prometheus metrics
+
+`GET /metrics` returns Prometheus text metrics without authentication: request success/error counters, latency quantiles, token counters, per-model/tier/status counts, upstream attempts, proxy and WARP health, and catalog size. It reads the same in-memory snapshot as the WebUI and does not generate upstream traffic. Bind the API listener to localhost or a private network if metrics must not be public.
+
+When `storage.usage_sqlite` is set, every routed request is also appended to SQLite in the background. Rows contain the timestamp, request/session IDs, local server key, model, tier, upstream key, channel, proxy, attempts, status, duration, outcome and token counts. The writer uses WAL and a bounded queue; a full queue drops and counts records rather than blocking inference.
 
 ## Development
 

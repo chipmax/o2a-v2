@@ -51,6 +51,10 @@ type RequestMeta struct {
 	UsageReported  bool
 	AttemptOutcome string
 	Outcome        string
+	// RequestBytes is the client request body size that produced prompt_tokens.
+	// It calibrates context-limit estimates consistently across local and peer
+	// attempts, where the upstream body may include injected prompt content.
+	RequestBytes int64
 }
 
 // PlaygroundServerKey buckets admin Playground traffic, which authenticates

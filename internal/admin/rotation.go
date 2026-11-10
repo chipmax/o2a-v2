@@ -36,11 +36,11 @@ func (a *Server) handleSaveRotation(w http.ResponseWriter, r *http.Request) {
 				order = input.Sweet.Order
 			}
 			if len(order) != len(g.Order) {
-				return fmt.Errorf("模型列表已更新，请刷新后重新排序")
+				return fmt.Errorf("the model list has changed; refresh and reorder again")
 			}
 			for _, v := range order {
 				if !slices.Contains(g.Order, v) {
-					return fmt.Errorf("只能调整组内模型的顺序")
+					return fmt.Errorf("only models in this group can be reordered")
 				}
 			}
 		}

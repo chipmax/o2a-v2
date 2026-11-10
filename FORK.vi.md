@@ -7,7 +7,7 @@ tiếng Việt, chạy gọn và ổn định hơn, không cần Python/Node/sin
 
 | Thay đổi | Lợi ích |
 | --- | --- |
-| WebUI mặc định **tiếng Việt** (vi / en / zh-CN / it) | Mở là dùng, không phải đổi ngôn ngữ |
+| WebUI mặc định **tiếng Việt** (vi / en) | Mở là dùng, không phải đổi ngôn ngữ |
 | **Hạn mức theo từng khoá API**: danh sách mô hình, số request song song, số request/ngày | Chia sẻ gateway cho nhiều ứng dụng mà không sợ một chỗ ăn hết quota; trả `429` kèm `Retry-After` |
 | **Timeout theo mô hình**: `performance.model_timeouts` | Mô hình suy luận chậm có ngân sách riêng, không cắt ngang stream dài |
 | **Giữ nóng WARP**: lưu đăng ký vào `config.json.warp-state.json` | Khởi động lại không mất pool, không đăng ký lại từ đầu |
@@ -139,12 +139,92 @@ các request sau 1.0–2.4 s, tất cả `200` với `X-Peer: vps1-o2a`.
 `sẵn sàng / đang nghỉ / chưa dùng`, thời gian nghỉ còn lại và mốc reset UTC.
 Dữ liệu lấy từ bộ đếm trong bộ nhớ cộng trạng thái cooling thật của pool WARP.
 
+## Ghi đè giới hạn ngữ cảnh (`models.context_overrides`)
+
+Catalog của OpenCode quảng cáo `deepseek-v4.1-flash-free` là 200k, nhưng backend
+thực tế nhận nhiều hơn. Đo trên VPS1/VPS2 (2026-11-09, prompt lặp từ):
+
+| prompt_tokens | kết quả |
+|---|---|
+| 305.755 | 200 |
+| 327.755 | 200 |
+| 329.955 | 200 |
+| 330.055 | 200 |
+| 331.755 | 400 “maximum context length” |
+| 400k / 660k | 400 |
+
+Trần thực tế ≈ **330k** (catalog ghi 200k). Vì vậy `/v1/models` có thể công bố con
+số an toàn thay vì để từng agent tự hard-code:
+
+```json
+"models": {
+  "context_overrides": {
+    "deepseek-v4.1-flash-free": { "context": 320000 }
+  }
+}
+```
+
+- `context` / `input` / `output`: 0 = giữ nguyên giá trị catalog.
+- Chỉ ảnh hưởng con số **quảng cáo** cho client discovery; gateway không chặn
+  theo giới hạn này (upstream mới là bên quyết định).
+- Nên đặt thấp hơn trần đo được ~10k để chừa chỗ cho system prompt/tool schema
+  mà gateway chèn thêm.
+- Giới hạn hợp lệ: context/input ≤ 10.000.000, output ≤ 1.000.000, tối đa 128 mục.
+- Đổi trong WebUI/`config.json` cần reload cấu hình (nút Lưu) để có hiệu lực.
+
+### Tự học giới hạn từ traffic
+
+Từ bản này, `context` trong `context_overrides` chỉ là **seed**. Gateway quan sát
+`prompt_tokens` của các response thành công và lỗi context của upstream:
+
+- Success lớn hơn seed/catalog: nâng `/v1/models` lên `prompt_tokens - 5%` (làm tròn
+  xuống 1k). Success nhỏ hơn không làm hạ seed.
+- Quan sát áp dụng cho cả request do peer phục vụ: response JSON không stream được
+  đọc để lấy `usage`, còn SSE được forward qua bộ theo dõi usage nên không làm chậm
+  stream.
+- Lỗi `400`/`413`/`422` có dấu hiệu context (`maximum context length`,
+  `prompt is too long`, `context_length_exceeded`…): hạ con số quảng cáo xuống 10%
+  dưới prompt ước lượng. Nếu body lỗi có số giới hạn cụ thể, dùng luôn số đó.
+- Lỗi context từ peer, `/v1/systemone` và alias rotation cũng được ghi vào board
+  và trả header `X-Context-Limit`; không chỉ đường upstream cục bộ.
+- Response lỗi kèm header `X-Context-Limit` chứa con số mới nhất để agent tự compact.
+- Quan sát tách theo `tier` (`go`/`zen`) và model, lưu ở
+  `<config>.context-limits.json` (0600), tự lưu mỗi 5 giây và khi shutdown.
+  Xoá file này để reset về seed/catalog.
+- Ước lượng token của request bị lỗi dùng tỷ lệ byte/token học từ các request lớn
+  thành công; không cần gọi thêm upstream và không tốn quota.
+
+### Đo trần chủ động (`POST /api/models/context-probe`)
+
+Khi cần con số chính xác ngay (model mới, trần vừa đổi), WebUI → **Mô hình & hạn
+mức** có nút **Đo trần** ở từng dòng, gọi:
+
+```http
+POST /api/models/context-probe
+Content-Type: application/json
+
+{ "model": "deepseek-v4.1-flash-free", "max_requests": 4, "force": false }
+```
+
+- Bắt đầu ở `context` đang quảng cáo ×1,12, mỗi lần thành công nâng 15%; sau lần
+  bị từ chối đầu tiên thì chia đôi khoảng `[đã thành công, bị từ chối]` cho tới khi
+  hẹp hơn 2%. Mặc định 4 lượt, tối đa 8 (`max_requests`).
+- Mỗi lượt là một request thật (`max_tokens: 16`, prompt lặp), tính quota free tier.
+  Mặc định chỉ chạy khi không có stream hoạt động; `force: true` để bỏ qua kiểm tra.
+  Mỗi lúc chỉ một probe, và kết quả từng lượt được ghi vào board ngay nên đóng tab
+  giữa chừng vẫn giữ được những gì đã đo.
+- Lượt đo được đánh dấu **diagnostic**: không đổi cooldown key/relay, không tính là
+  traffic hội thoại, nhưng chủ động ghi `ObserveSuccess`/`ObserveRejection`.
+- Kết quả trả về `advertised_before`, `advertised_after`, `observed`, `rejected_at`,
+  `ceiling`, `outcome` (`raised`/`lowered`/`unchanged`) và bảng `attempts` để biết
+  chi phí của phép đo.
+
 ## Ghi chú vận hành
 
 - `config.json.warp-state.json` chứa đăng ký WARP đã dùng; xoá file này để đăng ký mới hoàn toàn.
 - Free tier tính quota theo IP exit: một VPS mới cần vài phút để pool tìm được exit còn quota.
 - Log JSON có `event`: `request_routed`, `free_tier_quota_document`, `warp_429_exhausted`,
-  `peer_served`, `peer_fallback`, `upstream_credential_rejected`, `key_daily_limit`... dùng để soi nhanh.
+  `peer_served`, `peer_fallback`, `peer_context_limit_exceeded`, `upstream_credential_rejected`, `key_daily_limit`... dùng để soi nhanh.
 - Gateway không đổi mô hình khi client chỉ định rõ; chỉ alias luân chuyển mới đổi.
 - Sau mỗi lần restart, pool WARP cần ~2–4 phút để ấm lại 8 exit; trong lúc đó peer
   (nếu có) gánh traffic.

@@ -2,6 +2,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"opencode2api/internal/buildinfo"
@@ -37,6 +39,9 @@ type Server struct {
 	lastInference *DebugInferenceResult
 	quotaMu       sync.Mutex
 	quotaCache    map[string]quotaCacheEntry
+	// probeRunning admits one context probe at a time: a probe sends real,
+	// large prompts and the free lane is shared.
+	probeRunning atomic.Bool
 }
 
 // New returns a Server for manager, reporting to monitor and logs.
@@ -61,6 +66,7 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("PUT /api/config", a.authenticate(a.csrf(http.HandlerFunc(a.handlePutConfig))))
 	mux.Handle("POST /api/config/reload", a.authenticate(a.csrf(http.HandlerFunc(a.handleReload))))
 	mux.Handle("POST /api/config/reveal", a.authenticate(a.csrf(http.HandlerFunc(a.handleReveal))))
+	mux.Handle("POST /api/proxies/check", a.authenticate(a.csrf(http.HandlerFunc(a.handleCheckProxies))))
 	mux.Handle("PUT /api/account", a.authenticate(a.csrf(http.HandlerFunc(a.handleAccount))))
 	mux.Handle("GET /api/monitor", a.authenticate(http.HandlerFunc(a.handleMonitor)))
 	mux.Handle("GET /api/debug/models", a.authenticate(http.HandlerFunc(a.handleDebugModels)))
@@ -68,6 +74,7 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("POST /api/models/restore", a.authenticate(a.csrf(http.HandlerFunc(a.handleRestoreModel))))
 	mux.Handle("POST /api/models/manual", a.authenticate(a.csrf(http.HandlerFunc(a.handleManualModel))))
 	mux.Handle("POST /api/models/probe", a.authenticate(a.csrf(http.HandlerFunc(a.handleProbeModels))))
+	mux.Handle("POST /api/models/context-probe", a.authenticate(a.csrf(http.HandlerFunc(a.handleContextProbe))))
 	mux.Handle("GET /api/rotation", a.authenticate(http.HandlerFunc(a.handleRotation)))
 	mux.Handle("PUT /api/rotation", a.authenticate(a.csrf(http.HandlerFunc(a.handleSaveRotation))))
 	mux.Handle("POST /api/rotation/current", a.authenticate(a.csrf(http.HandlerFunc(a.handleSelectRotation))))
@@ -106,6 +113,7 @@ func (a *Server) staticHandler() http.Handler {
 		// cache happens to expire or the operator hard-refreshes. Force
 		// revalidation instead.
 		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("X-O2A-Build", buildinfo.Version)
 		files.ServeHTTP(w, r)
 	})
 }
@@ -252,15 +260,7 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	if update.ProxyBindings != nil {
 		proxyBindings = update.ProxyBindings
 	}
-	candidate := config.Config{
-		ServerKeyMetadata: current.ServerKeyMetadata,
-		Rotation:          current.Rotation,
-		Listen:            update.Listen, ServerKeys: serverKeys, ZenKeys: zenKeys, GoKeys: goKeys, Anonymous: update.Anonymous, Warp: update.Warp, Proxies: proxies, ProxyFile: update.ProxyFile,
-		ProxyBindings: proxyBindings,
-		Upstream:      update.Upstream, Retry: update.Retry, Models: update.Models, Performance: update.Performance, Logging: update.Logging, Prefer: update.Prefer,
-		Reasoning: reasoning,
-		WebUI:     config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes},
-	}
+	candidate := candidateConfig(current, update, serverKeys, zenKeys, goKeys, proxies, proxyBindings, reasoning)
 	result, err := a.manager.Apply(candidate, true)
 	if err != nil {
 		a.logger.Warn("configuration update rejected", "component", "config", "event", "config_rejected", "error", err)
@@ -268,6 +268,37 @@ func (a *Server) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"result": result, "config": a.configView()})
+}
+
+// candidateConfig merges a WebUI update with the fields the WebUI does not
+// edit. It starts from a clone so fields added later keep their current value
+// instead of being silently reset by an unrelated UI save.
+func candidateConfig(current config.Config, update ConfigUpdate, serverKeys, zenKeys, goKeys, proxies []string, proxyBindings map[string]string, reasoning config.ReasoningConfig) config.Config {
+	candidate := config.Clone(current)
+	candidate.Listen = update.Listen
+	candidate.ServerKeys = serverKeys
+	candidate.ZenKeys = zenKeys
+	candidate.GoKeys = goKeys
+	candidate.Anonymous = update.Anonymous
+	candidate.Warp = update.Warp
+	candidate.Proxies = proxies
+	candidate.ProxyFile = update.ProxyFile
+	candidate.ProxyBindings = proxyBindings
+	candidate.Upstream = update.Upstream
+	candidate.Retry = update.Retry
+	// The UI edits only a subset of models; keep the fields it does not render
+	// (context overrides, anonymous backoff) when they are absent from the
+	// payload.
+	models := update.Models
+	models.ContextOverrides = current.Models.ContextOverrides
+	models.AnonymousBackoff = current.Models.AnonymousBackoff
+	candidate.Models = models
+	candidate.Performance = update.Performance
+	candidate.Logging = update.Logging
+	candidate.Prefer = update.Prefer
+	candidate.Reasoning = reasoning
+	candidate.WebUI = config.WebUIConfig{Enabled: update.WebUI.Enabled, Listen: update.WebUI.Listen, Username: current.WebUI.Username, PasswordHash: current.WebUI.PasswordHash, SessionTTLMinutes: update.WebUI.SessionTTLMinutes}
+	return candidate
 }
 
 // handleReload re-reads config.json and applies it, so an edit made on disk
@@ -299,6 +330,20 @@ func (a *Server) handleReveal(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	a.logger.Info("sensitive configuration revealed", "component", "auth", "event", "secrets_revealed", "client_ip", clientIP(r))
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"server_keys": cfg.ServerKeys, "zen_keys": cfg.ZenKeys, "go_keys": cfg.GoKeys, "proxies": cfg.Proxies})
+}
+
+// handleCheckProxies runs one end-to-end probe through every configured proxy
+// and answers with the number of routes that were checked. The caller then
+// refreshes /api/monitor to read the updated health flags.
+func (a *Server) handleCheckProxies(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	checked := a.manager.CheckProxies(ctx)
+	if checked == 0 {
+		writeAdminError(w, http.StatusServiceUnavailable, "proxy_check_unavailable", "no proxy route is available or a proxy check is already running")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]any{"checked": checked})
 }
 
 // handleMonitor answers with the build version, the metrics snapshot and the

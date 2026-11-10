@@ -1,6 +1,6 @@
 # opencode2api
 
-[English](README.md) | [简体中文](README.zh-CN.md) | [Tiếng Việt](README.vi.md) | [Italiano](README.it.md)
+[English](README.md) | [Tiếng Việt](README.vi.md)
 
 > **Bản fork cá nhân `o2a-v2`** — dựa trên upstream 1.4.7 (MIT).
 > Khác biệt chính: WebUI **mặc định tiếng Việt**, **hạn mức theo từng khoá API**
@@ -27,11 +27,13 @@ File thực thi đã bao gồm WebUI. Việc chạy dịch vụ không cần Nod
 - Nạp lại cấu hình nóng sau khi kiểm tra, trước khi chuyển request mới sang gateway thay thế.
 - Bảng hạn mức gói Go với phần trăm còn lại, thời điểm reset và danh sách mô hình khả dụng.
 - Tạo, đặt tên, bật, tắt và xoá API key cục bộ, có hiệu lực tức thì.
-- Nhóm mô hình `sota` / `sweet` bám dính, có thứ tự, chuyển khi lỗi, bảo vệ luồng và trạng thái được lưu.
+- Nhóm mô hình `sota` / `sweet` bám dính, thứ tự theo catalog, chuyển khi lỗi, bảo vệ luồng và trạng thái được lưu.
+- Hạn mức ngày/song song theo từng khoá và bảng ngân sách egress `/64` được giữ qua restart trong cùng ngày UTC.
+- Giao diện Việt/Anh gọn 4 mục: Tổng quan (nguồn ra & IP, ngân sách egress), Mô hình & Key (hạn mức, mô hình miễn phí, luân chuyển), Egress & WARP, Cài đặt (kèm bảo mật tài khoản); API key và chẩn đoán là thao tác nhanh ở Tổng quan.
 
-Giao diện quản trị hỗ trợ **简体中文** (mặc định), **English**, **Tiếng Việt** và **Italiano**; lựa chọn được lưu trong trình duyệt và không làm thay đổi bản gốc.
+Giao diện quản trị hỗ trợ **Tiếng Việt** (mặc định) và **English**; lựa chọn được lưu trong trình duyệt.
 
-Xem [hướng dẫn bảng điều khiển quản trị (tiếng Trung)](docs/management.zh-CN.md) để biết các trang mới và tuỳ chọn cấu hình.
+Xem [docs/CONFIG.vi.md](docs/CONFIG.vi.md) để biết toàn bộ tham số cấu hình và các trang quản trị.
 
 ## Nhà tài trợ
 
@@ -147,6 +149,7 @@ Gửi `Authorization: Bearer YOUR_LOCAL_API_KEY` hoặc `x-api-key: YOUR_LOCAL_A
 | POST        | `/v1/messages`          | Anthropic Messages.                                            |
 | POST        | `/v1/systemone`         | Quyết định có cấu trúc của System One.                        |
 | GET         | `/healthz`              | Trạng thái sẵn sàng và tóm tắt tài nguyên.                     |
+| GET         | `/metrics`              | Số liệu Prometheus cho request, token và sức khoẻ.             |
 
 Hãy tìm một mô hình khả dụng trước:
 
@@ -268,7 +271,7 @@ Hạn mức miễn phí của upstream tính theo **dải đầu ra**, nên luâ
 
 ### System prompt chính thức
 
-Mỗi request mô hình miễn phí đã được định hình đều mang system prompt của chính OpenCode CLI — hướng dẫn gốc, khối `<env>` và danh sách skill tích hợp — vì làn miễn phí kiểm tra request có dạng agent. Làn v1 `/zen` dùng tên công cụ 1.x; `/inference` và `/zen/go` dùng tên 2.x. Khối môi trường nêu mô hình được yêu cầu, thư mục làm việc của gateway, nền tảng và ngày theo UTC.
+Mỗi request mô hình miễn phí đã được định hình đều mang system prompt của chính OpenCode CLI — hướng dẫn gốc, khối `<env>` và danh sách skill tích hợp — vì làn miễn phí kiểm tra request có dạng agent. Làn v1 `/zen` dùng tên công cụ 1.x; `/inference` và `/zen/go` dùng tên 2.x. Khối môi trường nêu mô hình được yêu cầu, nền tảng và ngày theo UTC. Các dòng thư mục làm việc bị bỏ có chủ đích: gateway không được để lộ hệ thống tệp của tài khoản dịch vụ (ví dụ `C:\Windows\System32`) và không mách mô hình đi kiểm tra những đường dẫn không tồn tại với người gọi.
 
 Việc chèn phụ thuộc giao thức: các message system và developer của Chat được gộp thành một message `system` duy nhất ở đầu; Anthropic nhận giá trị `system` (chuỗi, hoặc một text block ở đầu khi bên gọi gửi danh sách block); Responses nhận `instructions`. Nếu nội dung system đã chứa dấu hiệu `You are opencode, an interactive CLI tool`, request được giữ nguyên, nên client đã gửi prompt chính thức sẽ không bị chèn lần hai. Mô hình miễn phí phục vụ qua Zen hoặc Go Key cũng được định hình như vậy nhưng vẫn ra ngoài qua proxy của tier đó.
 
@@ -409,6 +412,7 @@ Timeout header cho mỗi lần thử bị chặn trên bởi timeout của reque
 | `logging.level`               | `info`; nhận `debug`, `info`, `warn`, `error`.          |
 | `logging.ring_size`           | `2000`; khoảng 100–50.000.                              |
 | `logging.dump_request_bodies` | `false`. Cần log mức `debug` để xuất body đi ra.        |
+| `storage.usage_sqlite`        | Rỗng là tắt; đường dẫn file SQLite lưu usage.          |
 | `webui.enabled`               | `false` nếu bỏ qua; file mẫu đặt là `true`.            |
 | `webui.listen`                | `0.0.0.0:8081`.                                          |
 | `webui.username`              | Bắt buộc khi bật WebUI; file mẫu dùng `admin`.          |
@@ -458,14 +462,14 @@ Sau khi thực thi, endpoint quản trị trả HTTP 200 với kết quả thự
 
 ### Ngôn ngữ giao diện
 
-WebUI tải bản dịch từ `webui/js/i18n.js`. Bản dịch có sẵn gồm **简体中文** (mặc định), **English**, **Tiếng Việt** và **Italiano**. Ngôn ngữ gốc **简体中文** nằm ngay trong `index.html` và `webui/js/`, và luôn được dùng làm dự phòng cho mọi chuỗi không có bản dịch — vì vậy việc thêm ngôn ngữ không làm thay đổi bản gốc.
+WebUI tải bản dịch từ `webui/js/i18n.js`. Bản dịch có sẵn gồm **Tiếng Việt** (mặc định) và **English**. Tiếng Việt cũng là bản dự phòng cho mọi chuỗi không có bản dịch, nên giao diện không bao giờ quay về tiếng Trung.
 
 - Bộ chọn ngôn ngữ nằm ở góc phải thanh công cụ (và trên thẻ đăng nhập).
 - Lựa chọn được lưu trong `localStorage` với khoá `opencode2api.ui.lang`.
 - Đổi ngôn ngữ sẽ dịch lại cả văn bản tĩnh (`data-i18n`, `data-i18n-attr`) lẫn văn bản do JavaScript tạo ra, mà không cần tải lại trang.
 - Định dạng ngày giờ cũng theo ngôn ngữ đang chọn.
 
-Thêm một ngôn ngữ mới chỉ cần thêm một khối vào `DICTIONARY` trong `webui/js/i18n.js`, rồi khai báo mã trong `SUPPORTED`, `LABELS`, `FLAGS` và `DATE_LOCALES`, và thêm vào chuỗi phát hiện `browserLocale`.
+Thêm một ngôn ngữ mới chỉ cần thêm một khối vào `DICTIONARY` trong `webui/js/i18n.js`, rồi khai báo mã trong `SUPPORTED`, `LABELS`, `FLAGS` và `DATE_LOCALES`.
 
 ### Lưu và nạp lại
 
@@ -488,6 +492,7 @@ Thống kê token chỉ dùng usage được báo. Token input bao gồm đọc 
 | Ring log trực tiếp                                         | Bộ nhớ tiến trình; kích thước do `logging.ring_size` quy định. |
 | Log có cấu trúc                                            | JSON trên stdout; thu thập bên ngoài để lưu lâu dài.          |
 | Cấu hình và phiên bản trước                                 | `config.json` và `config.json.bak`.                             |
+| Lịch sử usage                                               | SQLite tại `storage.usage_sqlite` khi được cấu hình; giữ tới khi xoá file. |
 | Cache danh mục mô hình                                      | `config.json.models.catalog.json`.                             |
 | Cache giá/ngừng cấp                                         | `config.json.models.dev.json`.                                 |
 
@@ -501,6 +506,12 @@ Tên file cache dựa trên đường dẫn cấu hình thực tế. Các bộ �
 - HTTP 200: sẵn sàng, kể cả khi cache danh mục dùng được đã cũ. Trong trường hợp đó trạng thái mô hình là `stale` và trạng thái tổng thể là `degraded`.
 
 Ngưỡng cũ là gấp đôi `models.refresh_seconds`, tối thiểu 60 giây. Khả năng sẵn sàng là một bước kiểm tra phát hiện và tài nguyên; nó không xác minh rằng upstream key sẽ chấp nhận lần suy luận tiếp theo.
+
+### Prometheus
+
+`GET /metrics` trả số liệu định dạng Prometheus, không cần xác thực: bộ đếm thành công/lỗi, phân vị độ trễ, token, số request theo model/tier/status, số lần thử upstream, sức khoẻ proxy/WARP và kích thước catalog. Endpoint đọc cùng snapshot trong bộ nhớ với WebUI, không tạo request upstream. Nếu số liệu không được phép công khai, hãy bind listener API vào localhost hoặc mạng riêng.
+
+Khi đặt `storage.usage_sqlite`, mỗi request đã định tuyến được ghi nền vào SQLite. Mỗi dòng gồm thời điểm, request/session ID, server key cục bộ, model, tier, upstream key, channel, proxy, số lần thử, status, thời lượng, kết quả và số token. Writer dùng WAL và hàng đợi có giới hạn; khi hàng đợi đầy, bản ghi mới bị bỏ và đếm thay vì chặn suy luận.
 
 ## Phát triển
 

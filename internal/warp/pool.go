@@ -406,12 +406,13 @@ func (p *Pool) ReportWithRetryAfter(lease *Lease, status int, body []byte, retry
 // egress, whether it is carrying a request, and when a cooling one reopens. A
 // cooling exit is reported by egress key alone because its tunnel is gone.
 type ExitState struct {
-	ID           string
-	Egress       string
-	EgressKey    string
-	InFlight     int
-	Cooling      bool
-	CoolingUntil time.Time
+	ID           string    `json:"id,omitempty"`
+	Egress       string    `json:"egress,omitempty"`
+	EgressKey    string    `json:"egress_key,omitempty"`
+	Source       string    `json:"source,omitempty"`
+	InFlight     int       `json:"in_flight"`
+	Cooling      bool      `json:"cooling,omitempty"`
+	CoolingUntil time.Time `json:"cooling_until,omitempty"`
 }
 
 // States reports every active and cooling exit. It never exposes keys or
@@ -426,6 +427,9 @@ func (p *Pool) States() []ExitState {
 	out := make([]ExitState, 0, len(p.active)+len(p.cooling))
 	for _, active := range p.active {
 		state := ExitState{ID: active.id, Egress: active.egress.String(), EgressKey: active.egressKey()}
+		if active.source.IsValid() {
+			state.Source = active.source.String()
+		}
 		active.mu.Lock()
 		state.InFlight = active.refs
 		active.mu.Unlock()

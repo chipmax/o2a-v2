@@ -72,11 +72,17 @@ type Token struct {
 // in memory only when path is empty. mu guards all state; methods ending in
 // Locked expect the caller to hold it.
 type Manager struct {
-	mu    sync.Mutex
-	path  string
-	state Snapshot
-	cfg   config.RotationConfig
+	mu       sync.Mutex
+	path     string
+	state    Snapshot
+	cfg      config.RotationConfig
+	lastSave time.Time
 }
+
+// rotationSaveInterval bounds how often high-volume attempt records reach disk.
+// Attempts are diagnostic UI state; pausing or switching a model still saves
+// immediately, and shutdown flushes the newest attempts.
+const rotationSaveInterval = 5 * time.Second
 
 // New loads the state from path (a missing file starts empty), applies cfg and
 // persists the result. It fails when the file cannot be read or parsed, when
@@ -150,31 +156,47 @@ func (m *Manager) Configure(cfg config.RotationConfig) {
 	m.saveLocked()
 }
 
-// Sync replaces each group's Available set with the models of available that
-// belong to it (the SOTA models to sota, every other model to sweet). Models
-// new to a group are appended to its order in sorted order, glm-5.3-flash
-// first when the order was empty, and a group without a Current starts on its
-// first model. The state is persisted only when an order or Current changed.
+// Sync replaces each group's Available set from the current catalog. The sota
+// group keeps only its curated order entries that are still available; the
+// sweet group discovers every other available model. Newly discovered sweet
+// models are appended to its order in sorted order, and a group without a
+// Current starts on its first model. The state is persisted only when an
+// order or Current changed.
 func (m *Manager) Sync(available map[string]bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	changed := false
+	sotaOrder := map[string]bool{}
+	if sota := m.group("sota"); sota != nil {
+		for _, model := range sota.Order {
+			sotaOrder[model] = true
+		}
+	}
 	for _, g := range m.state.Groups {
 		g.Available = map[string]bool{}
 		for model := range available {
-			if config.IsSOTA(model) == (g.ID == "sota") {
+			if g.ID == "sota" {
+				// The sota alias is an explicit, operator-curated set. A model
+				// that disappears from the catalog simply becomes unavailable;
+				// it is not replaced by an arbitrary new model.
+				if slices.Contains(g.Order, model) {
+					g.Available[model] = true
+				}
+			} else if !sotaOrder[model] {
+				// The sweet alias keeps discovering every other model the
+				// current catalog exposes, so a newly added model is usable
+				// without editing config.
 				g.Available[model] = true
 			}
 		}
 		added := []string{}
-		for model := range g.Available {
-			if !slices.Contains(g.Order, model) {
-				added = append(added, model)
+		if g.ID == "sweet" {
+			for model := range g.Available {
+				if !slices.Contains(g.Order, model) {
+					added = append(added, model)
+				}
 			}
-		}
-		sort.Strings(added)
-		if len(g.Order) == 0 && slices.Contains(added, "glm-5.3-flash") {
-			added = append([]string{"glm-5.3-flash"}, slices.Delete(added, slices.Index(added, "glm-5.3-flash"), slices.Index(added, "glm-5.3-flash")+1)...)
+			sort.Strings(added)
 		}
 		if len(added) > 0 {
 			g.Order = append(g.Order, added...)
@@ -249,7 +271,7 @@ func (m *Manager) Select(id string, visited map[string]bool) (Token, bool) {
 		}
 		// A request-local skip must not change a newer, healthy global selection.
 		if !usable(g, g.Current) {
-			m.switchLocked(g, model, "当前模型暂停或已下架")
+			m.switchLocked(g, model, "current model paused or unavailable")
 			m.saveLocked()
 		}
 		return Token{g.ID, model, g.Generation}, true
@@ -302,6 +324,55 @@ func (m *Manager) Fail(t Token, pause time.Duration, reason string) {
 	m.saveLocked()
 }
 
+// FailQuota pauses every model in the same two-character family as t. The
+// upstream free-tier bucket is shared by family, so retrying a sibling after
+// one 429 would only spend another request on the same exhausted bucket. The
+// current model moves out of the family when it is the one that failed, just
+// like Fail.
+func (m *Manager) FailQuota(t Token, pause time.Duration, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	g := m.group(t.Group)
+	if g == nil {
+		return
+	}
+	until := time.Now().Add(pause).UTC()
+	family := modelFamily(t.Model)
+	for _, model := range g.Order {
+		if modelFamily(model) != family {
+			continue
+		}
+		if until.After(g.Paused[model]) {
+			g.Paused[model] = until
+		}
+	}
+	if g.Generation == t.Generation && modelFamily(g.Current) == family {
+		start := slices.Index(g.Order, g.Current)
+		if start < 0 {
+			start = 0
+		}
+		next := g.Current
+		for n := 1; n < len(g.Order); n++ {
+			v := g.Order[(start+n)%len(g.Order)]
+			if usable(g, v) {
+				next = v
+				break
+			}
+		}
+		m.switchLocked(g, next, reason)
+	}
+	m.saveLocked()
+}
+
+// modelFamily is the upstream quota family: the first two characters of a
+// model ID. Short IDs are their own family.
+func modelFamily(model string) string {
+	if len(model) <= 2 {
+		return model
+	}
+	return model[:2]
+}
+
 // Manual makes model the Current of group id at an operator's request and
 // lifts its pause. The model must be in the group's order and available. It
 // fails when the new state cannot be persisted.
@@ -310,19 +381,21 @@ func (m *Manager) Manual(id, model string) error {
 	defer m.mu.Unlock()
 	g := m.group(id)
 	if g == nil || !slices.Contains(g.Order, model) || !g.Available[model] {
-		return fmt.Errorf("请选择该组当前可用的 Go 模型")
+		return fmt.Errorf("select a model that is currently available in this group")
 	}
 	delete(g.Paused, model)
-	m.switchLocked(g, model, "管理员手动切换")
+	m.switchLocked(g, model, "manual switch by administrator")
 	m.saveLocked()
 	if m.state.PersistenceError != "" {
-		return fmt.Errorf("轮转状态保存失败")
+		return fmt.Errorf("failed to persist rotation state")
 	}
 	return nil
 }
 
 // Record stamps a with the current time and keeps it among the latest 100
-// attempts.
+// attempts. Records are high-volume and diagnostic only, so they are flushed
+// at most once per rotationSaveInterval instead of fsyncing the state file on
+// every upstream attempt. Save flushes a pending record on shutdown.
 func (m *Manager) Record(a Attempt) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -331,7 +404,30 @@ func (m *Manager) Record(a Attempt) {
 	if len(m.state.Attempts) > 100 {
 		m.state.Attempts = m.state.Attempts[len(m.state.Attempts)-100:]
 	}
+	m.maybeSaveLocked(time.Now())
+}
+
+// Save flushes the current state, including records throttled by Record.
+func (m *Manager) Save() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.saveLocked()
+}
+
+// FirstOutputSeconds returns the configured first-output deadline without
+// materializing a snapshot; rotation attempts read it on every request.
+func (m *Manager) FirstOutputSeconds() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.state.FirstOutputSeconds
+}
+
+// PersistenceError returns the last write failure without materializing a
+// snapshot; rotation attempts inspect it after recording an attempt.
+func (m *Manager) PersistenceError() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.state.PersistenceError
 }
 
 // saveLocked persists the state when there is a path. A failed write is not
@@ -342,8 +438,16 @@ func (m *Manager) saveLocked() {
 	}
 	m.state.PersistenceError = ""
 	if err := m.writeLocked(); err != nil {
-		m.state.PersistenceError = "轮转状态写入失败，请检查磁盘空间和文件权限"
+		m.state.PersistenceError = "failed to write rotation state; check disk space and file permissions"
 	}
+	m.lastSave = time.Now()
+}
+
+func (m *Manager) maybeSaveLocked(now time.Time) {
+	if m.path == "" || now.Sub(m.lastSave) < rotationSaveInterval {
+		return
+	}
+	m.saveLocked()
 }
 
 // writeLocked writes the state through a temporary file and a rename.

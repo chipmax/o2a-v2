@@ -62,6 +62,7 @@ func ParseStack(value string) (Stack, error) {
 type exit struct {
 	id        string
 	egress    netip.Addr
+	source    netip.Addr
 	stack     Stack
 	device    *device.Device
 	network   *netstack.Net
@@ -141,6 +142,11 @@ func newExitWithStack(ctx context.Context, reg registration, stack Stack, source
 		// Cloudflare over IPv6 still gets a working tunnel, just with the
 		// shared address the prefix was supposed to avoid.
 		endpoints = preferIPv6Endpoints(endpoints)
+	} else {
+		// Without a pinned source there is no rotation to protect. Prefer the
+		// IPv4 endpoint so a host with only IPv4 routing (WSL, many VPS NATs)
+		// does not spend the probe budget on unreachable IPv6 handshakes.
+		endpoints = preferIPv4Endpoints(endpoints)
 	}
 	wg := device.NewDevice(tunDevice, &simpleBind{source: source}, device.NewLogger(device.LogLevelError, "warp: "))
 	uapi := fmt.Sprintf(
@@ -157,7 +163,7 @@ func newExitWithStack(ctx context.Context, reg registration, stack Stack, source
 		<-wg.Wait()
 		return nil, fmt.Errorf("start WARP device: %w", err)
 	}
-	e := &exit{id: reg.ID, stack: stack, device: wg, network: network}
+	e := &exit{id: reg.ID, source: source, stack: stack, device: wg, network: network}
 	egress, err := e.probe(ctx, wg, peerKey, endpoints)
 	if err != nil {
 		e.close()
@@ -171,8 +177,19 @@ func newExitWithStack(ctx context.Context, reg registration, stack Stack, source
 // ones after them, both in their original order. Nothing is dropped: an IPv4
 // fallback keeps WARP usable on a host that cannot reach Cloudflare over IPv6.
 func preferIPv6Endpoints(endpoints []string) []string {
-	ordered := make([]string, 0, len(endpoints))
-	ipv4 := make([]string, 0, len(endpoints))
+	return orderEndpoints(endpoints, true)
+}
+
+// preferIPv4Endpoints is the inverse of preferIPv6Endpoints. It is used when
+// the tunnel has no pinned outer source: an IPv4 endpoint avoids spending the
+// startup probe on IPv6 handshakes that cannot leave a WSL/NAT-only host.
+func preferIPv4Endpoints(endpoints []string) []string {
+	return orderEndpoints(endpoints, false)
+}
+
+func orderEndpoints(endpoints []string, ipv6First bool) []string {
+	first := make([]string, 0, len(endpoints))
+	second := make([]string, 0, len(endpoints))
 	for _, endpoint := range endpoints {
 		host, _, err := net.SplitHostPort(endpoint)
 		if err != nil {
@@ -182,19 +199,24 @@ func preferIPv6Endpoints(endpoints []string) []string {
 		if err != nil || addr.Is4In6() {
 			continue
 		}
-		if addr.Is6() {
-			ordered = append(ordered, endpoint)
+		isV6 := addr.Is6()
+		if isV6 == ipv6First {
+			first = append(first, endpoint)
 		} else {
-			ipv4 = append(ipv4, endpoint)
+			second = append(second, endpoint)
 		}
 	}
-	return append(ordered, ipv4...)
+	return append(first, second...)
 }
 
 func resolveEndpoints(ctx context.Context, candidates []string, fallback string) ([]string, error) {
 	if len(candidates) == 0 && fallback != "" {
 		candidates = []string{fallback}
 	}
+	// Cloudflare's registration response can contain only IPv6 endpoints.
+	// Keep the static IPv4 endpoints as a fallback so a host without IPv6
+	// routing (WSL, NAT-only VPS) can still establish the tunnel.
+	candidates = append(candidates, fallbackEndpoints...)
 	seen := make(map[string]bool)
 	var endpoints []string
 	for _, candidate := range candidates {

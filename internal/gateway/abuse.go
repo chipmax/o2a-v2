@@ -194,6 +194,36 @@ var deterministicMarkers = []string{
 	"prompt is too long",
 }
 
+// contextLengthMarkers identify a rejection caused by the prompt exceeding the
+// model's context window. The free tier's wording ("more tokens than this
+// model's maximum context length allows") has no numeric limit, so the caller
+// learns the safe window from the successful traffic instead.
+var contextLengthMarkers = []string{
+	"context_length_exceeded",
+	"maximum context length",
+	"context length exceeded",
+	"context window exceeded",
+	"prompt is too long",
+	"too many tokens",
+	"exceeds the maximum context",
+}
+
+// isContextLengthResponse reports whether status and body are a context-window
+// rejection. It is deliberately narrower than isDeterministicClientResponse:
+// only this class gets the X-Context-Limit hint and feeds the context board.
+func isContextLengthResponse(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	for _, marker := range contextLengthMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // isDeterministicClientResponse reports whether status and body describe a
 // request-level rejection rather than a credential or availability problem.
 func isDeterministicClientResponse(status int, body []byte) bool {

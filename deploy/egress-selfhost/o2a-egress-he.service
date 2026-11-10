@@ -1,0 +1,15 @@
+[Unit]
+Description=o2a egress HE /48 sing-box exits
+After=network-online.target he-ipv6.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/o2a-v2/bin/sing-box run -c /opt/o2a-v2/egress-he/singbox.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

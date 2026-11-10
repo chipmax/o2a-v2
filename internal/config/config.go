@@ -176,6 +176,11 @@ type ModelsConfig struct {
 	// tokens), so a deployment can tell clients what actually works without
 	// patching each one. Zero fields keep the catalog value.
 	ContextOverrides map[string]ModelLimits `json:"context_overrides,omitempty"`
+	// QuotaProbeSeconds re-tests a cooling upstream credential or relay with
+	// one minimal request, so a quota window that reopens early (or a
+	// Retry-After that overshoots) is noticed without waiting for real
+	// traffic. 0 disables it; otherwise it is the interval between probes.
+	QuotaProbeSeconds int `json:"quota_probe_seconds,omitempty"`
 }
 
 // ModelLimits overrides the per-model limits advertised to discovery clients.
@@ -345,7 +350,7 @@ func Load(path string) (Config, error) {
 		Warp:        WarpConfig{PoolSize: 2, Stack: string(warp.DefaultStack)},
 		Upstream:    UpstreamConfig{Zen: "https://opencode.ai/zen", Go: "https://opencode.ai/zen/go", Anonymous: "https://opencode.ai/inference"},
 		Retry:       RetryConfig{MaxAttempts: 3, TimeoutSeconds: 300},
-		Models:      ModelsConfig{RefreshSeconds: 300, Protocols: map[string]string{}},
+		Models:      ModelsConfig{RefreshSeconds: 300, QuotaProbeSeconds: 600, Protocols: map[string]string{}},
 		Performance: PerformanceConfig{MaxIdleConns: 2048, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 0, IdleConnTimeoutSeconds: 120, ConnectTimeoutSeconds: 5, FailureCooldownSeconds: 15},
 		Logging:     LoggingConfig{Level: "info", RingSize: 2000},
 		WebUI:       WebUIConfig{Listen: "0.0.0.0:8081", SessionTTLMinutes: 720},
@@ -420,6 +425,9 @@ func Normalize(path string, cfg Config) (Config, error) {
 	}
 	if cfg.Models.RefreshSeconds < 1 {
 		return Config{}, errors.New("models.refresh_seconds must be at least 1")
+	}
+	if cfg.Models.QuotaProbeSeconds != 0 && (cfg.Models.QuotaProbeSeconds < 60 || cfg.Models.QuotaProbeSeconds > 86400) {
+		return Config{}, errors.New("models.quota_probe_seconds must be 0 (disabled) or between 60 and 86400")
 	}
 	if cfg.Performance.MaxIdleConns < 1 || cfg.Performance.MaxIdleConnsPerHost < 1 || cfg.Performance.MaxConnsPerHost < 0 || cfg.Performance.IdleConnTimeoutSeconds < 1 || cfg.Performance.ConnectTimeoutSeconds < 1 || cfg.Performance.FailureCooldownSeconds < 1 {
 		return Config{}, errors.New("performance values must be positive (max_conns_per_host may be zero for unlimited)")

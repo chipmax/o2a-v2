@@ -126,6 +126,10 @@ type Gateway struct {
 	// requests for that family go to a peer first.
 	peerMu    sync.Mutex
 	peerFirst map[string]time.Time
+	// probeMu guards probedAt, the last probe of each cooling credential or
+	// relay, so the quota probe rotates instead of retrying one target.
+	probeMu  sync.Mutex
+	probedAt map[string]time.Time
 }
 
 // New builds a Gateway for cfg: one proxy transport per runtime proxy (a

@@ -90,6 +90,7 @@ dấu proxy lỗi ngay khi có traffic thật thất bại.
 | `models.free_only` | bool | `false` | Chỉ phục vụ mô hình miễn phí (bản này bật `true` → 11 mô hình). |
 | `models.active_probes` | bool | `false` | Probe chủ động để đo sẵn sàng (tốn quota); mặc định học thụ động từ request thật. |
 | `models.context_overrides` | object | `{}` | Giá trị khởi điểm cho `context`/`input`/`output` quảng cáo trong `/v1/models`. Traffic thật có thể nâng hoặc hạ `context` quanh giá trị này. |
+| `models.quota_probe_seconds` | int | `600` | Chu kỳ dò lại key/relay đang cooling bằng một request tối thiểu; `0` = tắt, tối thiểu 60. Không áp dụng cho exit WARP đã đóng tunnel. |
 | `models.anonymous_backoff` | object | — | Cầu dao lane miễn phí: `threshold` (6), `base_hours` (1), `max_hours` (24). |
 
 `context_overrides` chỉ đổi con số **quảng cáo** cho discovery; gateway không chặn

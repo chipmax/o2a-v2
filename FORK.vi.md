@@ -194,6 +194,26 @@ Từ bản này, `context` trong `context_overrides` chỉ là **seed**. Gateway
 - Ước lượng token của request bị lỗi dùng tỷ lệ byte/token học từ các request lớn
   thành công; không cần gọi thêm upstream và không tốn quota.
 
+### Dò lại quota đang cooling (`models.quota_probe_seconds`)
+
+Key Zen/Go hoặc relay tĩnh bị 429 thường bị đưa vào cooldown theo `Retry-After` (có
+thể tới 00:00 UTC). Nếu quota mở lại sớm hơn, trước đây gateway chỉ biết khi có
+request thật rơi đúng vào lane đó. Từ bản này có vòng dò nền:
+
+- `models.quota_probe_seconds` mặc định `600` (0 = tắt, tối thiểu 60).
+- Mỗi chu kỳ dò **một** target đang cooling, chọn target có `cooldown_until` sớm
+  nhất và chưa được dò trong chu kỳ này; không dò khi không có target nào cooling.
+- Request tối thiểu (`max_tokens: 1`, "ping"), ghim đúng key (`DebugKeyOverride`)
+  hoặc relay (`RelayOverride`) và đánh dấu diagnostic: không đổi cooldown/proxy
+  health, không tính là traffic hội thoại.
+- `2xx` → mở cooldown ngay (`MarkSuccess`, xoá wall của họ model); `429` → gia hạn
+  theo `Retry-After` (mặc định tới mốc reset UTC); lỗi khác → giữ nguyên.
+- Log JSON event `quota_probe` với `target`, `model`, `status`, `outcome`
+  (`reopened` / `still_cooling` / `unchanged` / `error`).
+- **Giới hạn WARP**: exit WARP đang cooling đã đóng tunnel; đăng ký mới sẽ ra /64
+  khác, nên không thể dò đúng /64 đó. Với WARP chỉ key/relay tĩnh được dò; exit
+  WARP tự mở theo `Retry-After` hoặc mốc reset.
+
 ### Đo trần chủ động (`POST /api/models/context-probe`)
 
 Khi cần con số chính xác ngay (model mới, trần vừa đổi), WebUI → **Mô hình & hạn

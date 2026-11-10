@@ -27,6 +27,7 @@
     "protocols": {},
     "free_only": false,
     "active_probes": false,
+    "quota_probe_seconds": 600,
     "context_overrides": {}
   },
   "performance": {

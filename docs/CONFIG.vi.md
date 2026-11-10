@@ -100,6 +100,11 @@ lỗi context được kèm header `X-Context-Limit`. Quan sát được lưu �
 `<config>.context-limits.json` và dùng lại sau restart; xoá file này để quay về
 seed/catalog.
 
+Đo chủ động (tốn quota, mặc định chỉ khi rảnh): `POST /api/models/context-probe`
+với `{"model": "...", "max_requests": 4}` — hoặc nút **Đo trần** ở trang
+**Mô hình & hạn mức**. Mỗi lượt là một request thật; kết quả ghi ngay vào board.
+`force: true` bỏ qua kiểm tra stream đang chạy. Mỗi lúc chỉ một probe.
+
 ## 6. Hiệu năng
 
 | Trường | Kiểu | Mặc định | Ý nghĩa |

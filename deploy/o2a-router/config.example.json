@@ -1,0 +1,45 @@
+{
+  "listen_port": 8090,
+  "keys": ["oc_sk_REPLACE_ME"],
+  "cooldown_seconds": 30,
+  "max_cooldown_seconds": 600,
+  "round_robin": true,
+  "ui_base": "http://127.0.0.1:8092",
+  "kilo_models": [
+    "cohere/north-mini-code:free",
+    "dots-studio/dots-3-note-preview:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "liquid/lfm-3-1.7b:free",
+    "thinkingmachines/inkling-2-small:free",
+    "kilo-auto/free"
+  ],
+  "kilo_upstreams": ["kilo"],
+  "kilo_catalog": [
+    {"id": "cohere/north-mini-code:free", "name": "North Mini Code (Kilo)", "context_length": 256000, "max_completion_tokens": 64000},
+    {"id": "dots-studio/dots-3-note-preview:free", "name": "Dots 3 Note Preview (Kilo)", "context_length": 512000, "max_completion_tokens": 460800},
+    {"id": "nvidia/nemotron-3-ultra-550b-a55b:free", "name": "Nemotron 3 Ultra 550B (Kilo)", "context_length": 1000000, "max_completion_tokens": 65536},
+    {"id": "liquid/lfm-3-1.7b:free", "name": "LFM 3 1.7B (Kilo)", "context_length": 262144, "max_completion_tokens": 8192},
+    {"id": "thinkingmachines/inkling-2-small:free", "name": "Inkling 2 Small (Kilo)", "context_length": 1048576, "max_completion_tokens": 131072},
+    {"id": "kilo-auto/free", "name": "Kilo Auto Free", "context_length": 256000, "max_completion_tokens": 32768}
+  ],
+  "upstreams": [
+    {
+      "name": "vps2-o2a",
+      "base": "http://127.0.0.1:8000",
+      "key": "oc_sk_REPLACE_ME",
+      "timeout": 180,
+      "cooldown_seconds": 15,
+      "tier": 1,
+      "max_cooldown_seconds": 30
+    },
+    {
+      "name": "kilo",
+      "base": "https://api.kilo.ai/api/openrouter",
+      "key": "",
+      "timeout": 180,
+      "tier": 2,
+      "strip_v1": true,
+      "cooldown_seconds": 30
+    }
+  ]
+}

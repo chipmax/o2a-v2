@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"opencode2api/internal/config"
@@ -92,10 +93,15 @@ type Gateway struct {
 	// warp, when non-nil, is the shared userspace WARP pool. Free-model
 	// traffic on the anonymous lane and the Zen key tier leaves through it
 	// instead of the configured proxies and transports.
-	warp         *warp.Pool
-	catalog      *models.ModelCatalog
-	monitor      *telemetry.Metrics
-	availability *models.AvailabilityRegistry
+	warp *warp.Pool
+	// warpPausedUntil is the Unix-nano instant before which free-model traffic
+	// skips WARP and uses the configured proxies. The anonymous phase sets it
+	// when its exits are all quota-walled, so the key tiers do not inherit the
+	// same slow path.
+	warpPausedUntil atomic.Int64
+	catalog         *models.ModelCatalog
+	monitor         *telemetry.Metrics
+	availability    *models.AvailabilityRegistry
 	// attemptTimeout bounds a whole upstream attempt (dial + write + headers
 	// and, when the first-event wait is enabled, the first event), not just
 	// the header wait. Zero arms no per-attempt deadline: each attempt is then

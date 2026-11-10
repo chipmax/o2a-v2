@@ -87,6 +87,15 @@ type WarpConfig struct {
 	// replacement exit a new public egress; without it, exits share one
 	// address and an egress-scoped free quota stays exhausted.
 	SourceIPv6 string `json:"source_ipv6,omitempty"`
+	// AttemptTimeoutSeconds bounds one WARP attempt before its response is
+	// committed. A tunnel that stops answering is dropped quickly so the
+	// request can fall back to a direct egress instead of waiting for the
+	// request-level deadline.
+	AttemptTimeoutSeconds int `json:"attempt_timeout_seconds,omitempty"`
+	// PauseAfterQuotaSeconds skips WARP after the anonymous phase reported a
+	// spent free-tier quota, so the key tiers are not sent through the same
+	// slow, quota-walled exits.
+	PauseAfterQuotaSeconds int `json:"pause_after_quota_seconds,omitempty"`
 }
 
 // Normalize fills the defaults and canonicalizes the stack name.
@@ -104,6 +113,18 @@ func (w *WarpConfig) Normalize() error {
 	w.Stack = string(stack)
 	if w.PoolSize < 1 || w.PoolSize > 32 {
 		return errors.New("warp.pool_size must be between 1 and 32")
+	}
+	if w.AttemptTimeoutSeconds == 0 {
+		w.AttemptTimeoutSeconds = 15
+	}
+	if w.AttemptTimeoutSeconds < 3 || w.AttemptTimeoutSeconds > 120 {
+		return errors.New("warp.attempt_timeout_seconds must be between 3 and 120")
+	}
+	if w.PauseAfterQuotaSeconds == 0 {
+		w.PauseAfterQuotaSeconds = 300
+	}
+	if w.PauseAfterQuotaSeconds < 0 || w.PauseAfterQuotaSeconds > 86400 {
+		return errors.New("warp.pause_after_quota_seconds must be between 0 and 86400")
 	}
 	w.SourceIPv6 = strings.TrimSpace(w.SourceIPv6)
 	if w.SourceIPv6 != "" {

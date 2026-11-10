@@ -35,7 +35,36 @@ const warpUnavailableMessage = "no WARP exit could carry this free-model request
 // free models on the anonymous lane and the Zen key tier qualify; the Go plan
 // and paid models keep their proxy bindings.
 func (g *Gateway) usesWARP(model string, tier config.Tier, anonymous bool) bool {
-	return g.warp != nil && g.catalog.IsFreeModel(model) && (anonymous || tier == config.TierZen)
+	if g.warp == nil || time.Now().UnixNano() < g.warpPausedUntil.Load() {
+		return false
+	}
+	return g.catalog.IsFreeModel(model) && (anonymous || tier == config.TierZen)
+}
+
+// pauseWARP parks the WARP lane for the configured window. The anonymous phase
+// calls it when every exit is quota-walled or unreachable: sending the key
+// tiers through the same exits only adds their tunnel latency to a request that
+// direct egress can serve immediately.
+func (g *Gateway) pauseWARP() {
+	seconds := g.cfg.Warp.PauseAfterQuotaSeconds
+	if g.warp == nil || seconds <= 0 {
+		return
+	}
+	g.warpPausedUntil.Store(time.Now().Add(time.Duration(seconds) * time.Second).UnixNano())
+}
+
+// warpAttemptTimeout is the per-attempt deadline for WARP requests. It is
+// capped separately from the direct lanes: a wedged tunnel must fail over in
+// seconds, not hold the request for the full request-level budget.
+func (g *Gateway) warpAttemptTimeout() time.Duration {
+	timeout := time.Duration(g.cfg.Warp.AttemptTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	if g.attemptTimeout > 0 && g.attemptTimeout < timeout {
+		return g.attemptTimeout
+	}
+	return timeout
 }
 
 // warpUsesBun mirrors inferenceClient for traffic that leaves through WARP:
@@ -85,11 +114,11 @@ func (g *Gateway) newWarpLease(lease *warp.Lease, useBun bool) (*warpLease, erro
 	transport.MaxIdleConnsPerHost = perf.MaxIdleConnsPerHost
 	transport.MaxConnsPerHost = perf.MaxConnsPerHost
 	transport.IdleConnTimeout = time.Duration(perf.IdleConnTimeoutSeconds) * time.Second
-	transport.ResponseHeaderTimeout = g.attemptTimeout
+	transport.ResponseHeaderTimeout = g.warpAttemptTimeout()
 	bun, err := httpx.NewBunTransport(httpx.BunOptions{
 		DialContext:           dial,
 		ConnectTimeout:        time.Duration(perf.ConnectTimeoutSeconds) * time.Second,
-		ResponseHeaderTimeout: g.attemptTimeout,
+		ResponseHeaderTimeout: g.warpAttemptTimeout(),
 		IdleConnTimeout:       transport.IdleConnTimeout,
 		MaxIdleConnsPerHost:   perf.MaxIdleConnsPerHost,
 	})
@@ -174,6 +203,7 @@ func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL,
 		if ctx.Err() != nil {
 			return nil, "", ctx.Err()
 		}
+		g.pauseWARP()
 		return nil, "", fmt.Errorf("%w: %v", errWARPUnavailable, err)
 	}
 	owned, err := g.newWarpLease(lease, g.warpUsesBun(baseURL, model))
@@ -184,7 +214,7 @@ func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL,
 	label := "warp:" + lease.EgressKey()
 	setWarpEgress(ctx, label)
 	diagnostic := isDiagnosticRequest(ctx)
-	resp, err := doInferenceAttempt(owned.client(), req, firstEventTimeout, g.attemptTimeoutFor(model))
+	resp, err := doInferenceAttempt(owned.client(), req, firstEventTimeout, g.warpAttemptTimeout())
 	if err != nil {
 		if ctx.Err() == nil && !diagnostic {
 			g.warp.Fail(lease, warpFailReason(err))
@@ -373,6 +403,7 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 			if status == http.StatusTooManyRequests {
 				triedEgresses[strings.TrimPrefix(egress, "warp:")] = true
 				if !g.awaitFreshEgress(ctx, triedEgresses) {
+					g.pauseWARP()
 					g.logger.Warn("all active WARP exits exhausted or cooling down; stopping retries", "component", "upstream", "event", "warp_429_exhausted", "request_id", ids.Request, "attempt", attempts)
 					break
 				}

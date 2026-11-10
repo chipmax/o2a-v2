@@ -1,0 +1,27 @@
+{
+  "date": "2026-11-10T07:00:00Z",
+  "host": "VPS2 (161.118.246.9)",
+  "gateway": "temporary instance 127.0.0.1:18002, zen_keys=[], proxies=[], warp.enabled=false, proxyfile=24 exits",
+  "pool": {
+    "source": "LeilaoMi verified.json + snakem982 sing-box-2.json",
+    "candidates": 60,
+    "connectivity_alive": 58,
+    "kept_unique_egress_ips": 24
+  },
+  "phases": [
+    {"phase": "warm", "n": 20, "concurrency": 4, "duration_s": 24.91, "rps": 0.8, "status": {"429": 16, "503": 4}, "p50_s": 1.16, "p95_s": 21.88, "max_s": 21.88},
+    {"phase": "load", "n": 120, "concurrency": 12, "duration_s": 12.4, "rps": 9.67, "status": {"429": 120}, "p50_s": 1.13, "p95_s": 1.67, "max_s": 2.09},
+    {"phase": "stress", "n": 240, "concurrency": 24, "duration_s": 8.09, "rps": 29.68, "status": {"429": 240}, "p50_s": 0.53, "p95_s": 1.22, "max_s": 1.34}
+  ],
+  "admission": {
+    "kept_24_pinned": {"200": 0, "429": 24, "503": 0},
+    "global_20_new_ips": {"200": 0, "429": 20, "503": 0},
+    "global_3_pinned": [
+      {"egress_ip": "66.163.114.245", "http": 429},
+      {"egress_ip": "66.163.114.124", "http": 429},
+      {"egress_ip": "156.146.38.170", "http": 429}
+    ]
+  },
+  "verdict": "fail",
+  "note": "Connectivity and quota are independent: every exit reached opencode.ai but answered the free-tier request with 429. Public subscription IPs are already spent against the same free tier."
+}

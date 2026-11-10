@@ -64,7 +64,24 @@ async function probeContext(id, button) {
     );
     await load();
   } catch (error) {
-    toast(error.message, true);
+    if (error.code === "quota_exhausted") {
+      const seconds = Number(error.retryAfter || 0);
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.round((seconds % 3600) / 60);
+      const wait =
+        hours > 0
+          ? `${hours} ${t("giờ", "egress.hours")} ${minutes} ${t("phút", "egress.minutes")}`
+          : `${minutes} ${t("phút", "egress.minutes")}`;
+      toast(
+        t(
+          "Hạn mức miễn phí của /64 này đã hết nên chưa đo được ngữ cảnh. Thử lại sau {0} (hạn mức reset lúc 00:00 UTC).",
+          "quotas.contextProbeQuota",
+          wait,
+        ),
+      );
+    } else {
+      toast(error.message, true);
+    }
   } finally {
     button.disabled = false;
     button.textContent = label;

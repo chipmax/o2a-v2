@@ -268,10 +268,20 @@
                     <h2 class="section-title" data-i18n="egress.sources.title">Nguồn ra và IP</h2>
                     <p class="section-caption" data-i18n="egress.sources.caption">Từng exit WARP, proxy và peer với trạng thái, tải hiện tại và thời gian nghỉ.</p>
                   </div>
-                  <select id="egress-filter" aria-label="Lọc nguồn ra">
-                    <option value="all" data-i18n="egress.sources.filter.all">Tất cả nguồn</option>
-                    <option value="issues" data-i18n="egress.sources.filter.issues">Cần chú ý</option>
-                  </select>
+                  <div class="actions">
+                    <input
+                      id="egress-search"
+                      type="search"
+                      class="input-sm"
+                      placeholder="Tìm IP, nguồn…"
+                      aria-label="Tìm nguồn ra"
+                      data-i18n-placeholder="egress.sources.search"
+                    />
+                    <select id="egress-filter" aria-label="Lọc nguồn ra">
+                      <option value="all" data-i18n="egress.sources.filter.all">Tất cả nguồn</option>
+                      <option value="issues" data-i18n="egress.sources.filter.issues">Cần chú ý</option>
+                    </select>
+                  </div>
                 </div>
                 <div class="table-wrap">
                   <table class="table">
@@ -281,6 +291,10 @@
                         <th data-i18n="egress.sources.col.address">IP / endpoint</th>
                         <th data-i18n="egress.sources.col.state">Trạng thái</th>
                         <th data-i18n="egress.sources.col.load">Đang chạy</th>
+                        <th data-i18n="egress.sources.col.requests">Request /64</th>
+                        <th data-i18n="egress.sources.col.quotaHits">429</th>
+                        <th data-i18n="egress.sources.col.lastQuota">429 cuối</th>
+                        <th data-i18n="egress.sources.col.reset">Reset /64</th>
                         <th data-i18n="egress.sources.col.cooling">Nghỉ còn</th>
                       </tr>
                     </thead>
@@ -316,6 +330,7 @@
                         <th data-i18n="egress.col.state">Trạng thái</th>
                         <th data-i18n="egress.col.requests">Request</th>
                         <th data-i18n="egress.col.quota">Hết quota</th>
+                        <th data-i18n="egress.col.lastQuota">429 cuối</th>
                         <th data-i18n="egress.col.cooling">Nghỉ còn</th>
                         <th data-i18n="egress.col.reset">Reset</th>
                       </tr>

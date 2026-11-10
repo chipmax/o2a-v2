@@ -52,7 +52,10 @@ export async function api(path, options = {}) {
         if (onUnauthorized) onUnauthorized();
         throw new Error(t("Phiên đăng nhập đã hết hạn", "error.session"));
       }
-      throw new Error(data.error?.message || `HTTP ${response.status}`);
+      const error = new Error(data.error?.message || `HTTP ${response.status}`);
+      if (data.error?.code) error.code = data.error.code;
+      if (data.error?.retry_after_seconds) error.retryAfter = data.error.retry_after_seconds;
+      throw error;
     }
     return data;
   })();

@@ -280,7 +280,27 @@ func (g *Gateway) handleModels(w http.ResponseWriter, _ *http.Request) {
 		}
 		if md.MaxOutput > 0 {
 			entry["max_output"] = md.MaxOutput
+			entry["max_output_tokens"] = md.MaxOutput
 		}
+		if len(md.InputModalities) > 0 {
+			entry["input_modalities"] = md.InputModalities
+		}
+		if len(md.OutputModalities) > 0 {
+			entry["output_modalities"] = md.OutputModalities
+		}
+		// Where the advertised window came from (catalog / learned / config), so
+		// an agent or an operator script can tell measured values from defaults.
+		source := "catalog"
+		if g.contextLimits != nil {
+			obs := g.contextLimits.Observation(model, route.Tier)
+			if obs.Observed > 0 || obs.RejectedAt > 0 || obs.Ceiling > 0 {
+				source = "learned"
+			}
+		}
+		if limit, ok := g.cfg.Models.ContextOverrides[model]; ok && limit.Context > 0 {
+			source = "config"
+		}
+		entry["capability_source"] = source
 		if md.Reasoning {
 			entry["reasoning"] = true
 			entry["supports_reasoning"] = true

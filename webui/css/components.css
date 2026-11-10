@@ -462,6 +462,15 @@ textarea {
   margin-top: var(--sp-4);
 }
 
+.actions input[type="search"] {
+  max-width: 210px;
+}
+
+.section-head .actions {
+  margin-top: 0;
+  align-items: center;
+}
+
 .quick-actions {
   display: flex;
   flex-wrap: wrap;

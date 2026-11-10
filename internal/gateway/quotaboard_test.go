@@ -11,7 +11,7 @@ func TestEgressQuotaBoardSurvivesRestart(t *testing.T) {
 	now := time.Now().UTC()
 	first := newQuotaBoard()
 	first.configurePath(path)
-	first.record("2001:db8::/64", "deepseek-v4.1-flash-free", 200, false, now)
+	first.record("2001:db8::/64", "deepseek-v4.1-flash-free", 200, false, 0, now)
 
 	second := newQuotaBoard()
 	second.configurePath(path)
@@ -27,7 +27,7 @@ func TestEgressQuotaBoardSurvivesRestart(t *testing.T) {
 func TestEgressQuotaBoardResetsAtUTCMidnight(t *testing.T) {
 	board := newQuotaBoard()
 	board.day = "2000-01-01"
-	board.record("2001:db8::/64", "deepseek-v4.1-flash-free", 429, true, time.Now().UTC())
+	board.record("2001:db8::/64", "deepseek-v4.1-flash-free", 429, true, 4*time.Hour, time.Now().UTC())
 
 	snapshot := board.snapshot(nil, time.Now().UTC())
 	if len(snapshot.Exits) != 1 {
@@ -35,5 +35,8 @@ func TestEgressQuotaBoardResetsAtUTCMidnight(t *testing.T) {
 	}
 	if snapshot.Exits[0].Requests != 1 || snapshot.Exits[0].QuotaHits != 1 {
 		t.Fatalf("new-day counters = %+v, want the old-day counters discarded", snapshot.Exits[0])
+	}
+	if snapshot.Exits[0].LastQuotaAt.IsZero() || snapshot.Exits[0].RetryAfterSecs != 4*3600 {
+		t.Fatalf("quota hint = %+v, want the 429 time and Retry-After", snapshot.Exits[0])
 	}
 }

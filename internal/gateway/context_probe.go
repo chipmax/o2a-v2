@@ -38,6 +38,33 @@ const (
 	contextProbeAttemptTimeout = 5 * time.Minute
 )
 
+// QuotaExhaustedError reports that the probe could not learn anything because
+// the free-tier bucket for the egress it used is spent. It is deliberately
+// distinct from a context rejection: the window is unknown, not smaller.
+type QuotaExhaustedError struct {
+	Model      string
+	RetryAfter time.Duration
+	Detail     string
+}
+
+func (e *QuotaExhaustedError) Error() string {
+	if e.RetryAfter > 0 {
+		return fmt.Sprintf("free-tier quota is spent for this egress; the bucket resets in %s",
+			e.RetryAfter.Round(time.Second))
+	}
+	return "free-tier quota is spent for this egress"
+}
+
+// QuotaExhausted reports whether err is a spent free-tier bucket rather than a
+// measurement failure.
+func QuotaExhausted(err error) (*QuotaExhaustedError, bool) {
+	var quota *QuotaExhaustedError
+	if errors.As(err, &quota) {
+		return quota, true
+	}
+	return nil, false
+}
+
 // ContextLimitInfo is the context-window state the gateway would advertise for
 // one model right now, together with the observations behind it.
 type ContextLimitInfo struct {
@@ -85,6 +112,7 @@ type ContextProbeAttempt struct {
 	Status       int    `json:"status"`
 	DurationMS   int64  `json:"duration_ms"`
 	PromptTokens int    `json:"prompt_tokens,omitempty"`
+	RetryAfter   int    `json:"retry_after_seconds,omitempty"`
 	Detail       string `json:"detail,omitempty"`
 }
 
@@ -169,6 +197,27 @@ func (m *RuntimeController) ProbeContext(ctx context.Context, model string, maxR
 		target = 1_000
 	}
 
+	// A probe on a fully cooling anonymous pool would spend requests that can
+	// only answer 429. Report the bucket as spent (with the soonest reopen)
+	// instead of burning the operator's remaining quota on a doomed attempt.
+	if g.cfg.Anonymous && g.warp != nil {
+		live, soonest := 0, time.Duration(0)
+		states := g.warp.States()
+		for _, state := range states {
+			if !state.Cooling {
+				live++
+				continue
+			}
+			until := time.Until(state.CoolingUntil)
+			if until > 0 && (soonest == 0 || until < soonest) {
+				soonest = until
+			}
+		}
+		if len(states) > 0 && live == 0 {
+			return result, &QuotaExhaustedError{Model: model, RetryAfter: soonest}
+		}
+	}
+
 	started := time.Now()
 	for len(result.Attempts) < budget {
 		if err := ctx.Err(); err != nil {
@@ -221,6 +270,13 @@ func (m *RuntimeController) ProbeContext(ctx context.Context, model string, maxR
 				break
 			}
 			continue
+		}
+		if attempt.Status == http.StatusTooManyRequests {
+			return result, &QuotaExhaustedError{
+				Model:      model,
+				RetryAfter: time.Duration(attempt.RetryAfter) * time.Second,
+				Detail:     attempt.Detail,
+			}
 		}
 		return result, fmt.Errorf("upstream answered HTTP %d: %s", attempt.Status, attempt.Detail)
 	}
@@ -307,7 +363,17 @@ func runContextProbe(ctx context.Context, handler http.Handler, key, model strin
 				attempt.PromptTokens = decoded.Usage.InputTokens
 			}
 		}
-		attempt.Detail = ""
+		if isQuotaProbeBody(body) {
+			// The v2 lane answers 200 with an error document once the egress
+			// /64 has spent its bucket: that is quota, not a context answer.
+			attempt.Status = http.StatusTooManyRequests
+			attempt.RetryAfter = int(quotaResetAfter(time.Now()).Seconds())
+		} else {
+			attempt.Detail = ""
+		}
+	}
+	if attempt.Status == http.StatusTooManyRequests && attempt.RetryAfter == 0 {
+		attempt.RetryAfter = int(parseRetryAfter(recorder.header.Get("Retry-After")).Seconds())
 	}
 	return attempt, bodyLen, attempt.PromptTokens, body, nil
 }
@@ -336,6 +402,22 @@ func contextProbePayload(model string, targetTokens int, bytesPerToken float64) 
 		return []byte("{}")
 	}
 	return encoded
+}
+
+// isQuotaProbeBody reports a probe answer that is really the free tier's quota
+// error document (the v2 lane sends it with HTTP 200). It reuses the gateway's
+// quota markers so the probe and the live path agree on the wording.
+func isQuotaProbeBody(body []byte) bool {
+	text := strings.ToLower(string(body))
+	if !strings.Contains(text, `"error"`) {
+		return false
+	}
+	for _, marker := range quotaErrorMarkers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // truncateProbeDetail is the short explanation kept for one attempt: the

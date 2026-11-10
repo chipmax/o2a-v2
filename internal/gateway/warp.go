@@ -190,7 +190,11 @@ func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL,
 	}
 	if !diagnostic {
 		quotaDocument := resp.StatusCode/100 == 2 && isQuotaErrorDocument(resp)
-		g.quota.record(lease.EgressKey(), model, resp.StatusCode, quotaDocument, time.Now())
+		var retryAfter time.Duration
+		if resp.StatusCode == http.StatusTooManyRequests {
+			retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+		}
+		g.quota.record(lease.EgressKey(), model, resp.StatusCode, quotaDocument, retryAfter, time.Now())
 		if quotaDocument {
 			// The exit answered 200 with the free tier's quota document: its
 			// /64 has spent the bucket for the counting window, so retire it

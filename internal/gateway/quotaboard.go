@@ -21,6 +21,8 @@ type EgressQuotaEntry struct {
 	QuotaHits      int       `json:"quota_hits"`
 	LastStatus     int       `json:"last_status,omitempty"`
 	LastSeen       time.Time `json:"last_seen,omitempty"`
+	LastQuotaAt    time.Time `json:"last_quota_at,omitempty"`
+	RetryAfterSecs int       `json:"retry_after_seconds,omitempty"`
 	State          string    `json:"state"`
 	CoolingSeconds int       `json:"cooling_seconds,omitempty"`
 	ResetAt        time.Time `json:"reset_at"`
@@ -153,8 +155,10 @@ func (b *quotaBoard) rollLocked(now time.Time) {
 	b.lastSave = time.Time{}
 }
 
-// record folds one attempt's outcome into the board.
-func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, now time.Time) {
+// record folds one attempt's outcome into the board. retryAfter carries the
+// upstream's Retry-After for a quota answer, so the dashboard can show when the
+// bucket is expected back instead of only that it is spent.
+func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, retryAfter time.Duration, now time.Time) {
 	if b == nil || egress == "" {
 		return
 	}
@@ -174,6 +178,10 @@ func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, now
 	entry.Requests++
 	if quotaHit || status == 429 {
 		entry.QuotaHits++
+		entry.LastQuotaAt = now.UTC()
+		if retryAfter > 0 {
+			entry.RetryAfterSecs = int(retryAfter.Seconds())
+		}
 	}
 	entry.LastStatus = status
 	entry.LastSeen = now.UTC()

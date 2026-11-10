@@ -11,6 +11,7 @@ let timer = null;
 let loading = false;
 let visible = false;
 let filter = "all";
+let search = "";
 let snapshot = null;
 
 function stateLabel(state) {
@@ -64,11 +65,47 @@ function shortID(value) {
   return text.length > 8 ? `${text.slice(0, 8)}…` : text;
 }
 
-function sourceRow(kind, name, address, note, state, load, cooling) {
-  return { kind, name, address, note, state, load, cooling };
+// The upstream counts an IPv6 egress by its /64, so the budget board keys rows
+// on the first four hextets while the pool reports full addresses. Normalising
+// both sides here is what lets one table show "this exit" and "its bucket".
+function prefix64(address) {
+  const text = String(address || "").trim();
+  if (!text.includes(":")) return text;
+  return text.split(":").slice(0, 4).join(":");
 }
 
-function warpRows(warp) {
+function quotaIndex() {
+  const index = new Map();
+  for (const row of snapshot?.exits || []) {
+    const key = prefix64(row.egress);
+    if (!key) continue;
+    const entry =
+      index.get(key) || { requests: 0, quotaHits: 0, lastQuotaAt: 0, resetAt: "" };
+    entry.requests += row.requests || 0;
+    entry.quotaHits += row.quota_hits || 0;
+    entry.resetAt = row.reset_at || entry.resetAt;
+    const at = Date.parse(row.last_quota_at || "");
+    if (Number.isFinite(at) && at > entry.lastQuotaAt) entry.lastQuotaAt = at;
+    index.set(key, entry);
+  }
+  return index;
+}
+
+function quotaCell(quota) {
+  if (!quota) return el("td", { text: "—" });
+  return el("td", { class: "num mono", text: String(quota.requests || 0) });
+}
+
+function lastQuotaCell(quota) {
+  if (!quota?.lastQuotaAt) return el("td", { text: "—" });
+  return el("td", { class: "mono", text: localTime(new Date(quota.lastQuotaAt).toISOString()) });
+}
+
+function sourceRow(kind, name, address, note, state, load, cooling, quota) {
+  return { kind, name, address, note, state, load, cooling, quota };
+}
+
+function warpRows(warp, quota) {
   const exits = warp?.exits || [];
   const egress = warp?.egress || [];
   if (!exits.length && !egress.length) {
@@ -98,6 +135,7 @@ function warpRows(warp) {
         warp.active > 0 ? "active" : "standby",
         "—",
         0,
+        quota?.get(prefix64(address)),
       ),
     );
   }
@@ -118,6 +156,7 @@ function warpRows(warp) {
       state,
       exit.in_flight || 0,
       exit.cooling ? secondsUntil(exit.cooling_until) : 0,
+      quota?.get(prefix64(address)),
     );
   });
 }
@@ -180,8 +219,9 @@ function renderSources() {
   const warp = resources.warp;
   const proxies = resources.proxies || [];
   const peers = resources.peers || [];
+  const quota = quotaIndex();
   const rows = [
-    ...warpRows(warp),
+    ...warpRows(warp, quota),
     ...proxyRows(proxies),
     ...peerRows(peers),
   ].sort((a, b) => (STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99));
@@ -196,11 +236,23 @@ function renderSources() {
   $("#egress-m-peers").textContent = peers.length ? `${readyPeers}/${peers.length}` : "—";
   $("#egress-m-quota").textContent = snapshot ? String(snapshot.observed || 0) : "—";
 
-  const visibleRows = filter === "issues"
-    ? rows.filter((row) => ["blocked", "unavailable", "cooling", "checking"].includes(row.state))
-    : rows;
-  const issues = rows.filter((row) =>
-    ["blocked", "unavailable", "cooling", "checking"].includes(row.state),
+  const needle = search.trim().toLowerCase();
+  const matches = (row) =>
+    !needle ||
+    [row.name, row.address, row.note].some((value) =>
+      String(value || "").toLowerCase().includes(needle),
+    );
+  const visibleRows = rows.filter(
+    (row) =>
+      matches(row) &&
+      (filter !== "issues" ||
+        ["blocked", "unavailable", "cooling", "checking"].includes(row.state) ||
+        (row.quota?.quotaHits || 0) > 0),
+  );
+  const issues = rows.filter(
+    (row) =>
+      ["blocked", "unavailable", "cooling", "checking"].includes(row.state) ||
+      (row.quota?.quotaHits || 0) > 0,
   ).length;
   $("#egress-sources-meta").textContent = rows.length
     ? t("{0} nguồn · {1} cần chú ý", "egress.sources.meta", rows.length, issues)
@@ -210,7 +262,7 @@ function renderSources() {
   if (!visibleRows.length) {
     body.append(
       el("tr", {}, [
-        el("td", { colspan: "5", class: "empty", text: t("Chưa có nguồn ra.", "egress.sources.empty") }),
+        el("td", { colspan: "9", class: "empty", text: t("Chưa có nguồn ra.", "egress.sources.empty") }),
       ]),
     );
     return;
@@ -220,12 +272,17 @@ function renderSources() {
       el("div", { class: "mono", text: row.address }),
       row.note ? el("div", { class: "metric-note", text: row.note }) : null,
     ].filter(Boolean));
+    const reset = row.quota?.resetAt ? localTime(row.quota.resetAt) : duration(row.cooling);
     body.append(
       el("tr", {}, [
         el("td", { text: row.name }),
         address,
         el("td", {}, [stateBadge(row.state)]),
         el("td", { class: "num", text: String(row.load ?? "—") }),
+        quotaCell(row.quota),
+        el("td", { class: "num", text: String(row.quota?.quotaHits || 0) }),
+        lastQuotaCell(row.quota),
+        el("td", { text: reset }),
         el("td", { text: duration(row.cooling) }),
       ]),
     );
@@ -239,7 +296,7 @@ function renderQuota() {
   if (!rows.length) {
     body.append(
       el("tr", {}, [
-        el("td", { colspan: "7", text: t("Chưa có dữ liệu.", "egress.empty") }),
+        el("td", { colspan: "8", text: t("Chưa có dữ liệu.", "egress.empty") }),
       ]),
     );
     $("#egress-summary").textContent = t(
@@ -256,6 +313,10 @@ function renderQuota() {
         el("td", {}, [stateBadge(row.state)]),
         el("td", { class: "num", text: String(row.requests || 0) }),
         el("td", { class: "num", text: String(row.quota_hits || 0) }),
+        el("td", {
+          class: "mono",
+          text: row.last_quota_at ? localTime(row.last_quota_at) : "—",
+        }),
         el("td", { text: duration(row.cooling_seconds) }),
         el("td", { text: row.reset_at ? localTime(row.reset_at) : "—" }),
       ]),
@@ -331,6 +392,10 @@ export default {
       filter = event.target.value === "issues" ? "issues" : "all";
       renderSources();
     });
+    $("#egress-search")?.addEventListener("input", (event) => {
+      search = event.target.value || "";
+      renderSources();
+    });
     store.on("monitor", () => {
       if (visible) renderSources();
     });
@@ -354,6 +419,7 @@ export default {
     visible = false;
     snapshot = null;
     filter = "all";
+    search = "";
     clearInterval(timer);
     timer = null;
   },

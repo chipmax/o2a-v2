@@ -3,9 +3,11 @@ package admin
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"opencode2api/internal/gateway"
 	"opencode2api/internal/httpx"
 )
 
@@ -58,6 +60,22 @@ func (a *Server) handleContextProbe(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	result, err := a.manager.ProbeContext(ctx, input.Model, input.MaxRequests)
 	if err != nil {
+		// A spent free-tier bucket says nothing about the context window: answer
+		// 429 with the reset hint so the WebUI can tell the operator to wait or
+		// switch egress instead of showing a probe failure.
+		if quota, ok := gateway.QuotaExhausted(err); ok {
+			seconds := int(quota.RetryAfter.Seconds())
+			if seconds > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			}
+			httpx.WriteJSON(w, http.StatusTooManyRequests, map[string]any{"error": map[string]any{
+				"code":                "quota_exhausted",
+				"message":             a.manager.Redact(quota.Error()),
+				"model":               quota.Model,
+				"retry_after_seconds": seconds,
+			}})
+			return
+		}
 		writeAdminError(w, http.StatusBadGateway, "context_probe_failed", a.manager.Redact(err.Error()))
 		return
 	}

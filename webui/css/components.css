@@ -469,6 +469,82 @@ textarea {
 .section-head .actions {
   margin-top: 0;
   align-items: center;
+  flex-wrap: wrap;
+}
+
+.row-toggle {
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  padding: 0 var(--sp-1) 0 0;
+  font: inherit;
+  line-height: 1;
+}
+
+.row-toggle:hover,
+.row-toggle:focus-visible {
+  color: var(--text-1);
+}
+
+.sub-row td {
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--fs-sm);
+}
+
+.sub-row td:first-child {
+  border-left: 2px solid var(--border-2);
+}
+
+.muted-row td {
+  color: var(--text-3);
+}
+
+.heatmap {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin: var(--sp-2) 0;
+}
+
+.heat-cell {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+}
+
+.heat-cell.h1 {
+  background: color-mix(in srgb, var(--ok) 20%, var(--surface-2));
+}
+
+.heat-cell.h2 {
+  background: color-mix(in srgb, var(--warn) 40%, var(--surface-2));
+}
+
+.heat-cell.h3 {
+  background: color-mix(in srgb, var(--warn) 70%, var(--surface-2));
+}
+
+.heat-cell.h4 {
+  background: color-mix(in srgb, var(--bad) 70%, var(--surface-2));
+}
+
+.actions-cell {
+  white-space: nowrap;
+}
+
+.actions-cell .btn + .btn {
+  margin-left: var(--sp-1);
+}
+
+.agent-preview {
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre;
+  margin: 0;
 }
 
 .quick-actions {

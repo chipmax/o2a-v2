@@ -46,6 +46,7 @@
             <button class="nav-item active" data-page="overview" data-i18n="nav.overview">Tổng quan</button>
             <button class="nav-item" data-page="model-quotas" data-i18n="nav.model-quotas">Mô hình &amp; Key</button>
             <button class="nav-item" data-page="egress" data-i18n="nav.egress">Egress &amp; WARP</button>
+            <button class="nav-item" data-page="agents" data-i18n="nav.agents">Agent</button>
           </div>
           <div class="nav-group">
             <div class="nav-group-title" data-i18n="nav.group.system">Hệ thống</div>
@@ -265,8 +266,8 @@
               <section class="section">
                 <div class="section-head">
                   <div>
-                    <h2 class="section-title" data-i18n="egress.sources.title">Nguồn ra và IP</h2>
-                    <p class="section-caption" data-i18n="egress.sources.caption">Từng exit WARP, proxy và peer với trạng thái, tải hiện tại và thời gian nghỉ.</p>
+                    <h2 class="section-title" data-i18n="egress.sources.title">Nguồn ra &amp; ngân sách /64</h2>
+                    <p class="section-caption" data-i18n="egress.sources.caption">Mỗi exit WARP, proxy và peer kèm bucket /64 của nó; mở một dòng để xem từng họ model. /64 đã ra khỏi pool vẫn được giữ tới khi reset 00:00 UTC.</p>
                   </div>
                   <div class="actions">
                     <input
@@ -281,8 +282,19 @@
                       <option value="all" data-i18n="egress.sources.filter.all">Tất cả nguồn</option>
                       <option value="issues" data-i18n="egress.sources.filter.issues">Cần chú ý</option>
                     </select>
+                    <button id="egress-check" class="btn btn-sm btn-primary" data-i18n="egress.check">Kiểm tra proxy</button>
+                    <button id="egress-refresh" class="btn btn-sm" data-i18n="egress.refresh">Làm mới</button>
                   </div>
                 </div>
+                <div
+                  id="egress-summary"
+                  class="quota-status"
+                  role="status"
+                  aria-live="polite"
+                  data-i18n="egress.pending"
+                >Đang đọc trạng thái pool.</div>
+                <div class="heatmap" id="egress-heatmap" aria-label="Sử dụng 30 ngày"></div>
+                <p id="egress-canary" class="section-caption" role="status"></p>
                 <div class="table-wrap">
                   <table class="table">
                     <thead>
@@ -296,48 +308,13 @@
                         <th data-i18n="egress.sources.col.lastQuota">429 cuối</th>
                         <th data-i18n="egress.sources.col.reset">Reset /64</th>
                         <th data-i18n="egress.sources.col.cooling">Nghỉ còn</th>
+                        <th data-i18n="egress.sources.col.actions">Hành động</th>
                       </tr>
                     </thead>
                     <tbody id="egress-sources"></tbody>
                   </table>
                 </div>
                 <p id="egress-sources-meta" class="section-caption" role="status" aria-live="polite"></p>
-              </section>
-              <section class="section">
-                <div class="section-head">
-                  <div>
-                    <h2 class="section-title" data-i18n="egress.title">Ngân sách egress /64</h2>
-                    <p class="section-caption" data-i18n="egress.caption">Free tier đếm theo từng /64 và từng họ model; cửa sổ reset lúc 00:00 UTC.</p>
-                  </div>
-                  <div class="actions">
-                    <button id="egress-check" class="btn btn-sm btn-primary" data-i18n="egress.check">Kiểm tra proxy</button>
-                    <button id="egress-refresh" class="btn btn-sm" data-i18n="egress.refresh">Làm mới</button>
-                  </div>
-                </div>
-                <div
-                  id="egress-summary"
-                  class="quota-status"
-                  role="status"
-                  aria-live="polite"
-                  data-i18n="egress.pending"
-                >Đang đọc trạng thái pool.</div>
-                <div class="table-wrap">
-                  <table class="table">
-                    <thead>
-                      <tr>
-                        <th data-i18n="egress.col.egress">Egress /64</th>
-                        <th data-i18n="egress.col.family">Họ model</th>
-                        <th data-i18n="egress.col.state">Trạng thái</th>
-                        <th data-i18n="egress.col.requests">Request</th>
-                        <th data-i18n="egress.col.quota">Hết quota</th>
-                        <th data-i18n="egress.col.lastQuota">429 cuối</th>
-                        <th data-i18n="egress.col.cooling">Nghỉ còn</th>
-                        <th data-i18n="egress.col.reset">Reset</th>
-                      </tr>
-                    </thead>
-                    <tbody id="egress-rows"></tbody>
-                  </table>
-                </div>
               </section>
             </div>
           </section>
@@ -829,6 +806,83 @@
                   </table>
                 </div>
               </section>
+            </div>
+          </section>
+
+          <section id="page-agents" class="page hidden">
+            <div class="grid grid-2">
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2 data-i18n="agents.form.title">Kết nối agent</h2>
+                    <p class="section-caption" data-i18n="agents.form.caption">
+                      Sinh cấu hình cho omp, opencode và DSH từ danh mục model đang phát.
+                    </p>
+                  </div>
+                </div>
+                <div class="field">
+                  <label for="agent-base" data-i18n="agents.form.base">Base URL</label>
+                  <input id="agent-base" type="text" autocomplete="off" spellcheck="false" />
+                </div>
+                <div class="field">
+                  <label for="agent-key" data-i18n="agents.form.key">Server key</label>
+                  <input id="agent-key" type="password" autocomplete="new-password" spellcheck="false" />
+                  <p class="field-hint" data-i18n="agents.form.keyHint">
+                    Key chỉ ghi vào file cấu hình của agent trên máy này.
+                  </p>
+                </div>
+                <div class="field">
+                  <label class="checkbox">
+                    <input id="agent-force" type="checkbox" />
+                    <span data-i18n="agents.form.force">Ghi đè file không do adapter tạo</span>
+                  </label>
+                </div>
+                <div class="actions">
+                  <button id="agent-refresh" class="btn" type="button" data-i18n="agents.form.refresh">
+                    Dò lại
+                  </button>
+                </div>
+              </div>
+              <div class="card">
+                <div class="card-head">
+                  <div>
+                    <h2 data-i18n="agents.list.title">File cấu hình</h2>
+                    <p class="section-caption" data-i18n="agents.list.caption">
+                      Đường dẫn tuyệt đối; áp dụng sẽ sao lưu bản cũ trước khi ghi.
+                    </p>
+                  </div>
+                </div>
+                <div class="table-wrap">
+                  <table class="table">
+                    <thead>
+                      <tr>
+                        <th data-i18n="agents.col.agent">Agent</th>
+                        <th data-i18n="agents.col.path">Đường dẫn</th>
+                        <th data-i18n="agents.col.state">Trạng thái</th>
+                        <th data-i18n="agents.col.actions">Hành động</th>
+                      </tr>
+                    </thead>
+                    <tbody id="agent-targets"></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+            <div id="agent-preview-card" class="card hidden">
+              <div class="card-head">
+                <div>
+                  <h2 id="agent-preview-title" data-i18n="agents.preview.title">Xem trước</h2>
+                  <p class="section-caption" id="agent-preview-meta"></p>
+                </div>
+                <div class="actions">
+                  <button id="agent-apply" class="btn btn-primary" type="button" data-i18n="agents.preview.apply">
+                    Áp dụng
+                  </button>
+                  <button id="agent-close" class="btn" type="button" data-i18n="agents.preview.close">
+                    Đóng
+                  </button>
+                </div>
+              </div>
+              <pre id="agent-preview" class="code-block agent-preview"></pre>
             </div>
           </section>
 

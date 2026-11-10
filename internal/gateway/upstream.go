@@ -1324,6 +1324,13 @@ func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route,
 		}
 		meta.Legs = append(meta.Legs, leg)
 	}
+	if !isDiagnosticRequest(ctx) {
+		egress := ""
+		if proxy != nil {
+			egress = prefixLabel(proxy.name)
+		}
+		usageHistory.RecordAttempt(route.ID, string(route.Tier)+"/"+channel, egress, status, success, time.Now())
+	}
 	if g.monitor == nil {
 		return
 	}

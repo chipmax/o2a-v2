@@ -118,6 +118,9 @@ type Gateway struct {
 	peers *peerPool
 	// quota records per-egress free-tier spend for the budget page.
 	quota *quotaBoard
+	// affinity pins a session to one egress /64 so prompt caching survives
+	// rotation; see affinity.go.
+	affinity *egressAffinity
 	// contextLimits persists what live traffic has proven about each model's
 	// usable context. The controller shares one board across hot reloads.
 	contextLimits *models.ContextLimits
@@ -178,6 +181,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 		freeTierBlock:  time.Duration(cfg.Performance.FreeTierBlockSeconds) * time.Second,
 		peers:          newPeerPool(cfg.Peers),
 		quota:          egressQuota,
+		affinity:       newEgressAffinity(),
 		contextLimits:  contextLimits,
 	}, nil
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"opencode2api/internal/agentcfg"
 	"opencode2api/internal/config"
 	modelcatalog "opencode2api/internal/models"
 	"opencode2api/internal/protocol"
@@ -152,13 +154,15 @@ func RuntimeManager(root context.Context, configPath string, cfg config.Config, 
 	manager.rotation = rotationManager
 	// Per-key daily budgets live outside the runtime so a hot reload keeps
 	// them, and on disk so a process restart does not reset them.
-	quotaPath, egressQuotaPath := "", ""
+	quotaPath, egressQuotaPath, historyPath := "", "", ""
 	if configPath != "" {
 		quotaPath = configPath + ".quota.json"
 		egressQuotaPath = configPath + ".egress-quota.json"
+		historyPath = configPath + ".usage-history.json"
 	}
 	ConfigureQuotaState(quotaPath)
 	ConfigureEgressQuota(egressQuotaPath)
+	ConfigureUsageHistory(historyPath)
 	runtime, err := manager.build(cfg)
 	if err != nil {
 		return nil, err
@@ -484,6 +488,7 @@ func (m *RuntimeController) Reload() (ApplyResult, error) {
 func (m *RuntimeController) Shutdown() {
 	SaveQuotaState()
 	SaveEgressQuota()
+	SaveUsageHistory()
 	if m.rotation != nil {
 		m.rotation.Save()
 	}
@@ -635,6 +640,41 @@ func (m *RuntimeController) EgressQuota() EgressQuotaSnapshot {
 		states = runtime.gateway.warp.States()
 	}
 	return runtime.gateway.quota.snapshot(states, time.Now())
+}
+
+// EgressAction retires or rotates every exit on a /64. "retire" keeps the
+// prefix out of rotation until the free-tier reset; "rotate" replaces it
+// immediately. It reports how many exits matched.
+func (m *RuntimeController) EgressAction(prefix, action string) (int, error) {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil || runtime.gateway.warp == nil {
+		return 0, errors.New("WARP pool is not enabled")
+	}
+	switch action {
+	case "retire":
+		return runtime.gateway.warp.Retire(prefix, time.Now().Add(quotaResetAfter(time.Now()))), nil
+	case "rotate":
+		return runtime.gateway.warp.Rotate(prefix), nil
+	default:
+		return 0, fmt.Errorf("unknown egress action %q", action)
+	}
+}
+
+// AgentModels reports the catalog models with advertised limits, for the agent
+// config adapters.
+func (m *RuntimeController) AgentModels() []agentcfg.Model {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil {
+		return nil
+	}
+	return runtime.gateway.AgentModels()
+}
+
+// EgressInsights bundles the live budget board with the multi-day usage ledger
+// so the page needs one request for the table, the estimator and the heatmap.
+func (m *RuntimeController) EgressInsights(days int) EgressInsights {
+	quota := m.EgressQuota()
+	return EgressInsights{Quota: quota, Usage: usageHistory.Snapshot(days, time.Now()), Days: days}
 }
 
 // DebugModels returns a routing diagnostic for every catalog model, with no

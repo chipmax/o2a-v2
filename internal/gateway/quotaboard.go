@@ -21,11 +21,14 @@ type EgressQuotaEntry struct {
 	QuotaHits      int       `json:"quota_hits"`
 	LastStatus     int       `json:"last_status,omitempty"`
 	LastSeen       time.Time `json:"last_seen,omitempty"`
+	FirstSeen      time.Time `json:"first_seen,omitempty"`
 	LastQuotaAt    time.Time `json:"last_quota_at,omitempty"`
 	RetryAfterSecs int       `json:"retry_after_seconds,omitempty"`
 	State          string    `json:"state"`
 	CoolingSeconds int       `json:"cooling_seconds,omitempty"`
 	ResetAt        time.Time `json:"reset_at"`
+	RatePerMinute  float64   `json:"rate_per_min,omitempty"`
+	Projected      int       `json:"projected,omitempty"`
 }
 
 // EgressQuotaSnapshot is what the WebUI budget page renders.
@@ -172,7 +175,7 @@ func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, ret
 	b.rollLocked(now)
 	entry, ok := b.entries[key]
 	if !ok {
-		entry = &EgressQuotaEntry{Egress: egress, Family: family}
+		entry = &EgressQuotaEntry{Egress: egress, Family: family, FirstSeen: now.UTC()}
 		b.entries[key] = entry
 	}
 	entry.Requests++
@@ -211,6 +214,18 @@ func (b *quotaBoard) snapshot(states []warp.ExitState, now time.Time) EgressQuot
 		for _, entry := range b.entries {
 			copied := *entry
 			copied.ResetAt = resetAt
+			seenFrom := copied.FirstSeen
+			if seenFrom.IsZero() {
+				seenFrom = copied.LastSeen
+			}
+			if !seenFrom.IsZero() && copied.Requests > 0 {
+				minutes := now.Sub(seenFrom).Minutes()
+				if minutes < 1 {
+					minutes = 1
+				}
+				copied.RatePerMinute = float64(copied.Requests) / minutes
+				copied.Projected = int(copied.RatePerMinute * resetAt.Sub(now).Minutes())
+			}
 			copied.State = "idle"
 			if until, ok := cooling[entry.Egress]; ok {
 				copied.State = "cooling"

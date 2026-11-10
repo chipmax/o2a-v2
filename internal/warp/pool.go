@@ -342,11 +342,31 @@ func (p *Pool) desiredLocked() int {
 }
 
 func (p *Pool) Acquire(ctx context.Context) (*Lease, error) {
+	return p.AcquirePreferred(ctx, "")
+}
+
+// AcquirePreferred is Acquire with a hint: when preferred names an egress key
+// (/64) that is still active, its exit is taken first so a session keeps the
+// same quota scope and prompt cache. An empty or unknown hint falls back to the
+// normal round-robin.
+func (p *Pool) AcquirePreferred(ctx context.Context, preferred string) (*Lease, error) {
 	for {
 		p.mu.Lock()
 		if p.closed {
 			p.mu.Unlock()
 			return nil, ErrClosed
+		}
+		if preferred != "" {
+			for _, active := range p.active {
+				if active.egressKey() != preferred {
+					continue
+				}
+				if active.addRef() {
+					p.inflight++
+					p.mu.Unlock()
+					return &Lease{pool: p, exit: active}, nil
+				}
+			}
 		}
 		for attempts := 0; attempts < len(p.active); attempts++ {
 			index := p.next % len(p.active)
@@ -441,6 +461,46 @@ func (p *Pool) States() []ExitState {
 		}
 	}
 	return out
+}
+
+// Retire removes every active exit on the given /64 from rotation and keeps the
+// egress cooling until the free-tier reset. The exit is replaced in the
+// background, so the pool keeps its size; only that prefix is dealt out again
+// as a wasted attempt. It returns how many exits matched.
+func (p *Pool) Retire(prefix string, until time.Time) int {
+	cooldown := time.Until(until)
+	if cooldown < time.Minute {
+		cooldown = time.Minute
+	}
+	return p.penalizePrefix(prefix, "manual retire", cooldown)
+}
+
+// Rotate replaces every active exit on the given /64 with a fresh registration
+// while keeping the old prefix cooling briefly, so the replacement cannot come
+// back on the same egress.
+func (p *Pool) Rotate(prefix string) int {
+	return p.penalizePrefix(prefix, "manual rotate", time.Second)
+}
+
+func (p *Pool) penalizePrefix(prefix, reason string, cooldown time.Duration) int {
+	if p == nil || prefix == "" {
+		return 0
+	}
+	if parsed, err := netip.ParsePrefix(prefix); err == nil {
+		prefix = parsed.Masked().String()
+	}
+	p.mu.Lock()
+	matched := make([]*exit, 0, len(p.active))
+	for _, active := range p.active {
+		if active.egressKey() == prefix {
+			matched = append(matched, active)
+		}
+	}
+	p.mu.Unlock()
+	for _, active := range matched {
+		p.penalizeFor(active, reason, cooldown)
+	}
+	return len(matched)
 }
 
 // ReportQuotaSpent retires an exit whose egress answered 2xx with the free

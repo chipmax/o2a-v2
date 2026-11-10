@@ -165,7 +165,11 @@ func warpFailReason(err error) string {
 // that releases the exit when closed. The egress label is returned for
 // telemetry ("warp:<public address>").
 func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL, model string, firstEventTimeout time.Duration) (*http.Response, string, error) {
-	lease, err := g.warp.Acquire(ctx)
+	session := ""
+	if meta := telemetry.MetaFromContext(ctx); meta != nil {
+		session = meta.Session
+	}
+	lease, err := g.warp.AcquirePreferred(ctx, g.affinity.preferred(session, time.Now()))
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, "", ctx.Err()
@@ -189,6 +193,11 @@ func (g *Gateway) doWARPAttempt(ctx context.Context, req *http.Request, baseURL,
 		return nil, label, err
 	}
 	if !diagnostic {
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusForbidden || resp.StatusCode >= 500 {
+			g.affinity.forget(session)
+		} else {
+			g.affinity.remember(session, lease.EgressKey(), time.Now())
+		}
 		quotaDocument := resp.StatusCode/100 == 2 && isQuotaErrorDocument(resp)
 		var retryAfter time.Duration
 		if resp.StatusCode == http.StatusTooManyRequests {

@@ -1,21 +1,21 @@
 # Đề xuất: lane subscription → sing-box cho free tier (2026-11-10)
 
-## 0. Kết luận ngắn
+## 0. Kết luận ngắn (đã sửa sau test tải cao)
 
-- **Có, dùng list free trên GitHub được** — nhưng không dùng list thô. Phải qua
-  một aggregator đã **test thật bằng sing-box**, rồi qua **cổng kiểm tra riêng
-  của o2a** (đo IP egress + thử đúng endpoint free tier).
-- Repo xử lý đúng vấn đề "list free chất lượng kém" tốt nhất hiện tại:
-  **`LeilaoMi/AutoMergePublicNodes-Optimized`** (100+ nguồn, test từng node
-  bằng sing-box, xuất sẵn `verified.json` cho sing-box, có health report).
-  `snakem982/proxypool` là nguồn phụ lớn và ổn định; `onlyactions/proxy-scanner`
-  là phương án thay thế.
-- **Đo thực tế trên VPS2 hôm nay**: 12/12 node trong `verified.json` sống và
-  vào được `opencode.ai`; 5/5 node đem thử **đúng request free tier** đều trả
-  **200 trong 2,5–2,8 s** (không WARP, không key). Đây là lane tốt hơn WARP rõ
-  rệt.
-- Khác biệt cốt lõi: **mỗi IP là một bucket quota**. WARP dùng chung pool đã
-  cạn; list free có nhiều IP độc lập, mỗi IP còn quota riêng.
+- **Bước đầu khả quan, nhưng test tải cao thất bại: không nên đưa lane này vào
+  vận hành chính.** 5 node đầu tiên trả 200 trong 2,5–2,8 s; nhưng khi dựng
+  24 exit và chạy 380 request, **0 request thành công** (toàn 429/503). Kiểm tra
+  từng exit: **0/24 còn quota**; 3 exit mới lấy từ `global.json` cũng 429.
+- Nguyên nhân: list free là **công khai**, nên các IP này đã bị người khác dùng
+  cho chính free tier của OpenCode. Chúng "sống" (vào được web) nhưng **hết
+  quota** — đúng kiểu WARP, chỉ khác là nhiều IP hơn.
+- Repo lọc chất lượng tốt nhất vẫn là
+  **`LeilaoMi/AutoMergePublicNodes-Optimized`** (100+ nguồn, test sing-box thật,
+  xuất `verified.json`), nhưng nó chỉ lọc **kết nối**, không lọc **quota của
+  OpenCode**. Không có repo nào làm được điều thứ hai.
+- Khác biệt cốt lõi: **mỗi IP là một bucket quota**, và bucket của IP công khai
+  gần như đã bị tiêu hết. Chỉ IP do mình kiểm soát (VPS, IPv4 phụ, peer) mới
+  đáng tin.
 
 ## 1. Vì sao "list free chất lượng kém" vẫn dùng được
 
@@ -78,8 +78,11 @@ Luồng:
      IP, và IP chưa có trong danh sách nhận.
    - `curl https://opencode.ai/` → 200/30x.
    - **Probe free tier**: một request `max_tokens: 4` qua node, đúng model
-     free. 200 → nhận; 429 → loại (ghi `retry_after`). Chi phí: 1/200 quota
-     của node, dưới 0,5%.
+     free. 200 → nhận; 429 → loại (ghi `retry_after`). Cách sạch nhất là dùng
+     admin diagnostic `POST /api/debug/inference` với `relay: {name}`: nó pin
+     đúng một exit, không đổi cooldown, và trả `http_status`. Bản `egress-sync`
+     hiện tại **chưa** làm bước này — vì vậy nó chỉ dùng để thử nghiệm, không
+     được bật cho production.
 6. Sắp xếp theo latency + tỉ lệ thành công, giữ **24 node** (mặc định), ghi
    `egress.txt`.
 7. `POST /api/config/reload` để o2a đọc lại `proxyfile` (không cần restart,
@@ -114,8 +117,40 @@ VPS1 là đường dự phòng. Muốn giữ direct làm cuối: thêm `"direct"
 | So sánh WARP | 429 toàn bộ, 110–180 s/request |
 | So sánh direct VPS | 200, 3,0 s |
 
-Kết luận: list free đã lọc **tốt hơn WARP** cho mục tiêu quota, và không cần
-tài khoản/key.
+Kết luận bước đầu: 5 node thử lẻ đều 200, nhanh hơn WARP.
+
+### 4.1. Test tải cao cùng ngày: thất bại
+
+Dựng `egress-sync`, lấy 24 exit unique IP, chạy trên gateway tạm
+(`127.0.0.1:18002`, `zen_keys=[]`, `proxies=[]`, `proxyfile` 24 dòng):
+
+| Pha | Số request | Concurrency | 200 | 429 | 503 | p95 |
+|---|---:|---:|---:|---:|---:|---:|
+| warm | 20 | 4 | 0 | 16 | 4 | 21,9 s |
+| load | 120 | 12 | 0 | 120 | 0 | 1,7 s |
+| stress | 240 | 24 | 0 | 240 | 0 | 1,2 s |
+
+Kiểm tra từng exit (gateway tạm pin đúng một proxy, hoặc admin diagnostic
+`relay`):
+
+| Mẫu | Kết quả |
+|---|---|
+| 24 exit trong `egress.txt` | **0/24 còn quota** (429 hoặc SOCKS failure 503) |
+| 20 exit mới từ `global.json`, khác IP | **0/20**, toàn 429 |
+| 3 exit mới, pin riêng từng cái | **3/3 429** |
+| Egress IP thật so với `server` khai báo | Khác nhau (ví dụ khai báo `66.163.114.45`, ra `66.163.114.245`) |
+
+Hai bài học:
+
+1. **"Sống" không có nghĩa là "còn quota".** Cổng probe hiện tại chỉ kiểm tra
+   `api.ipify.org` + `opencode.ai`, nên vẫn nhận node đã cạn quota.
+2. **Dedupe theo `server` là sai**; phải dedupe theo **IP egress đo được**, vì
+   proxy chain đổi IP đầu ra. `egress-sync` đã được sửa để dedupe theo IP đo
+   được, nhưng điều đó không tạo thêm quota.
+
+Kết luận: lane subscription **không thể làm lane chính** ở thời điểm này. Chỉ
+dùng khi có cổng admission kiểm tra đúng free tier và chấp nhận tỉ lệ sống rất
+thấp.
 
 ## 5. Vì sao không nên tự scrape 100+ nguồn
 
@@ -134,14 +169,22 @@ tài khoản/key.
 | Vi phạm điều khoản upstream | Cần cân nhắc | Đây là kỹ thuật vận hành; tự đánh giá trước khi dùng |
 | List biến mất/đổi format | Thấp | Hai nguồn dự phòng, kiểm tra schema khi tải |
 
-## 7. Việc cần làm để triển khai
+## 7. Việc cần làm nếu vẫn muốn theo hướng này
 
-1. Viết `deploy/egress-sync/egress-sync.py` (khoảng 250 dòng) theo luồng mục 3.
-2. Tạo systemd service + timer 6h; log vào journal.
-3. Chạy thử một vòng, so sánh `egress.txt` với 5 node đã đo.
-4. Bật `proxyfile`, tắt WARP, reload; theo dõi 30 phút: tỉ lệ 200, p95 latency,
-   số 429.
-5. Nếu ổn: giữ 24 node; nếu không: hạ 12 node và chỉ dùng làm lane phụ.
+1. `deploy/egress-sync/egress-sync.py` đã có (fetch, dedupe theo IP đo được,
+   render sing-box, probe kết nối, ghi `egress.txt`, unit + timer).
+2. **Bổ sung admission probe free tier** bằng admin diagnostic pinned relay;
+   chỉ giữ node trả `http_status: 200`. Đây là điều kiện bắt buộc trước khi
+   bật cho production.
+3. Chạy vòng đầu, đo tỉ lệ 200. Kỳ vọng thực tế rất thấp: **0/24** trong lần
+   đo hôm nay.
+4. Nếu tỉ lệ 200 > 30% trong 2 vòng liên tiếp: thử làm lane phụ với 8–12 exit,
+   theo dõi 24h.
+5. Nếu không: **không bật**. Giữ direct + peer VPS1 + Kilo; xem IP phụ/residential
+   là cách duy nhất tạo bucket mới đáng tin.
+
+Test tải cao tái lập được bằng `deploy/egress-sync/high-load-test.py`; kết quả
+lần đo này: **0/380 request thành công**, nên lane bị loại.
 
 ## 8. Nguồn
 

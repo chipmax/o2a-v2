@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh the o2a public egress pool
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/o2a-v2/egress-sync/egress-sync.py --workdir /opt/o2a-v2/egress
+Nice=10
+IOSchedulingClass=idle

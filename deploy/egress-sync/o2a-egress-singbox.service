@@ -1,0 +1,19 @@
+[Unit]
+Description=o2a egress sing-box exits
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/zen-gate/data/bin/sing-box run -c /opt/o2a-v2/egress/sing-box.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/o2a-v2/egress /opt/zen-gate/data/bin
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

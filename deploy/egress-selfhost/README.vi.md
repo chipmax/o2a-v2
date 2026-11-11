@@ -265,3 +265,31 @@ this WARP exit: HTTP 429` → `egress 2a09:bac5:55fa:… ready` — đúng hành
 - Hướng còn lại có giá trị thật: **thêm lane Kilo** làm dự phòng khi 429
   (chưa tích hợp — cần map model và thêm provider vào gateway).
 
+### 6.6. WARP qua MASQUE/QUIC (usque v4.2.1) — không cải thiện gì
+
+Dựng `usque` trên VPS2 (đăng ký thiết bị mới qua `api.cloudflareclient.com`,
+MASQUE = HTTP/3 over QUIC thay cho WireGuard), đo cùng lúc:
+
+| Thiết bị | Egress quan sát (`cdn-cgi/trace`) | Kết quả |
+| --- | --- | --- |
+| 1 (QUIC, dual-stack) | `2a09:bac1:6560:8::3e6:70`, colo SIN, `warp=on` | **0/12** (429 toàn bộ) |
+| 2 (QUIC) | `2a09:bac5:55fc:18c8::278:96` | 0/4 |
+| 3 (QUIC) | `2a09:bac5:55fa:1d05::2e4:29` | 0/4 |
+| 1 (HTTP/2 over TCP+TLS) | `2a09:bac5:55fc:25b9::3c2:f` | 0/4 |
+| 1 (IPv6-only egress) | — | tunnel không lên được (`dial connect-ip: timeout`) |
+
+Đọc kết quả:
+
+1. MASQUE **có** cho họ egress khác WireGuard: `2a09:bac1::/48` (WireGuard chỉ
+   ra `2a09:bac5::/48`). Nghĩa là protocol khác ⇒ prefix khác.
+2. Nhưng **/48 khác vẫn 429** ⇒ giả thuyết "bucket theo /48" coi như bị bác;
+   bucket nằm ở mức nhà cung cấp (toàn bộ WARP) hoặc pool toàn cục.
+3. HTTP/2 (TCP 443, không cần UDP) hoạt động về mặt kết nối nhưng cùng kết quả
+   ⇒ không phải vấn đề transport.
+4. Không nên thêm backend `usque` vào gateway: cùng nguồn hạn mức đã cạn.
+
+Cài đặt/thử lại: tải `usque_4.2.1_linux_amd64.zip`, `usque register --accept-tos`,
+rồi `usque socks -b 127.0.0.1 -p 1081` (lưu ý `-p` là cổng SOCKS, `-P` là cổng
+kết nối MASQUE).
+
+

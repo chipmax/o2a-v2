@@ -292,4 +292,49 @@ Cài đặt/thử lại: tải `usque_4.2.1_linux_amd64.zip`, `usque register --
 rồi `usque socks -b 127.0.0.1 -p 1081` (lưu ý `-p` là cổng SOCKS, `-P` là cổng
 kết nối MASQUE).
 
+## 7. Năm repo WARP khác (2026-11-11, 12:00 giờ VN) — chỉ giúp độ trễ, không giúp hạn mức
+
+| Repo | Nội dung thật | Dùng được gì |
+| --- | --- | --- |
+| DarknessShade/Warp-Endpoint-Scanner | quét endpoint WARP hằng ngày (GitHub Action), xuất bảng latency/loss + `export/warp-ip` | Danh sách endpoint tốt để chọn cổng nhanh; **không** đổi egress |
+| kwlnd/warp-unblock | app Windows (Rust + wgcf + mihomo + zapret + opera-proxy) để vượt DPI của ISP Nga | Không áp dụng cho VPS Linux; vấn đề ở đây không phải DPI |
+| LK46DPA/Warp_Switcher | GUI egui bật/tắt `warp-cli` | Tác giả đã tự ghi "không còn cần thiết"; không có gì mới |
+| vio137/wax-vpn | client WARP viết Rust (GUI, WireGuard + MASQUE) | Chỉ là client khác; cùng nguồn hạn mức |
+| Daey886/warp-nodes | 37 node = **một thiết bị WARP+** (license 1,84 PB) dùng chung, kèm list endpoint | Đo được cơ chế mới (7.1) và xác nhận WARP+ không giúp (7.2) |
+
+### 7.1. Egress đổi khi **bắt tay lại**, không đổi khi đổi endpoint trên tunnel đang chạy
+
+Đo trên VPS2, cùng một thiết bị free:
+
+| Cách đổi | Endpoint | Egress |
+| --- | --- | --- |
+| `wg set … endpoint` (tunnel đang chạy), 9 endpoint | 162.159.192.199:2408 … 8.6.112.215:500 | **một địa chỉ duy nhất** `2a09:bac5:55fa:30c8::4dc:b2` |
+| `wg-quick down/up` với endpoint khác, 6 lần | :878, :987, :2408, :4500, :5956 | **6 địa chỉ khác nhau**: `2a09:bac1:6500:8::278:a0`, `2a09:bac5:55fd:25c3::3c3:34`, `2a09:bac5:55fa:25cd::3c4:1e`, `2a09:bac5:55fa:18c8::278:80`, `2a09:bac1:6560:8::4dc:41`, `2a09:bac5:55f9:101e::19b:15a` |
+
+⇒ Egress do **phiên bắt tay** quyết định (và cả theo cổng: cùng host
+`162.159.192.19`, cổng `:987` ra `bac1`, cổng `:878` ra `bac5`). Vì vậy xoay
+egress **không cần đăng ký thiết bị mới** — chỉ cần down/up với endpoint khác,
+tránh giới hạn ~9 registration/giờ của Cloudflare. Đây là điểm đáng đưa vào
+`internal/warp` (hiện mỗi lần xoay đều đăng ký thiết bị mới).
+
+### 7.2. Cả 6 egress mới đều 429 — kể cả thiết bị WARP+
+
+| Thiết bị | Egress | Free lane |
+| --- | --- | --- |
+| free, reconnect ×6 | `bac1:6500`, `bac5:55fd`, `bac5:55fa` ×2, `bac1:6560`, `bac5:55f9` | **0/18** |
+| WARP+ dùng chung (warp-nodes) | `bac1:6520:8::2e4:7b`, `bac1:6520:8::3e6:50`, `bac5:55ff:137d::1f1:1e7`, `bac5:55fc:25cd::3c4:3d` | 0/8 |
+
+⇒ Hạn mức **không** theo egress, **không** theo /48, **không** theo gói WARP+
+— nó nằm ở phía OpenCode và đang cạn cho toàn bộ WARP. Kết luận mục 6.5 giữ
+nguyên; 5 repo này không mở thêm đường nào.
+
+### 7.3. Việc rút ra cho code (chưa làm)
+
+`internal/warp` nên thử **reconnect-resample** trước khi đăng ký thiết bị mới:
+giữ registration, `down/up` với endpoint kế tiếp, chạy `admit`, chỉ đăng ký mới
+khi resample thất bại. Lợi: không chạm giới hạn registration, không tạo rác
+thiết bị. Chưa làm vì mọi egress hiện đều 429 nên không có lợi ích đo được;
+để dành khi hạn mức sống lại.
+
+
 

@@ -191,3 +191,77 @@ Hệ quả: mua thêm proxy/IP lúc này không giải quyết gì. Việc cần
 ngay sau 00:00 UTC: nếu nhiều /128 trong cùng /64 cùng trả 200 thì bucket
 theo IP là đúng và pool HE dùng được; nếu chỉ 1–2 địa chỉ 200 thì đó là pool
 toàn cục và chỉ cần chờ/giãn nhịp.
+
+## 6. CHỐT HƯỚNG IP (2026-11-11, 10:50 giờ VN) — dừng đầu tư IP
+
+### 6.1. Key zen không mua thêm hạn mức theo IP
+
+Ma trận `egress × lane`, cùng một thời điểm, model `deepseek-v4.1-flash-free`
+và `big-pickle`:
+
+| Egress | Ẩn danh | Key zen (`oc_sk_dad267ef…`) |
+| --- | --- | --- |
+| VPS2 direct | 429 | 429 |
+| HE `2001:470:36:965::1` | 429 | 429 |
+
+⇒ Key zen và lane ẩn danh **dùng chung một pool đã cạn**; đổi IP không đổi
+kết quả. Script: `egress-lane-matrix.py`.
+
+### 6.2. Bảy repo được rà (2026-11-11)
+
+| Repo | Có gì | Đáng dùng? |
+| --- | --- | --- |
+| 12errh/zen-proxy | capture "wire shape" v2: `agent-preamble.txt`, `agent-tools.json`, `b3`/`traceparent`, `x-opencode-project` = sha1 | Tài liệu tốt; đã thử 6 biến thể (kể cả Bun 1.4.4) từ VPS2 → **429 cả 6** |
+| B3hnamR/Polygate | gateway nhiều provider: OpenCode Free + **Kilo Free** + Z.ai | ⭐ Nguồn thật sự mới (xem 6.3) |
+| rajwardhanspimple/OpenCodeWarp | relay Windows + xoay WARP bằng `registration delete` + `new`; probe bằng request thật | ⭐ Hai ý đã đưa vào code (6.4) |
+| lipey1/opencode-warp-retry | plugin OpenCode xoay WARP khi `free-limit` | Xác nhận: xoay vài lần không được ⇒ hạn mức theo account |
+| zhaohongsheng/warp-opencode | 1 file Python quản warp-cli/warp-plus/usque + bridge SOCKS5→HTTP | Thêm backend `usque` (MASQUE), không thêm quota |
+| alztrk/opencode-ip-rotator | proxy FastAPI + WARP + pool + dashboard | Ngang o2a |
+| leangtg123-art/opencode-termux-unlimited | Termux port của chính opencode2api, pool WARP 6 | Bản port của ta |
+
+### 6.3. Nguồn miễn phí chạy được: Kilo Gateway
+
+`https://api.kilo.ai/api/gateway`, không cần key, không cần WARP. Đo từ VPS2
+(đúng IP đang bị OpenCode 429):
+
+```
+GET  /models   -> 200, 385 model, 11 model isFree
+40 request vòng qua các model free -> 36×200, 4×403 (region), 0×429
+```
+
+Model dùng được: `kilo-auto/free`, `nvidia/nemotron-3.5-super-vl`,
+`stealth/glyph-cluster`, `liquid/lfm-3-1.7b`, `dots-studio/dots-3-note-preview`,
+`nvidia/nemotron-3.5-lightning`, `cohere/north-mini-code`,
+`nvidia/nemotron-3-ultra-550b-a55b`, `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`,
+`openrouter/free` (tất cả `tools: true`). Chỉ `thinkingmachines/inkling-2-small`
+bị chặn theo vùng. Kilo cũng giới hạn theo **network address**
+(429 `PROMOTION_MODEL_LIMIT_REACHED`) nhưng 40 request liên tiếp chưa chạm.
+Script: `kilo-quota-probe.py`.
+
+### 6.4. Sửa trong code (internal/warp)
+
+1. **Admission probe**: mỗi exit mới phải trả lời một request thật
+   (`LaneProbe`: `POST <upstream>/v1/chat/completions`, `max_tokens=1`, đủ
+   header v2) trước khi pool nhận. 429 ⇒ log `admitted unverified` và exit bị
+   đánh dấu spent (giữ lane sống, request thật đầu tiên sẽ xoay như cũ).
+2. **Registration delete**: exit bị xoay/đánh dấu spent thì `DELETE /reg/{id}`
+   trên Cloudflare khi đóng, để lần đăng ký sau là **thiết bị mới** (họ egress
+   mới) thay vì tái dùng slot cũ.
+3. Giữ nguyên: 401/403/429 ⇒ xoay exit; saved registration không còn được
+   nhận mù sau restart nếu free lane từ chối nó.
+
+Đo trên VPS2 với pool 2: `WARP exit … admitted unverified: free lane refused
+this WARP exit: HTTP 429` → `egress 2a09:bac5:55fa:… ready` — đúng hành vi.
+
+### 6.5. Quyết định
+
+- **Đóng hướng mua/xoay IP.** Chín nguồn egress khác nhau, thêm lane key zen,
+  thêm cả "wire shape" của CLI đều không vượt được hạn mức ⇒ nút thắt không
+  nằm ở IP.
+- VPS2: `warp.enabled=false`, `o2a-he-reset-probe.timer` đã `disable --now`
+  (tunnel `he-v6` vẫn còn, có thể xoá khi cần).
+- WARP chỉ còn là best-effort trên node nào tình cờ được cấp họ còn hạn mức;
+  không dùng làm nguồn chính.
+- Hướng còn lại có giá trị thật: **thêm lane Kilo** làm dự phòng khi 429
+  (chưa tích hợp — cần map model và thêm provider vào gateway).
+

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -294,7 +295,17 @@ func (m *RuntimeController) selectWARP(cfg config.Config) (*warp.Pool, string, b
 	if m.configPath != "" {
 		statePath = m.configPath + ".warp-state.json"
 	}
-	pool, err := warp.NewWithOptions(ctx, m.logger, warp.Options{Size: cfg.Warp.PoolSize, Stack: warp.Stack(cfg.Warp.Stack), SourceIPv6: source, StatePath: statePath})
+	// Every exit must answer one minimal free-lane prompt before the pool
+	// rotates traffic onto it: a tunnel that only reaches a trace endpoint can
+	// still be refused by the gateway, and admitting it costs a real request.
+	probe := warp.LaneProbe{}
+	if cfg.Anonymous {
+		probe = warp.LaneProbe{
+			URL:   strings.TrimRight(cfg.Upstream.Anonymous, "/") + "/v1/chat/completions",
+			Model: warp.DefaultLaneProbeModel,
+		}
+	}
+	pool, err := warp.NewWithOptions(ctx, m.logger, warp.Options{Size: cfg.Warp.PoolSize, Stack: warp.Stack(cfg.Warp.Stack), SourceIPv6: source, StatePath: statePath, LaneProbe: probe})
 	if err != nil {
 		return nil, "", false, fmt.Errorf("initialize WARP egress: %w", err)
 	}

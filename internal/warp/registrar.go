@@ -254,6 +254,37 @@ func uniqueEndpoints(endpoints []string) []string {
 	return result
 }
 
+// unregister deletes a registration on Cloudflare's side. A rotated exit that
+// is retired while its device is still registered keeps occupying the account's
+// device slot, and Cloudflare then hands the next registration the same egress
+// block; deleting the device is what makes the next exit a genuinely new one.
+// It is best effort: a failure here costs a duplicate egress, not a request.
+func (r *registrar) unregister(ctx context.Context, id, token string) error {
+	if id == "" || token == "" {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, strings.TrimRight(r.base, "/")+"/reg/"+id, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("CF-Client-Version", "a-6.10-2158")
+	req.Header.Set("User-Agent", "okhttp/3.12.1")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("delete registration %s: HTTP %d", id, resp.StatusCode)
+	}
+	return nil
+}
+
 func (r *registrar) doJSON(ctx context.Context, method, path string, body []byte, token string, target any) error {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {

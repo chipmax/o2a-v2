@@ -3,6 +3,7 @@ package warp
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -22,7 +23,20 @@ import (
 const (
 	probeTimeout    = 5 * time.Second
 	probeCandidates = 10
+
+	// laneProbeTimeout bounds the free-lane admission request. It is looser
+	// than probeTimeout because the gateway answers a prompt, not a trace
+	// document, and a slow answer is still a usable exit.
+	laneProbeTimeout = 20 * time.Second
+
+	// DefaultLaneProbeModel is the free model the admission request asks for.
+	// Any live free model answers it; a model renamed upstream only costs a
+	// failed admission until this constant is bumped.
+	DefaultLaneProbeModel = "deepseek-v4.1-flash-free"
 )
+
+// errLaneBurnt reports a fresh exit whose free-lane allowance is already spent.
+var errLaneBurnt = errors.New("free lane refused this WARP exit")
 
 type Stack string
 
@@ -72,6 +86,111 @@ type exit struct {
 	closed    bool
 	penalized bool
 	closeOnce sync.Once
+
+	// regID/regToken identify the Cloudflare registration behind this exit and
+	// drop deletes it once the exit is gone, so the next registration is a new
+	// device with a new egress block.
+	regID    string
+	regToken string
+	drop     func(id, token string)
+	dropOnce sync.Once
+	burned   bool
+}
+
+// markBurned records that the exit's allowance is spent, so closing it also
+// deletes its Cloudflare device. A clean shutdown keeps the registration for
+// the next process (state.go reuses it), a retired-because-burned one does not.
+func (e *exit) markBurned() {
+	e.mu.Lock()
+	e.burned = true
+	e.mu.Unlock()
+}
+
+// bindRegistration records the registration an exit was built from and how to
+// delete it when the exit is retired.
+func (e *exit) bindRegistration(reg registration, drop func(id, token string)) {
+	e.regID, e.regToken, e.drop = reg.ID, reg.Token, drop
+}
+
+// dropRegistration deletes the Cloudflare device behind this exit, once.
+func (e *exit) dropRegistration() {
+	if e == nil || e.drop == nil {
+		return
+	}
+	e.dropOnce.Do(func() { e.drop(e.regID, e.regToken) })
+}
+
+// admit proves the exit can answer on the free lane before the pool rotates
+// real traffic onto it. A tunnel that reaches Cloudflare's trace endpoint can
+// still be refused by the gateway with FreeUsageLimitError, and admitting such
+// an exit spends one production request and one rotation to learn what a single
+// minimal prompt says up front.
+func (e *exit) admit(ctx context.Context, probe LaneProbe) error {
+	if probe.URL == "" || probe.Model == "" {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, laneProbeTimeout)
+	defer cancel()
+	network := "tcp6"
+	if e.stack == StackIPv4 {
+		network = "tcp4"
+	}
+	transport := &http.Transport{
+		Proxy:               nil,
+		ForceAttemptHTTP2:   false,
+		DisableKeepAlives:   true,
+		TLSHandshakeTimeout: 10 * time.Second,
+		DialContext: func(ctx context.Context, _, address string) (net.Conn, error) {
+			return e.network.DialContext(ctx, network, address)
+		},
+	}
+	defer transport.CloseIdleConnections()
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ok"}],"max_tokens":1}`, probe.Model)
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probe.URL, strings.NewReader(body))
+	if err != nil {
+		return err
+	}
+	session := probeSession()
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "opencode/latest/2.1.1/cli")
+	req.Header.Set("x-opencode-client", "cli")
+	req.Header.Set("x-opencode-session", session)
+	req.Header.Set("x-opencode-session-id", session)
+	req.Header.Set("x-session-affinity", session)
+	req.Header.Set("X-Session-Id", session)
+	if probe.Auth != "" {
+		req.Header.Set("Authorization", probe.Auth)
+	}
+	resp, err := (&http.Client{Transport: transport}).Do(req)
+	if err != nil {
+		return fmt.Errorf("free-lane admission: %w", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return fmt.Errorf("%w: HTTP 429", errLaneBurnt)
+	default:
+		return fmt.Errorf("free-lane admission: HTTP %d", resp.StatusCode)
+	}
+}
+
+// probeSession mints a session id in the CLI's shape so the admission request
+// carries the identity headers the gateway fingerprints.
+func probeSession() string {
+	var raw [6]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "ses_0000000000000000000000000000"
+	}
+	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	var tail [14]byte
+	for index := range tail {
+		tail[index] = alphabet[int(raw[index%len(raw)])%len(alphabet)]
+	}
+	return "ses_" + hex.EncodeToString(raw[:]) + string(tail[:])
 }
 
 func newExit(ctx context.Context, reg registration) (*exit, error) {
@@ -433,10 +552,14 @@ func (e *exit) close() {
 	e.closeOnce.Do(func() {
 		e.mu.Lock()
 		e.closed = true
+		burned := e.burned
 		e.mu.Unlock()
 		if e.device != nil {
 			e.device.Close()
 			<-e.device.Wait()
+		}
+		if burned {
+			e.dropRegistration()
 		}
 	})
 }
@@ -452,6 +575,7 @@ func (e *exit) observe(status int, body []byte) (bool, string) {
 		if networkAnomaly(body) {
 			reason += " network anomaly"
 		}
+		e.burned = true
 		return true, reason
 	}
 	// A free-tier 429 is scoped to the egress address, not to the request, the
@@ -459,6 +583,7 @@ func (e *exit) observe(status int, body []byte) (bool, string) {
 	// on the first one, as the instant-rotate deployment does, so the retry
 	// draws a fresh outer source and a new public egress.
 	if status == http.StatusTooManyRequests {
+		e.burned = true
 		return true, "HTTP 429"
 	}
 	return false, ""
@@ -483,6 +608,7 @@ func (e *exit) markPenalized() bool {
 func (e *exit) clearPenalty() {
 	e.mu.Lock()
 	e.penalized = false
+	e.burned = false
 	e.mu.Unlock()
 }
 

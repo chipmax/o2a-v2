@@ -157,6 +157,20 @@ type Options struct {
 	// rebuild the pool without registering every exit again. An empty path
 	// keeps registrations in memory only.
 	StatePath string
+	// LaneProbe, when its Model is set, is the one request a freshly built exit
+	// must answer before the pool rotates traffic onto it. An exit that fails
+	// it is closed and its Cloudflare device deleted, so the next attempt is a
+	// new registration instead of a retry of the same spent egress.
+	LaneProbe LaneProbe
+}
+
+// LaneProbe is the admission request for a new exit: a minimal free-lane
+// completion. Auth is the full Authorization header value, empty on the
+// anonymous lane.
+type LaneProbe struct {
+	URL   string
+	Model string
+	Auth  string
 }
 
 // NewWithOptions creates a WARP pool whose exits use the selected IP stack and,
@@ -175,6 +189,16 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 	}
 	r := newRegistrar()
 	store := newRegistrationStore(opts.StatePath, size)
+	// drop deletes the Cloudflare device behind a retired exit. Cloudflare keeps
+	// handing out the same egress block while the old devices still exist, so
+	// deleting is what lets a replacement land on a different family.
+	drop := func(id, token string) {
+		dropCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := r.unregister(dropCtx, id, token); err != nil && log != nil {
+			log.Warn("WARP registration not deleted", "component", "warp", "event", "registration_delete_failed", "id", id, "error", err)
+		}
+	}
 	pool, err := newPool(ctx, slogLogger{log: log}, size, func(ctx context.Context) (*exit, error) {
 		// Prefer a registration saved by an earlier process: it is ready to
 		// use, so the pool stays warm across restarts. A saved registration
@@ -195,6 +219,23 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			reused, err := newExitWithStack(probeCtx, reg, normalized, source)
 			cancel()
 			if err == nil {
+				reused.bindRegistration(reg, drop)
+				// A saved registration can be perfectly healthy as a tunnel and
+				// still be refused by the free lane: that is a spent device, not
+				// a broken one, so it is deleted rather than kept for the next
+				// restart.
+				if admitErr := reused.admit(ctx, opts.LaneProbe); admitErr != nil {
+					if errors.Is(admitErr, errLaneBurnt) {
+						reused.markBurned()
+					}
+					reused.close()
+					if ctx.Err() != nil {
+						store.remember(reg)
+						return nil, admitErr
+					}
+					slogLogger{log: log}.Warnf("saved WARP registration %s refused by the free lane (%v); registering a fresh exit", reg.ID, admitErr)
+					continue
+				}
 				store.remember(reg)
 				return reused, nil
 			}
@@ -206,6 +247,7 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 				return nil, err
 			}
 			slogLogger{log: log}.Warnf("saved WARP registration %s unusable (%v); registering a fresh exit", reg.ID, err)
+			drop(reg.ID, reg.Token)
 		}
 		reg, err := r.register(ctx)
 		if err != nil {
@@ -213,11 +255,27 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 		}
 		source, err := opts.sampleSource()
 		if err != nil {
+			drop(reg.ID, reg.Token)
 			return nil, err
 		}
 		fresh, err := newExitWithStack(ctx, reg, normalized, source)
 		if err != nil {
+			drop(reg.ID, reg.Token)
 			return nil, err
+		}
+		fresh.bindRegistration(reg, drop)
+		if err := fresh.admit(ctx, opts.LaneProbe); err != nil {
+			if errors.Is(err, errLaneBurnt) {
+				// The tunnel is healthy but the free lane refuses this egress.
+				// Keeping it beats failing the whole anonymous lane closed: the
+				// first real 429 rotates it as before. It is marked spent so its
+				// Cloudflare device is deleted when it goes and never reused.
+				fresh.markBurned()
+				slogLogger{log: log}.Warnf("WARP exit %s admitted unverified: %v", fresh.id, err)
+			} else {
+				fresh.close()
+				return nil, err
+			}
 		}
 		store.remember(reg)
 		return fresh, nil
@@ -934,6 +992,18 @@ func (p *Pool) createExit(ctx context.Context) (*exit, error) {
 		p.registering--
 		p.mu.Unlock()
 		if err != nil {
+			// An exit whose free-lane allowance is already spent is not a
+			// Cloudflare registration problem: retrying instantly only spends
+			// another device on the same family, so pace the next attempt.
+			if errors.Is(err, errLaneBurnt) {
+				timer := time.NewTimer(5 * time.Second)
+				select {
+				case <-p.ctx.Done():
+					timer.Stop()
+					return nil, err
+				case <-timer.C:
+				}
+			}
 			return nil, err
 		}
 		key := candidate.egressKey()

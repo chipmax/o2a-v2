@@ -103,6 +103,63 @@ Mỗi IP ~200 request/ngày. Cần bao nhiêu IP tuỳ lưu lượng:
 - `o2a-he-reset-probe.timer`: 00:00:20 và 00:05:20 UTC, bắn 20 request từ 20
   địa chỉ /128 khác nhau trong routed /64 để đo hạn mức.
 
+## 4b. KẾT LUẬN (2026-11-11, giờ VN) — chỉ WARP còn hạn mức, và theo "họ" /64
+
+Bảng đo, mỗi dòng một nguồn egress khác nhau, cùng ngày:
+
+| Egress | Cách tạo | Kết quả free lane |
+| --- | --- | --- |
+| VPS2 IPv4 `161.118.246.9` | direct | 429 |
+| VPS2 IPv6 native `2603:c024:4526:9797::/64` | direct | 429 |
+| HE routed `/64` `2001:470:36:965::/64`, 20 `/128` khác nhau | 6in4 | **0/25** |
+| `sixrelay` (repo UWASDEV) 20 `/128` ngẫu nhiên trong HE /64 | SOCKS5 | **0/20** |
+| nikeproxy residential VN `2407:5b40:0:419::/64` | SOCKS5/HTTP | 0/8 |
+| IP residential nhà `171.241.6.97` (VNPT) | direct | 429 |
+| 1.100 proxy công khai + 84 Tor exit | — | 0×200 |
+| **Cloudflare WARP của VPS1** (`2a09:bac5:bf2x::/64`) | userspace WireGuard | **16/39 ≈ 41 %** |
+| Cloudflare WARP của VPS2 (`2a09:bac5:55f8…55ff::/64`) | userspace WireGuard | **0/39** |
+
+Đọc bảng:
+
+1. **Không phải hạn mức theo IP.** 20 địa chỉ `/128` mới tinh trong một /64
+   mới (HE) đều 429. Nếu là "mỗi IP 200 request" thì đã có 200.
+2. **Không phải theo /64.** Cả /64 đó cũng mới; nếu bucket theo /64 thì cũng
+   phải 200.
+3. ⇒ Bucket thô hơn /64 (nhiều khả năng theo **/48** hoặc cả dải nhà cung
+   cấp), nên mọi egress "dùng chung" (HE, OCI, VNPT/CGNAT, proxy, Tor) đều
+   cạn. WARP là ngoại lệ vì mỗi lần đăng ký được cấp một `/64` trong một
+   **họ /48 khác nhau**.
+4. **WARP không phải vô hạn:** VPS2 nhận đúng một họ (`2a09:bac5:55f8–55ff`)
+   và họ đó đã cạn (0/39); VPS1 nhận họ `2a09:bac5:bf2x` và họ đó còn sống
+   (41 %). Đổi `warp.source_ipv6` giữa HE /64 và OCI /64 **không** đổi họ ⇒
+   họ do phía Cloudflare gán theo thiết bị/đăng ký, không theo IP nguồn.
+5. `Retry-After` của mọi 429 = số giây tới **00:00 UTC kế tiếp** ⇒ cửa sổ
+   hạn mức là một ngày UTC, không phải rolling 24 h.
+
+### Repo UWASDEV/Unlimited-Rotating-IPv6-Proxy-Server
+
+Đã cài thật trên VPS2 (`install.sh --mode routed --subnet 2001:470:36:965::/64`),
+self-test 6/6 PASS, 20 kết nối đồng thời cho **20 IPv6 nguồn khác nhau** — đúng
+như quảng cáo. Nhưng 20 request free-tier qua nó: **0×200**. Kết luận: repo tốt,
+giải đúng bài "xoay IP trong /64", nhưng bài toán ở đây không phải xoay IP.
+Đã `install.sh --uninstall` để trả máy về trạng thái cũ.
+
+### Vì sao VPS2 bật WARP mà vẫn 429
+
+VPS2 nhận họ `2a09:bac5:55f8…55ff` (đã cạn). VPS2 cũng không có thư mục `data/`
+nên mỗi lần restart lại đăng ký WARP mới, nhưng vẫn rơi vào cùng họ. Vì vậy
+WARP trên VPS2 đã **tắt** (`warp.enabled=false`) để không làm chậm request;
+VPS1 tiếp tục là node WARP (peer `vps1-o2a`).
+
+### Việc tiếp theo (theo thứ tự)
+
+1. **Xin HE /48** (bị chặn 24 h, thử lại sau 00:00 UTC): nếu /48 riêng cho hạn
+   mức sạch thì HE thành nguồn ổn định (65 536 /64).
+2. **Đăng ký WARP theo đường khác** để lấy họ /48 khác (xem
+   `internal/warp/registrar.go`, thử endpoint registration khác hoặc đổi
+   `warp.stack`).
+3. Nếu cần ngay: dùng OpenCode Go (trả phí) — lane đó không bị 429.
+
 ## 5. Kiểm chứng 2026-11-11 (quan trọng — sửa lại giả thuyết /64)
 
 Sau khi mở ICMP + protocol 41 ở Default Security List (làm bằng OCI Cloud

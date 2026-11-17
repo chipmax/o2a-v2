@@ -71,7 +71,7 @@ Trên **config thật của PC** (không đụng service trên VPS):
 | `o2a-vps` | `o2a-vps (VPS1)` | Hermes + DSH profile `cad` |
 | `zen-gate-vps` | `zen-gate-vps (VPS1)` | DSH profile `cad` |
 
-- Mọi model id/name thuộc provider VPS đều được thêm hậu tố ` (VPS2)` hoặc ` (VPS1)`; reference `provider:`/`model:` trong MOA được cập nhật theo.
+- Mọi model **name hiển thị** thuộc provider VPS đều được thêm hậu tố ` (VPS2)` hoặc ` (VPS1)`; **model ID gửi lên upstream giữ nguyên** (đã sửa 17/11: gắn hậu tố vào ID làm upstream từ chối `not found in the upstream model catalog`). Reference `provider:` giữ nhãn mới; reference `model:` trả về ID thật.
 - Kiểm chứng: `yaml.safe_load` thành công, **0 reference trỏ tới provider không tồn tại**, **0 model thiếu hậu tố** ở các provider đã đổi.
 - Số model đổi: Hermes 57 model + 25 reference; DSH 100 model (8 + 16 + 26 + các name tương ứng).
 - Backup: `config.yaml.bak-rename-20261117135300` (Hermes), `cordis.patch.yml.bak-rename-20261117135300` (DSH).

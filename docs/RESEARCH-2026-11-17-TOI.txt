@@ -1,0 +1,82 @@
+RESEARCH 17/11 TOI - REPO MOI + UPDATE CAC REPO DA THEO DOI
+===========================================================
+Nguon: agent-reach (Exa web search + GitHub gh), quet 21:55-22:10 UTC+7.
+
+1) CAC REPO DA THEO DOI - CO UPDATE GI
+---------------------------------------
+| repo                                   | pushed_at (UTC)     | update |
+|----------------------------------------|---------------------|--------|
+| jasonxu114514/opencode2api             | 2026-11-16 22:14    | KHONG doi tu luc chot v1.4.8 (da port) |
+| dengyie/opencode2api                   | 2026-11-15 19:06    | khong co gi moi |
+| 12errh/zen-proxy                       | 2026-11-17 07:54    | chi model-sync hang ngay |
+| RobbsLuo/Coding2API                    | 2026-11-17 10:04    | deps Python 3.15-slim, pydantic 2.50.4 (khong lien quan) |
+| trefeon/pi-freeflow                    | 2026-11-17 12:57    | 1.46.0: update qua GitHub release assets + retire model |
+| olivezane/opencode2pi                  | 2026-11-17 06:20    | chi probe ledger hang ngay |
+| cheaper-inference/OmniRoute            | 2026-11-17 14:13    | v3.8.55; PR #20258 alias tool name >64 chars cho opencode-zen/go |
+| trefeon/warp-relay-pool                | 2026-11-13          | khong doi |
+| decolua/9router                        | 2026-11-16          | khong doi |
+| FishBottle7/opencode2dsh               | 2026-11-03          | khong doi |
+
+Ket luan: khong co ban gateway nao vuot v1.4.8. Chi 2 tin hieu dang chu y:
+  (a) pi-freeflow 1.46.0 co co che self-update qua GitHub release asset;
+  (b) OmniRoute #20258 fix alias tool name >64 ky tu cho opencode-zen/go.
+
+2) REPO MOI TIM THAY
+---------------------
+ebouther/opencode-unlimited-proxy (83★, MIT, push 14/11):
+  - gateway + WARP egress pool, dedupe egress theo MARKER (ofu-dedupe).
+    Marker duoc gan vao dia chi egress de biet node nao bi drain - invariants
+    duoc ghi trong CONTRIBUTING.md. Day la y de hoc: minh hien co dedupe theo
+    IP do duoc tai thoi diem them node, nhuong khi drain xong mat dau vet.
+  - docs/free-tier-gates.md: 4 gate duoc tai lieu hoa va CO GATE-PROBE SCRIPT
+    (scripts/gate-probe.py) - 8 probes co baseline phai 200 + 5 probe phai 403,
+    self-check: "200 khong chung minh gi neu harness khong tao duoc 403".
+    Chi tiet gate 2: ses_ + 12 hex (low 3 hex = ffe) + 14 base62; header phai
+    la x-opencode-session (KHONG phai -id); gate 3: mot tool named chinh xac
+    `read` (10 ten khac khong co read van 403); gate 4: stream:true bat buoc.
+    -> Da doi chieu: code minh internal/identity/request.go:187-277 da dung
+       regex + low ffe; toolshape inject `read` that; upstream.go ep stream:true.
+       KHONG can sua, chi can them gate-probe de canh bao khi upstream doi.
+  - Security: WARP node can NET_ADMIN /dev/net/tun - minh dung userspace
+    netstack (khong privileged) => minh hon ve mat nay.
+
+atlas-comstock/warp-pool (0★): y "toan pool redial khi health ve 0" - minh
+  da co laneGate + pause 5 phut, tuong duong.
+
+alztrk/opencode-ip-rotator (31★): active-flow locking cho SSE stream trong luc
+  xoay IP (_active_flows_count giu full lifetime generator). Minh da co lease
+  WARP nhung CHUA co lock nay - xem xet.
+
+3) DE XUAT NANG CAP o2a v2 (uu tien danh)
+------------------------------------------
+P0. Gate self-check (từ ebouther): them tools/gatecheck mode "probe 8" chay
+    dinh ky (hoac POST /api/diagnostics/gate da co - mo rong them baseline
+    phai 200 + 5 am tinh phai 403). Gia tri: biet ngay khi upstream doi gate,
+    khong nham thanh "quota can". Chi phi: 8 request/ngay.
+
+P1. Egress marker persistent (từ ofu-dedupe): khi rotate/exit spent, luu marker
+    (egress key + ly do + thoi diem) vao state file; khi drain xong van biet
+    node nao de respawn. Hien tai minh chi luu cooling map trong memory,
+    restart mat lich su. Code: internal/warp/pool.go + state file.
+
+P2. SSE active-flow lock (từ alztrk): khi co stream dang chay qua 1 exit, khong
+    rotate/exit do den khi stream ket thuc. Tranh canh stream dang good bi
+    routed sang exit spent. Code: warp.Pool.Lease + gateway stream path.
+
+P3. Tool-name length alias (OmniRoute #20258): ten client tool >64 ky tu doi
+    voi opencode-zen/go - minh da co toolWireNameLimit=64 trong
+    internal/protocol/tools.go nhung CHUA co alias reversible cho tool ten dai.
+    Hien tai cat bo digest 12 hex, khong loi. Theo doi them, khong can lam ngay.
+
+P4. Self-update via release asset (pi-freeflow 1.46.0): co che POST /api/update
+    tai binary moi tu GitHub release + verify sha256. Hien minh deploy bang scp
+    tay; tien loi nhung khong khan cap (can Approvals-disabled can than).
+
+P5. Nang cap VPS1: them prefix /64 thu 2 (HE tunnel nhu VPS2) - van la viec
+    quan trong nhat de het 429 buoi chieu
+
+4) KHONG LAM
+-------------
+- Khong port Device OAuth (user da yeu cau bo tu dau).
+- Khong thay userspace WARP bang Docker privileged.
+- Khong copy Coding2API (10 upstream reverse-engineered, khong pham vi).

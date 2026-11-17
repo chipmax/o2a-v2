@@ -54,6 +54,12 @@ func registrationPause(err error) time.Duration {
 	if errors.As(err, &paused) {
 		return paused.retryAfter
 	}
+	// Other failures can ask for a pause too, such as the lane gate that stops
+	// minting devices while the free lane refuses every fresh egress.
+	var after interface{ RetryAfter() time.Duration }
+	if errors.As(err, &after) {
+		return after.RetryAfter()
+	}
 	return 0
 }
 

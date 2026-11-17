@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -266,17 +267,27 @@ func (m *RuntimeController) selectWARP(cfg config.Config) (*warp.Pool, string, b
 	if !cfg.Warp.Enabled {
 		return nil, "", false, nil
 	}
-	key := fmt.Sprintf("%d|%s|%s", cfg.Warp.PoolSize, cfg.Warp.Stack, cfg.Warp.SourceIPv6)
+	key := fmt.Sprintf("%d|%s|%s|%d|%d", cfg.Warp.PoolSize, cfg.Warp.Stack, cfg.Warp.SourceIPv6, cfg.Warp.RotateAfterMinutes, cfg.Warp.RotateCooldownSeconds)
 	if m.warpPool != nil && m.warpKey == key {
 		return m.warpPool, key, false, nil
 	}
-	var source netip.Prefix
+	var sources []netip.Prefix
 	if cfg.Warp.SourceIPv6 != "" {
-		prefix, err := netip.ParsePrefix(cfg.Warp.SourceIPv6)
-		if err != nil {
-			return nil, "", false, fmt.Errorf("initialize WARP egress: warp.source_ipv6: %w", err)
+		for _, part := range strings.Split(cfg.Warp.SourceIPv6, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(part)
+			if err != nil {
+				return nil, "", false, fmt.Errorf("initialize WARP egress: warp.source_ipv6: %w", err)
+			}
+			sources = append(sources, prefix.Masked())
 		}
-		source = prefix.Masked()
+	}
+	var source netip.Prefix
+	if len(sources) > 0 {
+		source = sources[0]
 	}
 	timeout := time.Duration(cfg.Retry.TimeoutSeconds) * time.Second
 	if timeout <= 0 || timeout > 2*time.Minute {
@@ -303,9 +314,24 @@ func (m *RuntimeController) selectWARP(cfg config.Config) (*warp.Pool, string, b
 		probe = warp.LaneProbe{
 			URL:   strings.TrimRight(cfg.Upstream.Anonymous, "/") + "/v1/chat/completions",
 			Model: warp.DefaultLaneProbeModel,
+			// The gate judges the system prompt (it wants an env block with the
+			// working directory), so the admission request must carry the same
+			// prompt a real free-lane request does or it is refused for shape.
+			SystemPrompt: opencodeSystemPrompt(warp.DefaultLaneProbeModel, false, cfg.Upstream.PromptEnvironment),
 		}
 	}
-	pool, err := warp.NewWithOptions(ctx, m.logger, warp.Options{Size: cfg.Warp.PoolSize, Stack: warp.Stack(cfg.Warp.Stack), SourceIPv6: source, StatePath: statePath, LaneProbe: probe})
+	pool, err := warp.NewWithOptions(ctx, m.logger, warp.Options{
+		Size:              cfg.Warp.PoolSize,
+		Stack:             warp.Stack(cfg.Warp.Stack),
+		Preload:           cfg.Warp.Preload,
+		RequireIPv6Egress: cfg.Warp.RequireIPv6Egress,
+		SourceIPv6:        source,
+		Sources:           sources,
+		StatePath:         statePath,
+		LaneProbe:         probe,
+		MaxAge:            time.Duration(cfg.Warp.RotateAfterMinutes) * time.Minute,
+		RotateCooldown:    time.Duration(cfg.Warp.RotateCooldownSeconds) * time.Second,
+	})
 	if err != nil {
 		return nil, "", false, fmt.Errorf("initialize WARP egress: %w", err)
 	}
@@ -538,27 +564,32 @@ type ResourceSnapshot struct {
 
 // WarpStatus is the operator view of the WARP egress pool.
 type WarpStatus struct {
-	Enabled bool             `json:"enabled"`
-	Stack   string           `json:"stack"`
-	Size    int              `json:"size"`
-	Active  int              `json:"active"`
-	Standby int              `json:"standby"`
-	Cooling int              `json:"cooling"`
-	Egress  []string         `json:"egress,omitempty"`
-	Exits   []warp.ExitState `json:"exits,omitempty"`
+	Enabled         bool             `json:"enabled"`
+	Stack           string           `json:"stack"`
+	Size            int              `json:"size"`
+	Active          int              `json:"active"`
+	Standby         int              `json:"standby"`
+	Cooling         int              `json:"cooling"`
+	CoolingPrefixes int              `json:"cooling_prefixes"`
+	LaneGated       bool             `json:"lane_gated"`
+	LaneUntil       *time.Time       `json:"lane_until,omitempty"`
+	LaneRefusals    int              `json:"lane_refusals"`
+	Egress          []string         `json:"egress,omitempty"`
+	Exits           []warp.ExitState `json:"exits,omitempty"`
 }
 
 // KeyStatus describes one upstream key by its display ID (its last five
 // characters): its tier, its current proxy binding, its consecutive failures
 // and any active cooldown.
 type KeyStatus struct {
-	ID            string     `json:"id"`
-	Tier          string     `json:"tier"`
-	Index         int        `json:"index"`
-	ProxyIndex    int        `json:"proxy_index"`
-	Bound         bool       `json:"bound,omitempty"`
-	Failures      uint32     `json:"failures"`
-	CooldownUntil *time.Time `json:"cooldown_until,omitempty"`
+	ID               string     `json:"id"`
+	Tier             string     `json:"tier"`
+	Index            int        `json:"index"`
+	ProxyIndex       int        `json:"proxy_index"`
+	Bound            bool       `json:"bound,omitempty"`
+	Failures         uint32     `json:"failures"`
+	CooldownUntil    *time.Time `json:"cooldown_until,omitempty"`
+	QuarantinedUntil *time.Time `json:"quarantined_until,omitempty"`
 }
 
 // ProxyStatus describes one proxy route: its redacted address, its health,
@@ -571,11 +602,46 @@ type ProxyStatus struct {
 	Healthy      bool       `json:"healthy"`
 	Checking     bool       `json:"checking"`
 	Pool         bool       `json:"pool,omitempty"`
+	Relay        bool       `json:"relay,omitempty"`
+	RelaySpent   int        `json:"relay_spent_exits,omitempty"`
 	LastChecked  *time.Time `json:"last_checked,omitempty"`
 	BlockedUntil *time.Time `json:"blocked_until,omitempty"`
-	ZenKeys      int        `json:"zen_keys"`
-	GoKeys       int        `json:"go_keys"`
-	Anonymous    bool       `json:"anonymous"`
+	// LastError is why the last health check failed; Listening says a loopback
+	// proxy listener still accepts connections. Together they separate "the
+	// tunnel runs but carries no traffic" from "nothing is running".
+	LastError string `json:"last_error,omitempty"`
+	Listening bool   `json:"listening,omitempty"`
+	ZenKeys   int    `json:"zen_keys"`
+	GoKeys    int    `json:"go_keys"`
+	Anonymous bool   `json:"anonymous"`
+}
+
+// liveLoopbackProxy reports whether a loopback proxy URL still has a listener.
+// sing-box keeps a SOCKS port open even when its tunnel to the exit is dead,
+// which is the "running but not usable" state the console names separately.
+func liveLoopbackProxy(raw string) bool {
+	trimmed := raw
+	index := strings.Index(trimmed, "://")
+	if index < 0 {
+		return false
+	}
+	trimmed = trimmed[index+3:]
+	if index = strings.IndexAny(trimmed, "/?#"); index >= 0 {
+		trimmed = trimmed[:index]
+	}
+	if index = strings.LastIndex(trimmed, "@"); index >= 0 {
+		trimmed = trimmed[index+1:]
+	}
+	address, err := netip.ParseAddrPort(trimmed)
+	if err != nil || !address.Addr().IsLoopback() {
+		return false
+	}
+	conn, err := net.DialTimeout("tcp", address.String(), 250*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // Resources reports the current runtime's servable models, per-key state and
@@ -600,6 +666,10 @@ func (m *RuntimeController) Resources() ResourceSnapshot {
 	gateway.goNodes.bindingsMu.Unlock()
 	for _, proxy := range gateway.transports.items {
 		status := ProxyStatus{Index: proxy.index, Address: config.RedactURL(proxy.name), Healthy: proxy.healthy.Load(), Checking: proxy.checking.Load(), Pool: proxy.pool, Anonymous: gateway.cfg.Anonymous}
+		if proxy.relay != nil {
+			status.Relay = true
+			status.RelaySpent = proxy.relay.SpentCount()
+		}
 		if checked := proxy.lastChecked.Load(); checked > 0 {
 			at := time.Unix(0, checked)
 			status.LastChecked = &at
@@ -607,6 +677,10 @@ func (m *RuntimeController) Resources() ResourceSnapshot {
 		if blocked := proxy.blockedUntil.Load(); blocked > time.Now().UnixNano() {
 			until := time.Unix(0, blocked)
 			status.BlockedUntil = &until
+		}
+		status.LastError = proxy.lastErrorString()
+		if !status.Healthy {
+			status.Listening = liveLoopbackProxy(proxy.name)
 		}
 		if proxy.index < len(zenBindings) {
 			status.ZenKeys = zenBindings[proxy.index]
@@ -620,8 +694,14 @@ func (m *RuntimeController) Resources() ResourceSnapshot {
 		snapshot := gateway.warp.Snapshot()
 		result.Warp = &WarpStatus{
 			Enabled: true, Stack: snapshot.Stack, Size: snapshot.Size,
-			Active: snapshot.Active, Standby: snapshot.Standby, Cooling: snapshot.Cooling,
+			Active: snapshot.Active, Standby: snapshot.Standby,
+			Cooling: snapshot.Cooling, CoolingPrefixes: snapshot.CoolingPrefixes,
+			LaneGated: snapshot.LaneGated, LaneRefusals: snapshot.LaneRefusals,
 			Egress: snapshot.Egress, Exits: gateway.warp.States(),
+		}
+		if !snapshot.LaneUntil.IsZero() {
+			until := snapshot.LaneUntil
+			result.Warp.LaneUntil = &until
 		}
 	}
 	result.Peers = gateway.peers.peerSnapshot()
@@ -650,7 +730,44 @@ func (m *RuntimeController) EgressQuota() EgressQuotaSnapshot {
 	if runtime.gateway.warp != nil {
 		states = runtime.gateway.warp.States()
 	}
-	return runtime.gateway.quota.snapshot(states, time.Now())
+	snapshot := runtime.gateway.quota.snapshot(states, time.Now())
+	if runtime.gateway.warp != nil {
+		live := runtime.gateway.warp.Snapshot()
+		snapshot.LaneGated = live.LaneGated
+		snapshot.LaneUntil = live.LaneUntil
+		snapshot.LaneRefusals = live.LaneRefusals
+	}
+	return snapshot
+}
+
+// WarpSnapshot reports the live pool state, or false when WARP is disabled.
+func (m *RuntimeController) WarpSnapshot() (warp.Snapshot, bool) {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil || runtime.gateway.warp == nil {
+		return warp.Snapshot{}, false
+	}
+	return runtime.gateway.warp.Snapshot(), true
+}
+
+// ResetLaneGate clears the free-lane refusal pause and starts a refill, so the
+// console can retry a registration after the upstream recovers.
+func (m *RuntimeController) ResetLaneGate() error {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil || runtime.gateway.warp == nil {
+		return errors.New("WARP pool is not enabled")
+	}
+	runtime.gateway.warp.ResetLaneGate()
+	return nil
+}
+
+// AcquireWARPLease borrows one live exit for a diagnostic probe; the caller
+// must Release it. It registers nothing, so a gatecheck run costs no device.
+func (m *RuntimeController) AcquireWARPLease(ctx context.Context) (*warp.Lease, error) {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil || runtime.gateway.warp == nil {
+		return nil, errors.New("WARP pool is not enabled")
+	}
+	return runtime.gateway.warp.Acquire(ctx)
 }
 
 // EgressAction retires or rotates every exit on a /64. "retire" keeps the
@@ -714,6 +831,44 @@ func (m *RuntimeController) DebugRoute(model string, requested protocol.Protocol
 	}
 	gateway := runtime.gateway
 	return gateway.catalog.Diagnostic(model, requested, len(gateway.cfg.ZenKeys) > 0, len(gateway.cfg.GoKeys) > 0, gateway.cfg.Anonymous)
+}
+
+// PreviewPlan reports what the gateway would do for model right now, without
+// sending a request or changing any cooldown.
+func (m *RuntimeController) PreviewPlan(model string, requested protocol.Protocol) PreviewPlan {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil {
+		return PreviewPlan{
+			Model: model, Protocol: string(requested), Ready: false,
+			Blockers: []string{"gateway runtime is unavailable"},
+			Note:     "kế hoạch chỉ đọc: runtime chưa sẵn sàng", GeneratedAt: time.Now().UTC(),
+		}
+	}
+	return runtime.gateway.PreviewRoute(model, requested)
+}
+
+// Readiness is the console's copy of the /healthz verdict: the same status,
+// ready flag and issue list, without the rest of the health document. The
+// overview shows it so the "Ready" chip cannot claim more than the endpoint
+// clients actually call.
+type Readiness struct {
+	Status string   `json:"status"`
+	Ready  bool     `json:"ready"`
+	Issues []string `json:"issues"`
+}
+
+// Readiness reports the readiness verdict of the live gateway.
+func (m *RuntimeController) Readiness() Readiness {
+	runtime := m.current.Load()
+	if runtime == nil || runtime.gateway == nil {
+		return Readiness{Status: "starting", Issues: []string{"gateway_runtime_unavailable"}}
+	}
+	report, _ := runtime.gateway.HealthReport()
+	issues := report.Issues
+	if issues == nil {
+		issues = []string{}
+	}
+	return Readiness{Status: report.Status, Ready: report.Ready, Issues: issues}
 }
 
 // DebugKeyView is the operator-facing view of one configured upstream key. It
@@ -802,6 +957,10 @@ func keyStatuses(tier string, pool *upstreamNodes) []KeyStatus {
 		if until := node.cooldownUntil.Load(); until > time.Now().UnixNano() {
 			value := time.Unix(0, until).UTC()
 			status.CooldownUntil = &value
+		}
+		if until := node.credUntil.Load(); until > time.Now().UnixNano() {
+			value := time.Unix(0, until).UTC()
+			status.QuarantinedUntil = &value
 		}
 		result = append(result, status)
 	}

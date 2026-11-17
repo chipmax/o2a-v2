@@ -60,6 +60,98 @@ const anonymousLanePausedMessage = "The anonymous free tier is paused after repe
 // without a restart.
 const freeTierBlockTTL = 15 * time.Minute
 
+// errKeyPoolCooling reports that every key in a tier is out of rotation on a
+// quota/cooldown, so an attempt now could only be refused again. Callers
+// answer from the pool's own state instead of spending upstream calls.
+var errKeyPoolCooling = errors.New("every key in this tier is cooling down")
+
+// errKeyPoolCredentialExhausted reports that the upstream rejected every key in
+// a tier as a credential (401/403). Forwarding that status would send the
+// caller looking for a client-side credential problem and, behind a fronting
+// gateway that bans a channel on a forwarded 401, take the whole channel dark.
+var errKeyPoolCredentialExhausted = errors.New("every key in this tier was rejected by the upstream credential check")
+
+// keyPoolCoolingMessage is the client-facing 429 body for a fully cooling pool.
+const keyPoolCoolingMessage = "every upstream key this gateway can use is cooling down after a rate limit. Wait for the window to reset, add another key, or retry later."
+
+// keyPoolCredentialMessage is the client-facing 503 body for a fully
+// quarantined pool.
+const keyPoolCredentialMessage = "the upstream rejected every configured key as a credential, so they are quarantined until a probe sees them accepted again. Check the upstream keys for this tier or add a new one."
+
+// keyPoolError carries the retry hint a pre-check or the last attempt learned
+// without needing another upstream call.
+type keyPoolError struct {
+	cause      error
+	retryAfter time.Duration
+}
+
+func (e *keyPoolError) Error() string {
+	if e.retryAfter <= 0 {
+		return e.cause.Error()
+	}
+	return e.cause.Error() + " (retry in " + e.retryAfter.Round(time.Second).String() + ")"
+}
+
+func (e *keyPoolError) Unwrap() error { return e.cause }
+
+// newKeyPoolError builds the sentinel carrying a retry hint.
+func newKeyPoolError(cause error, retryAfter time.Duration) error {
+	if retryAfter < 0 {
+		retryAfter = 0
+	}
+	return &keyPoolError{cause: cause, retryAfter: retryAfter}
+}
+
+// keyPoolRetryAfter reports the retry hint attached to a pool sentinel.
+func keyPoolRetryAfter(err error) (time.Duration, bool) {
+	var target *keyPoolError
+	if errors.As(err, &target) {
+		return target.retryAfter, true
+	}
+	return 0, false
+}
+
+// isPrecheckError reports whether err came from the pool pre-check, so a later
+// tier's bare transport failure cannot bury the more specific diagnosis.
+func isPrecheckError(err error) bool {
+	return errors.Is(err, errKeyPoolCooling) || errors.Is(err, errKeyPoolCredentialExhausted)
+}
+
+// errModelUnavailableInRegion reports that the upstream refuses this model
+// from the gateway's country. It is a property of the model and the region,
+// not of the key, so rotating keys inside the tier only burns attempts.
+var errModelUnavailableInRegion = errors.New("the model is not available in this region")
+
+// regionBlockMarkers are the wordings upstreams use when a model is refused
+// for the caller's country instead of for the credential or the request.
+var regionBlockMarkers = []string{
+	"not available in your country",
+	"not available in your region",
+	"not supported in your country",
+	"country, region, or territory not supported",
+	"unsupported_country_region_territory",
+	"region is not supported",
+}
+
+// modelUnavailableInRegionMessage is the client-facing 404. A 404 is the
+// honest status: the model exists, this region cannot use it.
+const modelUnavailableInRegionMessage = "the upstream does not serve this model from the gateway's country. Choose another model or route the request through an exit in a supported region."
+
+// isRegionBlockedResponse reports whether a 4xx response says the model is
+// unavailable in this country.
+func isRegionBlockedResponse(status int, body []byte) bool {
+	if status < 400 || status >= 500 {
+		return false
+	}
+	lower := strings.ToLower(string(body))
+	for _, marker := range regionBlockMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // freeTierBlockTTL returns the backoff applied to an exit the free tier flagged.
 func (g *Gateway) freeTierBlockTTL() time.Duration {
 	if g != nil && g.freeTierBlock > 0 {
@@ -110,6 +202,20 @@ func peekResponseBody(resp *http.Response) []byte {
 		return nil
 	}
 	return prefix
+}
+
+// bufferRetryResponse releases a response's network connection before the next
+// attempt while keeping the error document the client may need: at most 64 KiB
+// is read into memory and the body is replaced with a fresh reader. A 429 with
+// Retry-After stays available to the error mapper instead of being buried by a
+// later transport failure.
+func bufferRetryResponse(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
 }
 
 // peekNetworkAbuseBlock classifies a response without consuming its body.

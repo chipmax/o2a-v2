@@ -9,8 +9,10 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
 
 	"opencode2api/internal/jsonutil"
 	wire "opencode2api/internal/protocol"
@@ -96,6 +98,26 @@ type WarpConfig struct {
 	// spent free-tier quota, so the key tiers are not sent through the same
 	// slow, quota-walled exits.
 	PauseAfterQuotaSeconds int `json:"pause_after_quota_seconds,omitempty"`
+	// RotateAfterMinutes retires an idle exit once it has served this long, so
+	// a working address is not kept for a whole day. The replacement registers
+	// in the background and only idle exits are taken, so requests are not
+	// interrupted. Zero disables it.
+	RotateAfterMinutes int `json:"rotate_after_minutes,omitempty"`
+	// RotateCooldownSeconds is the minimum spacing between two registrations
+	// caused by retiring an exit on age. It keeps a burst of voluntary
+	// rotations from minting Cloudflare devices faster than its rate limit.
+	RotateCooldownSeconds int `json:"rotate_cooldown_seconds,omitempty"`
+	// Preload is how many exits to keep warm while idle. Zero uses half of
+	// PoolSize (at least one). Raise it on an IPv4-only host: Cloudflare needs
+	// ~50 s for the first registration and paces later ones, so a burst would
+	// otherwise arrive before enough distinct /64 exits exist.
+	Preload int `json:"preload,omitempty"`
+	// RequireIPv6Egress discards a registration whose public egress is IPv4.
+	// An IPv4 WARP exit is a Cloudflare address shared by all users, so its
+	// free-tier quota is usually already spent. Set this on `dual` stacks:
+	// the tunnel handshakes over IPv4 but traffic to AAAA destinations still
+	// leaves from the device's own /64. On a native `ipv6` stack it is a no-op.
+	RequireIPv6Egress bool `json:"require_ipv6_egress,omitempty"`
 }
 
 // Normalize fills the defaults and canonicalizes the stack name.
@@ -126,19 +148,46 @@ func (w *WarpConfig) Normalize() error {
 	if w.PauseAfterQuotaSeconds < 0 || w.PauseAfterQuotaSeconds > 86400 {
 		return errors.New("warp.pause_after_quota_seconds must be between 0 and 86400")
 	}
+	if w.RotateAfterMinutes < 0 || w.RotateAfterMinutes > 1440 {
+		return errors.New("warp.rotate_after_minutes must be between 0 and 1440")
+	}
+	if w.RotateCooldownSeconds == 0 {
+		w.RotateCooldownSeconds = int(warp.DefaultRotateCooldown / time.Second)
+	}
+	if w.RotateCooldownSeconds < 30 || w.RotateCooldownSeconds > 3600 {
+		return errors.New("warp.rotate_cooldown_seconds must be between 30 and 3600")
+	}
+	if w.Preload < 0 || w.Preload > 32 {
+		return errors.New("warp.preload must be between 0 and 32 (0 = half of pool_size)")
+	}
 	w.SourceIPv6 = strings.TrimSpace(w.SourceIPv6)
 	if w.SourceIPv6 != "" {
-		prefix, err := netip.ParsePrefix(w.SourceIPv6)
-		if err != nil || !prefix.Addr().Is6() || prefix.Addr().Is4In6() {
-			return fmt.Errorf("warp.source_ipv6: %q is not an IPv6 prefix", w.SourceIPv6)
+		// A comma-separated list lets several routed /64s (or one /48 from a
+		// tunnel broker) feed the pool: every exit draws from one of them, and
+		// each block is metered separately by the free tier.
+		parts := strings.Split(w.SourceIPv6, ",")
+		normalized := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			prefix, err := netip.ParsePrefix(part)
+			if err != nil || !prefix.Addr().Is6() || prefix.Addr().Is4In6() {
+				return fmt.Errorf("warp.source_ipv6: %q is not an IPv6 prefix", part)
+			}
+			if prefix.Bits() > 64 {
+				return fmt.Errorf("warp.source_ipv6: %s must be /64 or shorter", prefix)
+			}
+			normalized = append(normalized, prefix.Masked().String())
 		}
-		if prefix.Bits() > 64 {
-			return fmt.Errorf("warp.source_ipv6: %s must be /64 or shorter", prefix)
+		if len(normalized) == 0 {
+			return errors.New("warp.source_ipv6: no prefix given")
 		}
 		if stack != warp.StackIPv6 {
 			return errors.New("warp.source_ipv6 requires warp.stack to be \"ipv6\"; an IPv4 stack cannot present an IPv6 egress")
 		}
-		w.SourceIPv6 = prefix.Masked().String()
+		w.SourceIPv6 = strings.Join(normalized, ",")
 	}
 	return nil
 }
@@ -160,6 +209,53 @@ type UpstreamConfig struct {
 	// free models and its call site is commented out. Empty means
 	// https://opencode.ai/inference.
 	Anonymous string `json:"anonymous"`
+	// PromptEnvironment overrides the values the gateway injects into the
+	// official CLI prompt's <env> block and the shell tool description. The
+	// gateway runs on a Linux VPS, but clients may run elsewhere; the free tier
+	// reads this block, so it must describe the client's world without letting
+	// arbitrary operator text break the request shape.
+	PromptEnvironment *PromptEnvironmentConfig `json:"prompt_environment,omitempty"`
+}
+
+// PromptEnvironmentConfig replaces the host-derived fields of the injected
+// <env> block. Field names, order and the UTC date stay exactly as the official
+// CLI writes them; only the values change.
+type PromptEnvironmentConfig struct {
+	WorkingDirectory string `json:"working_directory,omitempty"`
+	WorkspaceRoot    string `json:"workspace_root,omitempty"`
+	Platform         string `json:"platform,omitempty"`
+	IsGitRepo        *bool  `json:"is_git_repo,omitempty"`
+}
+
+// Normalize rejects values that could break the prompt or claim another
+// client's environment, and folds "windows" onto the CLI's win32 spelling.
+func (environment *PromptEnvironmentConfig) Normalize() error {
+	if environment == nil {
+		return nil
+	}
+	for name, value := range map[string]string{
+		"working_directory": environment.WorkingDirectory,
+		"workspace_root":    environment.WorkspaceRoot,
+	} {
+		for _, character := range value {
+			if unicode.IsControl(character) || character == '\u2028' || character == '\u2029' || character == '<' || character == '>' {
+				return fmt.Errorf("upstream.prompt_environment.%s must not contain control characters, line separators, or angle brackets", name)
+			}
+		}
+	}
+	platform := strings.ToLower(strings.TrimSpace(environment.Platform))
+	if platform == "windows" {
+		platform = "win32"
+	}
+	switch platform {
+	case "", "linux", "darwin", "win32":
+	default:
+		return errors.New("upstream.prompt_environment.platform must be linux, darwin, win32, windows, or empty")
+	}
+	environment.WorkingDirectory = strings.TrimSpace(environment.WorkingDirectory)
+	environment.WorkspaceRoot = strings.TrimSpace(environment.WorkspaceRoot)
+	environment.Platform = platform
+	return nil
 }
 
 // RetryConfig bounds the upstream retries. MaxAttempts caps the attempts of a
@@ -202,6 +298,20 @@ type ModelsConfig struct {
 	// Retry-After that overshoots) is noticed without waiting for real
 	// traffic. 0 disables it; otherwise it is the interval between probes.
 	QuotaProbeSeconds int `json:"quota_probe_seconds,omitempty"`
+	// DeadIDs hides model IDs that upstream has retired. A stale disk cache or
+	// a lagging capability catalog can still list them, so they are filtered
+	// on every route and discovery list. An explicit empty array re-enables
+	// all IDs; omitting the field applies DefaultDeadModels.
+	DeadIDs []string `json:"dead_ids,omitempty"`
+}
+
+// DefaultDeadModels are Zen IDs confirmed retired upstream: a 410
+// "model has been deprecated" and a 400 "model is unavailable" respectively.
+// They are absent from the live free listing, so serving them only spends
+// retries on answers no client can use.
+var DefaultDeadModels = []string{
+	"longcat-2.5-preview-free",
+	"nemotron-3-ultra-free",
 }
 
 // ModelLimits overrides the per-model limits advertised to discovery clients.
@@ -311,6 +421,77 @@ type PerformanceConfig struct {
 	// timeout, so a slow reasoning model can be given a longer budget without
 	// loosening the bound for every other model.
 	ModelTimeouts map[string]int `json:"model_timeouts,omitempty"`
+	// HeartbeatSeconds emits a client-invisible SSE keepalive frame after
+	// this many seconds of upstream silence on a committed stream, so
+	// intermediaries and client idle watchdogs stop cutting a long reasoning
+	// turn. Absent keeps the 15 second default; 0 disables keepalive frames.
+	HeartbeatSeconds *int `json:"heartbeat_seconds,omitempty"`
+	// IdleTimeoutSeconds ends a committed stream whose upstream produced no
+	// bytes for this long: the gateway writes an in-band upstream_idle_timeout
+	// error and closes the upstream request instead of waiting out the whole
+	// request budget. Absent keeps the 5 minute default; 0 disables it.
+	IdleTimeoutSeconds *int `json:"idle_timeout_seconds,omitempty"`
+	// CredentialQuarantineSeconds is how long a key the upstream rejected
+	// with 401/403 stays out of rotation. The free tier meters per key and
+	// egress, so a rejected credential is not a transient fault: re-entering
+	// rotation every cooldown keeps a dead key in front of callers and can
+	// teach a fronting gateway to ban the channel. Absent keeps the 24 hour
+	// default; 0 restores the plain cooldown behavior.
+	CredentialQuarantineSeconds *int `json:"credential_quarantine_seconds,omitempty"`
+	// MaxInflight bounds concurrent inference turns gateway-wide. Overflow
+	// waits up to QueueWaitSeconds, then answers 429 gateway_busy with a
+	// Retry-After. 0 (the default) leaves the gateway unbounded.
+	MaxInflight int `json:"max_inflight,omitempty"`
+	// QueueWaitSeconds is how long an overflow request waits for a slot before
+	// it is refused. 0 refuses immediately.
+	QueueWaitSeconds int `json:"queue_wait_seconds,omitempty"`
+	// PprofEnabled mounts net/http/pprof under /debug/pprof/ on the WebUI
+	// listener, behind the same session auth as every other API route. It is
+	// a startup-only switch (the mux is built once).
+	PprofEnabled bool `json:"pprof_enabled,omitempty"`
+	// MemoryLimitBytes sets the Go runtime's soft memory limit
+	// (debug.SetMemoryLimit), which makes GC work harder as total memory
+	// approaches the ceiling. 0 keeps the runtime default.
+	MemoryLimitBytes int64 `json:"memory_limit_bytes,omitempty"`
+}
+
+// Defaults for the stream and credential settings. They are separate from the
+// JSON fields so an absent field and an explicit 0 stay distinguishable.
+const (
+	DefaultHeartbeatSeconds            = 15
+	DefaultStreamIdleTimeoutSeconds    = 300
+	DefaultCredentialQuarantineSeconds = 86400
+)
+
+// Heartbeat returns how long a committed stream may stay silent before the
+// gateway writes a keepalive frame. A nil setting keeps the default; an
+// explicit 0 disables the frames.
+func (cfg PerformanceConfig) Heartbeat() time.Duration {
+	seconds := DefaultHeartbeatSeconds
+	if cfg.HeartbeatSeconds != nil {
+		seconds = *cfg.HeartbeatSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// StreamIdleTimeout returns the post-commit idle bound. A nil setting keeps
+// the default; an explicit 0 disables the watchdog.
+func (cfg PerformanceConfig) StreamIdleTimeout() time.Duration {
+	seconds := DefaultStreamIdleTimeoutSeconds
+	if cfg.IdleTimeoutSeconds != nil {
+		seconds = *cfg.IdleTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// CredentialQuarantine returns how long a key rejected with 401/403 stays out
+// of rotation. A nil setting keeps the default; 0 disables the quarantine.
+func (cfg PerformanceConfig) CredentialQuarantine() time.Duration {
+	seconds := DefaultCredentialQuarantineSeconds
+	if cfg.CredentialQuarantineSeconds != nil {
+		seconds = *cfg.CredentialQuarantineSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }
 
 // AttemptTimeoutFor returns the per-attempt bound for model: its
@@ -417,6 +598,17 @@ func Normalize(path string, cfg Config) (Config, error) {
 	if cfg.Listen == "" {
 		return Config{}, errors.New("listen must not be empty")
 	}
+	if cfg.Upstream.PromptEnvironment != nil {
+		environment := *cfg.Upstream.PromptEnvironment
+		if err := environment.Normalize(); err != nil {
+			return Config{}, err
+		}
+		if environment.IsGitRepo != nil {
+			isGitRepo := *environment.IsGitRepo
+			environment.IsGitRepo = &isGitRepo
+		}
+		cfg.Upstream.PromptEnvironment = &environment
+	}
 	cfg.Upstream.Zen = strings.TrimSpace(cfg.Upstream.Zen)
 	cfg.Upstream.Go = strings.TrimSpace(cfg.Upstream.Go)
 	cfg.Upstream.Anonymous = strings.TrimSpace(cfg.Upstream.Anonymous)
@@ -447,6 +639,17 @@ func Normalize(path string, cfg Config) (Config, error) {
 	if cfg.Models.RefreshSeconds < 1 {
 		return Config{}, errors.New("models.refresh_seconds must be at least 1")
 	}
+	if cfg.Models.DeadIDs == nil {
+		cfg.Models.DeadIDs = slices.Clone(DefaultDeadModels)
+	} else {
+		dead := make([]string, 0, len(cfg.Models.DeadIDs))
+		for _, id := range cfg.Models.DeadIDs {
+			if id = strings.TrimSpace(id); id != "" {
+				dead = append(dead, id)
+			}
+		}
+		cfg.Models.DeadIDs = dead
+	}
 	if cfg.Models.QuotaProbeSeconds != 0 && (cfg.Models.QuotaProbeSeconds < 60 || cfg.Models.QuotaProbeSeconds > 86400) {
 		return Config{}, errors.New("models.quota_probe_seconds must be 0 (disabled) or between 60 and 86400")
 	}
@@ -464,6 +667,24 @@ func Normalize(path string, cfg Config) (Config, error) {
 	}
 	if cfg.Performance.FreeTierBlockSeconds < 0 {
 		return Config{}, errors.New("performance.free_tier_block_seconds must not be negative (0 uses the built-in cool-down)")
+	}
+	if cfg.Performance.HeartbeatSeconds != nil && (*cfg.Performance.HeartbeatSeconds < 0 || *cfg.Performance.HeartbeatSeconds > 3600) {
+		return Config{}, errors.New("performance.heartbeat_seconds must be between 0 and 3600 (0 disables keepalive frames)")
+	}
+	if cfg.Performance.IdleTimeoutSeconds != nil && (*cfg.Performance.IdleTimeoutSeconds < 0 || *cfg.Performance.IdleTimeoutSeconds > 86400) {
+		return Config{}, errors.New("performance.idle_timeout_seconds must be between 0 and 86400 (0 disables the watchdog)")
+	}
+	if cfg.Performance.CredentialQuarantineSeconds != nil && (*cfg.Performance.CredentialQuarantineSeconds < 0 || *cfg.Performance.CredentialQuarantineSeconds > 2592000) {
+		return Config{}, errors.New("performance.credential_quarantine_seconds must be between 0 and 2592000 (0 disables the quarantine)")
+	}
+	if cfg.Performance.MaxInflight < 0 || cfg.Performance.MaxInflight > 100000 {
+		return Config{}, errors.New("performance.max_inflight must be between 0 and 100000 (0 leaves the gateway unbounded)")
+	}
+	if cfg.Performance.QueueWaitSeconds < 0 || cfg.Performance.QueueWaitSeconds > 300 {
+		return Config{}, errors.New("performance.queue_wait_seconds must be between 0 and 300")
+	}
+	if cfg.Performance.MemoryLimitBytes < 0 {
+		return Config{}, errors.New("performance.memory_limit_bytes must not be negative (0 keeps the runtime default)")
 	}
 	for model, seconds := range cfg.Performance.ModelTimeouts {
 		if strings.TrimSpace(model) == "" {
@@ -521,7 +742,7 @@ func Normalize(path string, cfg Config) (Config, error) {
 			return Config{}, fmt.Errorf("invalid proxy URL %q", RedactURL(raw))
 		}
 		switch strings.ToLower(u.Scheme) {
-		case "http", "https", "socks5", "socks5h":
+		case "http", "https", "socks5", "socks5h", "relay", "relay+http":
 		default:
 			return Config{}, fmt.Errorf("unsupported proxy scheme %q", u.Scheme)
 		}
@@ -719,6 +940,15 @@ func Clone(cfg Config) Config {
 	cfg.GoKeys = append([]string(nil), cfg.GoKeys...)
 	cfg.Proxies = append([]string(nil), cfg.Proxies...)
 	cfg.effectiveProxies = append([]string(nil), cfg.effectiveProxies...)
+	cfg.Models.DeadIDs = slices.Clone(cfg.Models.DeadIDs)
+	if cfg.Upstream.PromptEnvironment != nil {
+		environment := *cfg.Upstream.PromptEnvironment
+		if environment.IsGitRepo != nil {
+			isGitRepo := *environment.IsGitRepo
+			environment.IsGitRepo = &isGitRepo
+		}
+		cfg.Upstream.PromptEnvironment = &environment
+	}
 	if cfg.Models.Protocols != nil {
 		protocols := make(map[string]string, len(cfg.Models.Protocols))
 		for key, value := range cfg.Models.Protocols {

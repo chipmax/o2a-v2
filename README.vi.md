@@ -265,7 +265,7 @@ Mô hình miễn phí không bao giờ cần key Zen: với `anonymous: true` ch
 
 Đường hầm chạy bên trong tiến trình gateway: đăng ký thiết bị WARP, nói WireGuard qua UDP với Cloudflare và kết thúc trong một ngăn xếp mạng userspace. Nó không cần thiết bị TUN, root, `NET_ADMIN` hay thay đổi bảng định tuyến, nhưng máy chủ hoặc container phải gửi được UDP tới endpoint của Cloudflare (cổng `2408`). Đăng ký và probe trace `warp=on` chạy lúc khởi động; nếu WARP không khởi tạo được, quá trình khởi động thất bại thay vì âm thầm quay về proxy. Bật qua WebUI cũng đóng khi lỗi: giá trị sai trả về lỗi và runtime cũ tiếp tục phục vụ.
 
-`warp.pool_size` (1–32, mặc định `2`) là **giới hạn trên**, không phải số cố định. Đầu ra đầu tiên được đăng ký đồng bộ và quyết định trạng thái sẵn sàng; sau đó pool đăng ký nền một nửa giới hạn (ít nhất một) để lưu lượng đột biến có sẵn đầu ra đã ấm. Vòng đầu ra hoạt động thay đổi theo mức đồng thời: một đầu ra cho mỗi request đang chạy cộng một đầu ra dự phòng, không vượt quá giới hạn; các đầu ra thừa rảnh rỗi 60 giây sẽ bị thu hồi. Đầu ra nhận 429 hoặc 403 lần đầu sẽ bị loại ngay và một đầu ra đã đăng ký trước thay vào; request model miễn phí tiếp tục đổi đầu ra và chỉ trả 429 cuối cùng cho client sau khi dùng hết `retry.max_attempts`, còn đầu ra bị loại được đăng ký lại ngay ở nền. Việc đăng ký vẫn tuần tự; phản hồi 429/Retry-After của Cloudflare quyết định nhịp thay cho khoảng nghỉ cố định. Nếu colo cấp ít khối đầu ra khác nhau hơn mức preload, pool sẽ lùi lại thay vì đăng ký vô hạn; kiểm tra tự động model miễn phí bỏ qua pool không có đầu ra dự phòng và dừng lượt sau khi một lần kiểm tra loại bỏ một đầu ra. `warp.stack` chọn `ipv6` (mặc định), `ipv4` hoặc `dual`.
+`warp.pool_size` (1–32, mặc định `2`) là **giới hạn trên**, không phải số cố định. Đầu ra đầu tiên được đăng ký đồng bộ và quyết định trạng thái sẵn sàng; sau đó pool đăng ký nền một nửa giới hạn (ít nhất một) để lưu lượng đột biến có sẵn đầu ra đã ấm. Vòng đầu ra hoạt động thay đổi theo mức đồng thời: một đầu ra cho mỗi request đang chạy cộng một đầu ra dự phòng, không vượt quá giới hạn; các đầu ra thừa rảnh rỗi 60 giây sẽ bị thu hồi. Đầu ra nhận 429, hoặc 403 với thông điệp chặn theo IP (abuse), sẽ bị loại ngay và một đầu ra đã đăng ký trước thay vào — còn 403 của cổng hình dạng request (`FreeTierError`, "free tier can only be used from within OpenCode") là thuộc tính của làn chứ không của đầu ra, nên đầu ra được giữ lại; request model miễn phí tiếp tục đổi đầu ra và chỉ trả 429 cuối cùng cho client sau khi dùng hết `retry.max_attempts`, còn đầu ra bị loại được đăng ký lại ngay ở nền. Việc đăng ký vẫn tuần tự; phản hồi 429/Retry-After của Cloudflare quyết định nhịp thay cho khoảng nghỉ cố định. Nếu colo cấp ít khối đầu ra khác nhau hơn mức preload, pool sẽ lùi lại thay vì đăng ký vô hạn; kiểm tra tự động model miễn phí bỏ qua pool không có đầu ra dự phòng và dừng lượt sau khi một lần kiểm tra loại bỏ một đầu ra. `warp.stack` chọn `ipv6` (mặc định), `ipv4` hoặc `dual`.
 
 Hạn mức miễn phí của upstream tính theo **dải đầu ra**, nên luân chuyển chỉ có tác dụng khi đầu ra thay thế đến từ dải khác: đầu ra IPv6 được nhận diện và làm nguội theo `/64` trong 30 phút, đầu ra IPv4 theo `/32`. Đầu ra IPv4 của Cloudflare WARP thường là một địa chỉ NAT dùng chung và đã bị người dùng khác dùng hết; ngăn xếp IPv6 lấy đầu ra từ địa chỉ nguồn WireGuard bên ngoài. Đặt `warp.source_ipv6` thành tiền tố IPv6 được định tuyến tới máy chủ (thường là `/64`, stack mặc định đã là `ipv6`) để mỗi đầu ra tự bind một địa chỉ nguồn trong tiền tố đó. Trên Linux địa chỉ này được bind qua `IPV6_FREEBIND` (gateway tự đặt), hoặc phải được gán sẵn cho giao diện. Không dò trước họ địa chỉ: handshake thử các endpoint IPv6 trước và tự quay về endpoint IPv4 khi tất cả đều lỗi (khi đó đầu ra là địa chỉ dùng chung). Để trống thì dùng địa chỉ nguồn mặc định của máy chủ. Trên mạng có pool đầu ra WARP đã cạn, đầu ra mới cũng có thể trả 429: gateway vẫn tiếp tục luân chuyển và chỉ trả 429 khi hết ngân sách thử. `/healthz` trả về khối `warp` và 503 khi WARP bật nhưng không có đầu ra nào hoạt động; `no_healthy_proxies` chỉ chặn readiness khi WARP tắt hoặc có key Go cần proxy. Request chẩn đoán có lấy đầu ra nhưng không bao giờ luân chuyển hay phạt nó. Tắt WARP sẽ khôi phục định tuyến qua proxy cho các làn miễn phí.
 
@@ -320,7 +320,9 @@ Xem [config.example.json](config.example.json) để có một cấu hình khở
 | `warp.enabled`             | `false`; lưu lượng làn miễn phí đi qua Cloudflare WARP, không dùng proxy. |
 | `warp.pool_size`           | `2`; giới hạn trên số đầu ra WARP (một nửa đăng ký trước ở nền; vòng hoạt động theo mức đồng thời), 1–32. |
 | `warp.stack`               | `ipv6`; `ipv6`, `ipv4` hoặc `dual`.                              |
-| `warp.source_ipv6`         | rỗng; tiền tố IPv6 (`/64`) mỗi đầu ra bind nguồn bên ngoài; cần `stack = "ipv6"`. |
+| `warp.source_ipv6`         | rỗng; một tiền tố IPv6 (`/64`) hoặc danh sách phân tách bằng dấu phẩy (`/64`, `/56`, `/48`) mà mỗi đầu ra bind nguồn bên ngoài từ đó; cần `stack = "ipv6"`. |
+| `warp.rotate_after_minutes` | `0` (tắt); thu hồi đầu ra **đang rảnh** sau khi nó phục vụ đủ số phút này rồi đăng ký đầu ra mới, để một địa chỉ tốt không bị giữ cả ngày. 0–1440. Khi upstream đang từ chối địa chỉ mới thì phải để `0`: xoay sẽ bỏ địa chỉ đang chạy và nhận 429. |
+| `warp.rotate_cooldown_seconds` | `90`; khoảng cách tối thiểu giữa hai lần đăng ký do thu hồi theo tuổi, tránh đăng ký thiết bị dồn dập. 30–3600. |
 | `prefer`                   | `go`; nhận `go` hoặc `zen`.                                      |
 | `upstream.zen`             | `https://opencode.ai/zen`.                                       |
 | `upstream.go`              | `https://opencode.ai/zen/go`.                                    |
@@ -333,6 +335,25 @@ Xem [config.example.json](config.example.json) để có một cấu hình khở
 | `models.anonymous_backoff` | Tắt khi vắng mặt; `{threshold, base_hours, max_hours}`, mặc định 6, 1, 24. |
 | `reasoning.effort`         | Rỗng (tắt); `minimal`, `low`, `medium`, `high`, `xhigh`, `max` hoặc `none`. |
 | `reasoning.effort_by_model`| `{}`; ghi đè `reasoning.effort` theo từng mô hình.              |
+
+### Cổng miễn phí, tự kiểm và trần hạn mức
+
+Làn miễn phí chấm request qua năm điều kiện. Bảng dưới đo trực tiếp trên `/inference` ngày 2026-11-12 bằng `cmd/gatecheck`, trên **cùng một đầu ra**, nên hạn mức không đổi giữa các lần đo:
+
+| Điều kiện | Vi phạm | Kết quả |
+| --- | --- | --- |
+| User-Agent `opencode/<ver ≥ 1.18>` | `opencode/1.17.2` | **426** |
+| `x-opencode-session` giải mã ra thời điểm trong ±30 ngày | hex ngẫu nhiên, hoặc mốc 400 ngày trước | 429 |
+| System prompt có `<env>` và dòng `Working directory:` | bỏ dòng đó | 429 |
+| Có tool tên đúng `read` | chỉ có `bash`, hoặc không `tools` | 429 |
+| `stream: true` | `stream: false` | 429 |
+
+Hệ quả vận hành:
+
+- Mọi vi phạm (trừ UA cũ) trả **cùng** một 429 `FreeUsageLimitError` với `Retry-After` trỏ về 00:00 UTC, nên không thể phân biệt cổng với hạn mức qua status — phải dùng `cmd/gatecheck`.
+- Probe nhận đầu ra dùng đúng công thức session của client thật (`~(ms<<12|1)`, low 3 hex `ffe`); id hex ngẫu nhiên luôn bị từ chối và sẽ đánh dấu nhầm đầu ra tốt là đã cháy.
+- Hạn mức gắn với **dải đầu ra `/64` phía Cloudflare**, không theo thiết bị: mỗi lần đăng ký mới chỉ được rút một dải, và trong lần đo phải bỏ 3 dải đã cạn mới gặp dải còn hạn mức (một lần đo khác: 1 bỏ, 1 trúng). Vì vậy thông lượng đến từ **số lần rút** — pool lớn hơn, luân chuyển khi 429 — chứ không phải từ việc xoay bên trong cùng một dải; `warp.source_ipv6` dạng danh sách (ví dụ thêm `/64` của HE tunnel) chỉ làm tăng số lần rút song song.
+- `go run ./cmd/gatecheck -source 2603:c024:4526:9797::/64` gửi một baseline được chấp nhận cùng mỗi vi phạm một chiều và in `MATCH`/`DIFF`, để phát hiện upstream đổi luật thay vì đoán từ 429.
 
 ### Bậc suy luận bị ép
 
@@ -353,7 +374,7 @@ Các bậc được báo trung thực theo cả hai chiều. Một `output_confi
 
 Trung tâm cấu hình của WebUI cung cấp cùng các trường mặc định và theo mô hình. API quản trị trả chúng dưới trường `reasoning` từ `GET /api/config` và nhận đối tượng đó trong `PUT /api/config`; client bỏ qua trường sẽ giữ giá trị hiện tại, còn gửi đối tượng rỗng sẽ xoá nó.
 
-Các mục proxy nhận `direct`, `http://`, `https://`, `socks5://` và `socks5h://`, kể cả credential trong URL. Danh sách nội tuyến được gộp với `proxyfile` và khử trùng lặp theo thứ tự.
+Các mục proxy nhận `direct`, `http://`, `https://`, `socks5://`, `socks5h://`, `relay://` và `relay+http://`, kể cả credential trong URL. Danh sách nội tuyến được gộp với `proxyfile` và khử trùng lặp theo thứ tự.
 
 Một file proxy chứa mỗi dòng một mục và hỗ trợ dòng trống cùng chú thích:
 
@@ -386,6 +407,37 @@ Mục `#pool` được xử lý khác hoàn toàn so với proxy tĩnh:
 | Số lần thử kênh ẩn danh | Một lần ghé mỗi exit, tối đa `performance.max_anonymous_exits` exit | Tối đa `retry.max_attempts` lần, quay vòng mục pool                      |
 
 Dùng khi bản thân endpoint sau URL đã tự luân chuyển, còn từng exit IP trong pool bị giới hạn riêng hoặc chập chờn: gateway sẽ coi mỗi lần thử là một endpoint mới thay vì ghim cả phiên vào một exit. Chỉ cần một mục `#pool` là đủ, không cần liệt kê hàng chục exit. Các mục tĩnh vẫn giữ hành vi pooling mô tả bên dưới.
+
+#### Relay egress cho free tier
+
+Free tier của OpenCode chỉ nhận client có **TLS ClientHello đúng bộ cipher của Bun, đúng thứ tự**, nên client Go không tự giả được. Một **relay** là hàm serverless chạy Bun, dial upstream từ địa chỉ của chính nó; mỗi instance là một IP egress riêng. Khai báo bằng scheme `relay://`:
+
+```text
+relay://<relay-token>@<project>.vercel.app
+relay://<token-2>@<project-2>.vercel.app
+relay+http://<token>@127.0.0.1:4318        # relay chạy tại máy, không TLS
+```
+
+Token nằm ở userinfo và được che trong log. Endpoint `relay://` dùng HTTPS; `relay+http://` chỉ dành cho relay nội bộ.
+
+| Tình huống                    | Gateway làm gì                                                        |
+| ----------------------------- | --------------------------------------------------------------------- |
+| Response có `x-relay-egress`  | ghi nhớ IP đó, gửi kèm `x-relay-avoid` ở các request sau              |
+| `409` + `x-relay-rotate: 1`   | IP đã cháy → recycle instance rồi thử lại                             |
+| `409`/`429` cho IP đã đánh dấu | trả `429` ngay, không thử lại cùng instance                          |
+| `429` + `FreeUsageLimit`      | đánh dấu IP hết hạn mức **tới 00:00 UTC**, recycle, thử instance khác |
+| `429` khác                    | trả nguyên cho lane, không đánh dấu spent                             |
+| `5xx`                         | recycle và thử lại, tối đa 2 lần                                      |
+| hết lượt thử                  | trả `429 FreeUsageLimitError` để lane chuyển exit/tier                |
+| vừa cạn toàn bộ instance      | trả lời cục bộ trong 30 s (quiet window) để burst không dội lại relay |
+
+Relay được triển khai từ [`deploy/egress-selfhost/relay`](deploy/egress-selfhost/relay/README.vi.md) (Bun runtime trên Vercel, hoặc chạy tại máy). Mỗi project/region là một pool IP riêng, nên muốn nhiều IP hơn thì tạo thêm project ở region khác và thêm một mục `relay://`.
+
+Kiểm tra nhanh một relay:
+
+```bash
+go run ./cmd/relayprobe -endpoint https://<project>.vercel.app -token <token> -pings 10 -burst 12
+```
 
 ### Timeout và connection pool
 

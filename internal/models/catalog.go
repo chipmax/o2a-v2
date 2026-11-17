@@ -80,6 +80,9 @@ type ModelCatalog struct {
 	stale           bool
 	refreshAfter    time.Duration
 	freeOnly        bool
+	// deadIDs are retired upstream model IDs. They are removed from discovery
+	// and routing even when a stale cache still advertises them.
+	deadIDs map[string]bool
 }
 
 // CatalogSnapshot summarizes the catalog for health reporting. Exposed counts
@@ -109,7 +112,7 @@ func Catalog(prefer config.Tier, overrides map[string]string) *ModelCatalog {
 		zen: map[string]bool{}, goModels: map[string]bool{}, protocols: protocols,
 		nativeProtocols: map[config.Tier]map[string]wire.Protocol{config.TierZen: {}, config.TierGo: {}},
 		unsupported:     map[config.Tier]map[string]bool{config.TierZen: {}, config.TierGo: {}}, prefer: prefer,
-		cacheSource: "none",
+		deadIDs: map[string]bool{}, cacheSource: "none",
 	}
 }
 
@@ -162,6 +165,20 @@ func (c *ModelCatalog) SetRefreshInterval(interval time.Duration) {
 func (c *ModelCatalog) SetFreeOnly(enabled bool) {
 	c.mu.Lock()
 	c.freeOnly = enabled
+	c.mu.Unlock()
+}
+
+// SetDeadModels hides retired upstream IDs from routing and discovery. The IDs
+// are trimmed and matched exactly; an empty list removes the filter.
+func (c *ModelCatalog) SetDeadModels(ids []string) {
+	dead := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id = strings.TrimSpace(id); id != "" {
+			dead[id] = true
+		}
+	}
+	c.mu.Lock()
+	c.deadIDs = dead
 	c.mu.Unlock()
 }
 
@@ -268,6 +285,9 @@ func (c *ModelCatalog) Route(model string, hasZenKeys, hasGoKeys, hasAnonymous b
 }
 
 func (c *ModelCatalog) routeLocked(model string, hasZenKeys, hasGoKeys, hasAnonymous bool) (Route, error) {
+	if c.deadIDs[model] {
+		return Route{}, fmt.Errorf("model %q has been retired upstream", model)
+	}
 	if c.availability != nil && c.availability.Disabled(model) {
 		return Route{}, fmt.Errorf("model %q is disabled after a failed availability check; restore it in the WebUI or wait for the next probe", model)
 	}
@@ -502,6 +522,9 @@ func (c *ModelCatalog) modelIDsLocked() []string {
 	for model := range c.goModels {
 		seen[model] = true
 	}
+	for model := range c.deadIDs {
+		delete(seen, model)
+	}
 	return sortedSetKeys(seen)
 }
 
@@ -553,8 +576,19 @@ func (c *ModelCatalog) snapshotLocked(ids []string) CatalogSnapshot {
 	if !c.updatedAt.IsZero() && c.refreshAfter > 0 {
 		stale = stale || time.Since(c.updatedAt) > max(2*c.refreshAfter, time.Minute)
 	}
+	zenCount, goCount := 0, 0
+	for model := range c.zen {
+		if !c.deadIDs[model] {
+			zenCount++
+		}
+	}
+	for model := range c.goModels {
+		if !c.deadIDs[model] {
+			goCount++
+		}
+	}
 	return CatalogSnapshot{
-		Zen: len(c.zen), Go: len(c.goModels), Total: len(ids), Exposed: exposed,
+		Zen: zenCount, Go: goCount, Total: len(ids), Exposed: exposed,
 		UpdatedAt: c.updatedAt, CacheSource: c.cacheSource, Stale: stale,
 	}
 }

@@ -27,6 +27,11 @@ import (
 	"opencode2api/internal/telemetry"
 )
 
+// keyPoolCoolingGrace keeps the quota pre-check from blocking an attempt whose
+// pool comes back within a moment: a key that is about to be ready is cheaper
+// to use than to refuse.
+const keyPoolCoolingGrace = 2 * time.Second
+
 // DebugKeyOverride pins one inference request to a single configured upstream
 // key so the Playground can exercise that key in isolation.
 type DebugKeyOverride struct {
@@ -155,6 +160,19 @@ func debugKeyOverrideFrom(ctx context.Context) (DebugKeyOverride, bool) {
 // replay so the Playground sees the selected key's own answer.
 func (g *Gateway) doUpstream(ctx context.Context, route models.Route, bodies map[config.Tier][]byte, ids identity.RequestIDs) (*http.Response, models.Route, error) {
 	resp, effectiveRoute, attempts, err := g.doUpstreamTiers(ctx, route, bodies, ids, 0)
+	// Tool-bearing free-tier requests are the ones the upstream gate judges by
+	// name. Publish a compact audit line so /api/events can show a rename and
+	// its verdict without turning on dump_request_bodies (which logs content).
+	if meta := telemetry.MetaFromContext(ctx); meta != nil && meta.ToolRenames > 0 {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		g.logger.Info("tool-call audit", "component", "upstream", "event", "tool_call_audit",
+			"request_id", ids.Request, "model", route.ID, "tier", string(effectiveRoute.Tier),
+			"tool_renames", meta.ToolRenames, "attempts", attempts, "status", status,
+			"outcome", meta.AttemptOutcome, "error", err)
+	}
 	if _, selected := debugKeyOverrideFrom(ctx); selected {
 		return resp, effectiveRoute, err
 	}
@@ -350,6 +368,10 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		return nil, effectiveRoute, attempts, lastErr
 	}
 
+	// The anonymous response will not be forwarded if a key tier succeeds:
+	// release its socket now instead of holding it through the keyed attempts.
+	bufferRetryResponse(lastResponse)
+
 	keyTiers := route.KeyTiers
 	if !route.Anonymous && len(keyTiers) == 0 && (route.Tier == config.TierZen || route.Tier == config.TierGo) {
 		keyTiers = []config.Tier{route.Tier}
@@ -364,6 +386,9 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		keyRoute.Anonymous = false
 		keyRoute.Protocol = route.ProtocolFor(tier)
 		effectiveRoute = keyRoute
+		// Release the previous tier's socket before opening another one; the
+		// buffered copy still carries its status, Retry-After and error body.
+		bufferRetryResponse(lastResponse)
 		resp, err, used := g.doKeyUpstream(ctx, keyRoute, bodies, ids, attempts)
 		attempts += used
 		if err == nil && resp != nil && resp.StatusCode/100 == 2 {
@@ -371,6 +396,17 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 				httpx.DrainAndClose(lastResponse.Body)
 			}
 			return resp, keyRoute, attempts, nil
+		}
+		if errors.Is(err, errModelUnavailableInRegion) {
+			// Another tier would be answered the same way: the region is the
+			// constraint. Hand the caller a 404 through the handler mapping.
+			if resp != nil {
+				httpx.DrainAndClose(resp.Body)
+			}
+			if lastResponse != nil {
+				httpx.DrainAndClose(lastResponse.Body)
+			}
+			return nil, keyRoute, attempts, errModelUnavailableInRegion
 		}
 		if resp != nil {
 			if isDeterministicClientResponse(resp.StatusCode, peekResponseBody(resp)) {
@@ -388,7 +424,13 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 			lastResponse = resp
 		}
 		if err != nil {
-			lastErr = err
+			// A pool pre-check names the real cause (a fully cooling or fully
+			// quarantined tier); a later tier's bare transport failure must not
+			// bury it, or the caller sees a generic 502 for a pool it could
+			// have been told about.
+			if lastErr == nil || !isPrecheckError(lastErr) || isPrecheckError(err) {
+				lastErr = err
+			}
 		}
 	}
 	if blocked {
@@ -412,6 +454,31 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		lastErr = errors.New("no usable upstream route")
 	}
 	return nil, effectiveRoute, attempts, lastErr
+}
+
+// hasUsableKeyFallback reports whether any tier this route could fall into
+// still has a key that is neither cooling nor quarantined. The anonymous wall
+// fast-fail may only cap the exit walk when such a key exists; otherwise the
+// exits are the lane.
+func (g *Gateway) hasUsableKeyFallback(route models.Route) bool {
+	now := time.Now()
+	for _, tier := range route.KeyTiers {
+		nodes := g.zenNodes
+		if tier == config.TierGo {
+			nodes = g.goNodes
+		}
+		if nodes == nil || nodes.Len() == 0 {
+			continue
+		}
+		if all, _ := nodes.AllQuarantined(now); all {
+			continue
+		}
+		if all, _ := nodes.AllCooling(now); all {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // defaultMaxAnonymousExits caps how many static proxies one request walks when
@@ -492,10 +559,13 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	if isTitle {
 		limit = 1
 	}
-	if g.anonymous.wallActive(route.ID, time.Now()) {
+	if g.anonymous.wallActive(route.ID, time.Now()) && g.hasUsableKeyFallback(route) {
 		// Two 429/quota answers already showed this family is walled. Spend a
 		// single short probe so a reset or a fresh exit is still noticed, then
 		// let the authenticated tiers answer instead of walking every exit.
+		// Without a usable key the exits are the only lane that can answer, so
+		// the walk keeps its full cap: capping there would turn a partly spent
+		// pool into a hard failure while fresh exits are one rotation away.
 		limit = min(limit, 1)
 	}
 	// The anonymous free tier only serves agent-shaped streaming requests
@@ -509,7 +579,7 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	preparedBodies := make([][]byte, len(upstreams))
 	toolRenames := make([]*wire.ToolRenames, len(upstreams))
 	for i, baseURL := range upstreams {
-		preparedBodies[i], toolRenames[i] = prepareAnonymousBody(rawBody, protocol, models.IsV1Upstream(baseURL))
+		preparedBodies[i], toolRenames[i] = prepareAnonymousBody(rawBody, protocol, models.IsV1Upstream(baseURL), g.cfg.Upstream.PromptEnvironment)
 	}
 	for proxies < limit {
 		if ctx.Err() != nil {
@@ -731,14 +801,14 @@ func (g *Gateway) inferenceClient(proxy *proxyTransport, baseURL, model string) 
 // tools are renamed and completed for the lane v1 selects; an unchanged body is
 // returned as is.
 //
-// Every named client tool becomes an opaque clint_<digest> (see
+// Every named client tool becomes an opaque wire name (see
 // protocol.ClientToolWireName: a client tool name that survives on the wire is
 // what the free tier refuses) and the full official set for the lane is
 // appended, so the request looks like an official CLI session on both the v1
 // (/zen) and v2 lanes. System One payloads are decision requests, not agent
 // traffic, so they are forwarded verbatim, as is a body that is not a JSON
 // object.
-func prepareAnonymousBody(body []byte, protocol wire.Protocol, v1 bool) ([]byte, *wire.ToolRenames) {
+func prepareAnonymousBody(body []byte, protocol wire.Protocol, v1 bool, environment *config.PromptEnvironmentConfig) ([]byte, *wire.ToolRenames) {
 	if protocol == wire.SystemOne {
 		return body, nil
 	}
@@ -754,13 +824,17 @@ func prepareAnonymousBody(body []byte, protocol wire.Protocol, v1 bool) ([]byte,
 	if ensureAnonymousChatUsage(payload, protocol) {
 		changed = true
 	}
-	if injectOfficialPrompt(payload, protocol, v1) {
+	if injectOfficialPrompt(payload, protocol, v1, environment) {
 		changed = true
+	}
+	platform := ""
+	if environment != nil {
+		platform = environment.Platform
 	}
 	var renames *wire.ToolRenames
 	if !isTitleGenerationRequest(payload) {
 		var toolsChanged bool
-		renames, toolsChanged = renameAndCompleteTools(payload, protocol, v1)
+		renames, toolsChanged = renameAndCompleteTools(payload, protocol, v1, platform)
 		if toolsChanged {
 			changed = true
 		}
@@ -946,7 +1020,7 @@ func (g *Gateway) shapeKeyBody(body []byte, route models.Route, tier config.Tier
 	if tier == config.TierGo {
 		baseURL = g.cfg.Upstream.Go
 	}
-	shaped, renames := prepareAnonymousBody(body, route.ProtocolFor(tier), models.IsV1Upstream(baseURL))
+	shaped, renames := prepareAnonymousBody(body, route.ProtocolFor(tier), models.IsV1Upstream(baseURL), g.cfg.Upstream.PromptEnvironment)
 	return shaped, renames, !bytes.Equal(shaped, body)
 }
 
@@ -1068,6 +1142,21 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 	if _, pinned := relayOverrideFrom(ctx); pinned {
 		attemptLimit = 1
 	}
+	// Pre-check the pool's own state before spending an upstream call. A tier
+	// whose every key is cooling answers a 429 from local state, and a tier
+	// whose every key the upstream rejected answers a 503, both with the real
+	// retry horizon. Diagnostics bypass it: they exist to probe the lane.
+	if !isDiagnosticRequest(ctx) && nodes.Len() > 0 {
+		now := time.Now()
+		if all, until := nodes.AllQuarantined(now); all {
+			g.logger.Warn("every key in the tier is credential-quarantined; answering without an upstream call", "component", "upstream", "event", "credential_precheck_blocked", "request_id", ids.Request, "tier", route.Tier, "keys", nodes.Len())
+			return nil, newKeyPoolError(errKeyPoolCredentialExhausted, time.Until(until)), 0
+		}
+		if all, until := nodes.AllCooling(now); all && time.Until(until) > keyPoolCoolingGrace {
+			g.logger.Debug("every key in the tier is cooling down; answering without an upstream call", "component", "upstream", "event", "quota_precheck_blocked", "request_id", ids.Request, "tier", route.Tier, "keys", nodes.Len(), "retry_after", time.Until(until).Round(time.Second).String())
+			return nil, newKeyPoolError(errKeyPoolCooling, time.Until(until)), 0
+		}
+	}
 	for attempts < attemptLimit {
 		if ctx.Err() != nil {
 			// Same guard as the anonymous loop: an exhausted request budget
@@ -1140,6 +1229,14 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		}
 		recordProxy := proxy
 		proxyLabel := ""
+		// A 200 carrying the free tier's quota error document is a spent
+		// bucket, not a success: it must reach the pool as a failure, or
+		// MarkSuccess clears the very cooldown that keeps the key out and the
+		// next rotation hands the caller the same broken document.
+		quotaDocument := err == nil && resp != nil && resp.StatusCode/100 == 2 && isQuotaErrorDocument(resp)
+		if quotaDocument {
+			err = errFreeTierQuotaSpent
+		}
 		if attemptUseWARP {
 			recordProxy = warpProxy(egress)
 			proxyLabel = egress
@@ -1149,18 +1246,12 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 			g.observeKeyResult(ctx, nodes, node, proxy, resp, err)
 		}
 		g.recordUpstreamAttempt(ctx, route, ids, attemptOffset+attempts, keyID, "key", false, recordProxy, resp, err, attemptDuration)
+		if quotaDocument {
+			g.logger.Warn("upstream answered 200 with a quota error document; trying the next key", "component", "upstream", "event", "quota_error_document", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel)
+		}
 		if err == nil && resp.StatusCode/100 == 2 {
-			if isQuotaErrorDocument(resp) {
-				// The tier answered 200 with a quota error document: the key
-				// (or its egress) has no budget left. Treat it as a retryable
-				// failure so the request can move to the next key or tier
-				// instead of handing the client a broken document.
-				err = errFreeTierQuotaSpent
-				g.logger.Warn("upstream answered 200 with a quota error document; trying the next key", "component", "upstream", "event", "quota_error_document", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel)
-			} else {
-				g.logger.Debug("upstream accepted request", "component", "upstream", "event", "attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel, "status", resp.StatusCode, "duration_ms", attemptDuration.Milliseconds())
-				return resp, nil, attempts
-			}
+			g.logger.Debug("upstream accepted request", "component", "upstream", "event", "attempt_succeeded", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "proxy", proxyLabel, "status", resp.StatusCode, "duration_ms", attemptDuration.Milliseconds())
+			return resp, nil, attempts
 		}
 		// Request-shape errors are deterministic and must leave this tier without
 		// rotating through unrelated keys. The outer route may still try the next
@@ -1169,6 +1260,12 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		if isNonRetryableClientResponse(resp, err) {
 			g.logger.Debug("upstream rejected a non-retryable request", "component", "upstream", "event", "attempt_rejected", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "key_id", keyID, "status", resp.StatusCode, "proxy", proxyLabel, "duration_ms", attemptDuration.Milliseconds())
 			return resp, nil, attempts
+		}
+		if resp != nil && isRegionBlockedResponse(resp.StatusCode, peekResponseBody(resp)) {
+			// The country, not the key, decided this. Rotating through the
+			// rest of the tier would burn every key on the same answer.
+			g.logger.Warn("upstream refuses the model in this region; not rotating keys", "component", "upstream", "event", "model_region_blocked", "request_id", ids.Request, "attempt", attempts, "tier", route.Tier, "model", route.ID, "key_id", keyID, "status", resp.StatusCode)
+			return resp, errModelUnavailableInRegion, attempts
 		}
 		lastResponse = resp
 		if useWARP && errors.Is(err, errWARPUnavailable) {
@@ -1188,6 +1285,17 @@ func (g *Gateway) doKeyUpstream(ctx context.Context, route models.Route, bodies 
 		}
 	}
 	if lastResponse != nil {
+		if lastResponse.StatusCode == http.StatusUnauthorized || lastResponse.StatusCode == http.StatusForbidden {
+			if all, until := nodes.AllQuarantined(time.Now()); all {
+				// The last candidate was a credential rejection too, so the
+				// tier has no usable key at all. Answer the exhausted pool
+				// (503 + retry hint) instead of forwarding a 401 that would
+				// read as the caller's fault downstream.
+				g.logger.Warn("every key in the tier was rejected as a credential", "component", "upstream", "event", "key_pool_credential_exhausted", "request_id", ids.Request, "tier", route.Tier, "keys", nodes.Len())
+				httpx.DrainAndClose(lastResponse.Body)
+				return nil, newKeyPoolError(errKeyPoolCredentialExhausted, time.Until(until)), attempts
+			}
+		}
 		return lastResponse, nil, attempts
 	}
 	return nil, lastErr, attempts

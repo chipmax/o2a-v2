@@ -26,9 +26,13 @@ type metricBucket struct {
 	usageReported uint64
 	tokens        TokenCounts
 	usageModels   map[string]TokenCounts
-	usageTiers    map[string]TokenCounts
-	usageSessions map[string]TokenCounts
-	usageKeys     map[string]ServerKeyUsage
+	// usageModelRequests counts the requests whose tokens are in usageModels,
+	// so an average input size per model can be derived without dividing by
+	// the total request count of every model.
+	usageModelRequests map[string]uint64
+	usageTiers         map[string]TokenCounts
+	usageSessions      map[string]TokenCounts
+	usageKeys          map[string]ServerKeyUsage
 }
 
 // reset clears the bucket for reuse by minute.
@@ -36,7 +40,8 @@ func (b *metricBucket) reset(minute int64) {
 	*b = metricBucket{
 		minute: minute, endpoints: make(map[string]uint64), models: make(map[string]uint64),
 		tiers: make(map[string]uint64), statuses: make(map[string]uint64),
-		usageModels: make(map[string]TokenCounts), usageTiers: make(map[string]TokenCounts),
+		usageModels: make(map[string]TokenCounts), usageModelRequests: make(map[string]uint64),
+		usageTiers:    make(map[string]TokenCounts),
 		usageSessions: make(map[string]TokenCounts), usageKeys: make(map[string]ServerKeyUsage),
 	}
 }
@@ -59,7 +64,11 @@ type UsagePeriod struct {
 	Coverage float64                `json:"coverage"`
 	Tokens   TokenCounts            `json:"tokens"`
 	Models   map[string]TokenCounts `json:"models"`
-	Tiers    map[string]TokenCounts `json:"tiers"`
+	// ModelRequests is how many requests contributed to Models, so a UI can
+	// show an average prompt size per model (reasoning-heavy models show a
+	// small completion and a large reasoning share).
+	ModelRequests map[string]uint64      `json:"model_requests"`
+	Tiers         map[string]TokenCounts `json:"tiers"`
 	// Sessions maps canonical session ID to token burn. Sessions share one
 	// upstream IP bucket on the anonymous lane, so this shows which
 	// conversation is draining the daily budget.
@@ -386,6 +395,8 @@ func (m *Metrics) Record(endpoint string, status int, duration time.Duration, me
 			addTokenCounts(&bucket.tokens, tokens)
 			addTokenCounts(&m.lifetimeUsage.Tokens, tokens)
 			addTokenMap(bucket.usageModels, meta.Model, tokens)
+			bucket.usageModelRequests[meta.Model]++
+			m.lifetimeUsage.ModelRequests[meta.Model]++
 			addTokenMap(bucket.usageTiers, meta.Tier, tokens)
 			addTokenMap(m.lifetimeUsage.Models, meta.Model, tokens)
 			addTokenMap(m.lifetimeUsage.Tiers, meta.Tier, tokens)
@@ -577,6 +588,7 @@ func (m *Metrics) Snapshot() MonitorSnapshot {
 			usageWindow.Reported += bucket.usageReported
 			addTokenCounts(&usageWindow.Tokens, bucket.tokens)
 			mergeTokenMaps(usageWindow.Models, bucket.usageModels)
+			mergeCounts(usageWindow.ModelRequests, bucket.usageModelRequests)
 			mergeTokenMaps(usageWindow.Tiers, bucket.usageTiers)
 			mergeTokenMaps(usageWindow.Sessions, bucket.usageSessions)
 			for key, value := range bucket.usageKeys {
@@ -629,7 +641,7 @@ func mergeCounts(target, source map[string]uint64) {
 
 // usagePeriod returns an empty UsagePeriod with its maps allocated.
 func usagePeriod() UsagePeriod {
-	return UsagePeriod{Models: make(map[string]TokenCounts), Tiers: make(map[string]TokenCounts), Sessions: make(map[string]TokenCounts), ServerKeys: make(map[string]ServerKeyUsage)}
+	return UsagePeriod{Models: make(map[string]TokenCounts), ModelRequests: make(map[string]uint64), Tiers: make(map[string]TokenCounts), Sessions: make(map[string]TokenCounts), ServerKeys: make(map[string]ServerKeyUsage)}
 }
 
 func tokenCounts(usage protocol.Usage) TokenCounts {
@@ -705,6 +717,7 @@ func cloneUsagePeriod(source UsagePeriod) UsagePeriod {
 	result := usagePeriod()
 	result.Requests, result.Reported, result.Tokens = source.Requests, source.Reported, source.Tokens
 	mergeTokenMaps(result.Models, source.Models)
+	mergeCounts(result.ModelRequests, source.ModelRequests)
 	mergeTokenMaps(result.Tiers, source.Tiers)
 	mergeTokenMaps(result.Sessions, source.Sessions)
 	for key, value := range source.ServerKeys {

@@ -8,7 +8,9 @@
     "enabled": false,
     "pool_size": 2,
     "stack": "ipv6",
-    "source_ipv6": ""
+    "source_ipv6": "",
+    "preload": 0,
+    "require_ipv6_egress": false
   },
   "proxies": ["direct"],
   "proxyfile": "",
@@ -16,7 +18,8 @@
   "upstream": {
     "zen": "https://opencode.ai/zen",
     "go": "https://opencode.ai/zen/go",
-    "anonymous": "https://opencode.ai/inference"
+    "anonymous": "https://opencode.ai/inference",
+    "prompt_environment": {}
   },
   "retry": {
     "max_attempts": 3,
@@ -28,6 +31,7 @@
     "free_only": false,
     "active_probes": false,
     "quota_probe_seconds": 600,
+    "dead_ids": ["longcat-2.5-preview-free", "nemotron-3-ultra-free"],
     "context_overrides": {}
   },
   "performance": {
@@ -41,6 +45,13 @@
     "first_event_timeout_seconds": 0,
     "max_anonymous_exits": 8,
     "free_tier_block_seconds": 900,
+    "heartbeat_seconds": 15,
+    "idle_timeout_seconds": 300,
+    "credential_quarantine_seconds": 86400,
+    "max_inflight": 0,
+    "queue_wait_seconds": 0,
+    "pprof_enabled": false,
+    "memory_limit_bytes": 0,
     "model_timeouts": {}
   },
   "logging": {

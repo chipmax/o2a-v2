@@ -1,0 +1,16 @@
+[Unit]
+Description=o2a v2 gateway (WSL, egress through pVPN Proton SOCKS5)
+Documentation=https://github.com/anomalyco/opencode2api
+After=network-online.target pvpnd.service socks5-proton.service
+Wants=network-online.target socks5-proton.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/o2a-wsl
+ExecStart=/opt/o2a-wsl/opencode2api -config /opt/o2a-wsl/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

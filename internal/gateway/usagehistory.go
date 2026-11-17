@@ -178,13 +178,13 @@ func (h *UsageHistory) RecordAttempt(model, upstream, egress string, status int,
 
 // UsageDayView is one heatmap cell, already reduced to the ratios the UI shows.
 type UsageDayView struct {
-	Date      string  `json:"date"`
-	Requests  int     `json:"requests"`
-	Success   int     `json:"success"`
-	QuotaHits int     `json:"quota_hits"`
-	Forbidden int     `json:"forbidden"`
-	TooMany   int     `json:"too_many"`
-	Errors    int     `json:"errors"`
+	Date          string  `json:"date"`
+	Requests      int     `json:"requests"`
+	Success       int     `json:"success"`
+	QuotaHits     int     `json:"quota_hits"`
+	Forbidden     int     `json:"forbidden"`
+	TooMany       int     `json:"too_many"`
+	Errors        int     `json:"errors"`
 	ForbiddenRate float64 `json:"forbidden_rate"`
 	QuotaHitRate  float64 `json:"quota_hit_rate"`
 }

@@ -377,3 +377,56 @@
     grid-column: 1 / -1;
   }
 }
+
+/* Lane pause banner (overview and egress). Shown only while the free lane is
+   refusing fresh registrations, so the pool is not merely "small". */
+.lane-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-2);
+  border-left: 3px solid #c99a3a;
+  border-radius: 8px;
+  background: color-mix(in srgb, #c99a3a 8%, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.lane-banner.danger {
+  border-left-color: #c4564f;
+  background: color-mix(in srgb, #c4564f 9%, transparent);
+}
+.lane-banner.hidden {
+  display: none;
+}
+
+/* Ops event feed on the overview. */
+.event-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.event-row {
+  display: grid;
+  grid-template-columns: 68px 104px minmax(0, 1fr);
+  gap: 10px;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--border-1);
+  font-size: 12.5px;
+  align-items: baseline;
+}
+.event-row:last-child { border-bottom: none; }
+.event-time,
+.event-component { color: var(--text-muted, #7b8396); font-variant-numeric: tabular-nums; }
+.event-row.warn .event-message { color: #a8791f; }
+.event-row.error .event-message { color: #b4493f; }
+.event-empty { color: var(--text-muted, #7b8396); font-size: 13px; padding: 6px 2px; }
+
+@media (max-width: 680px) {
+  .event-row { grid-template-columns: 52px minmax(0, 1fr); }
+  .event-component { display: none; }
+}

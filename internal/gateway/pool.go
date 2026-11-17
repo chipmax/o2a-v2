@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log/slog"
 	rand "math/rand/v2"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 
 	"opencode2api/internal/config"
 	"opencode2api/internal/httpx"
+	"opencode2api/internal/relay"
 )
 
 // proxyTransport is one configured proxy route, or "direct", with its own HTTP
@@ -35,10 +37,28 @@ type proxyTransport struct {
 	pool         bool
 	client       *http.Client
 	bun          *http.Client
+	relay        *relay.Transport
 	healthy      atomic.Bool
 	checking     atomic.Bool
 	blockedUntil atomic.Int64
 	lastChecked  atomic.Int64
+	// lastError keeps the reason the last health check failed so the console
+	// can say why a route is unusable instead of only that it is.
+	lastError atomic.Value
+}
+
+// setLastError stores the health check outcome; a pass clears the reason.
+func (t *proxyTransport) setLastError(err error) {
+	if err == nil {
+		t.lastError.Store("")
+		return
+	}
+	t.lastError.Store(err.Error())
+}
+
+func (t *proxyTransport) lastErrorString() string {
+	value, _ := t.lastError.Load().(string)
+	return value
 }
 
 // proxyTransports holds every configured proxy route, indexed by
@@ -622,10 +642,26 @@ func (p *proxyTransports) healthCounts() (total, healthy int) {
 // transports without keep-alives, so every attempt opens a new connection
 // through the pool; "direct" dials the upstream without any proxy, ignoring
 // the proxy environment variables.
-func transportPool(proxies []string, cfg config.PerformanceConfig, responseHeaderTimeout time.Duration) (*proxyTransports, error) {
+func transportPool(proxies []string, cfg config.PerformanceConfig, responseHeaderTimeout time.Duration, logger *slog.Logger) (*proxyTransports, error) {
 	p := &proxyTransports{items: make([]*proxyTransport, 0, len(proxies))}
 	for _, raw := range proxies {
 		clean, isPool := config.ParseProxyEntry(raw)
+		if endpoint, token, ok := relayEntry(clean); ok {
+			transport, err := relay.New(relay.Options{
+				Endpoint: endpoint,
+				Token:    token,
+				Timeout:  responseHeaderTimeout,
+				Logger:   logger,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("relay %s: %w", config.RedactURL(raw), err)
+			}
+			client := &http.Client{Transport: transport}
+			proxy := &proxyTransport{index: len(p.items), name: raw, pool: true, client: client, bun: client, relay: transport}
+			proxy.healthy.Store(true)
+			p.items = append(p.items, proxy)
+			continue
+		}
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.MaxIdleConns = cfg.MaxIdleConns
 		transport.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
@@ -680,6 +716,34 @@ func transportPool(proxies []string, cfg config.PerformanceConfig, responseHeade
 		p.items = append(p.items, proxy)
 	}
 	return p, nil
+}
+
+// relayEntry reports whether a clean proxy entry names a relay route
+// ("relay://<token>@<host>[/path]") and returns its endpoint and token. A relay
+// route is not a TCP proxy: the transport forwards each request with the
+// relay's own framing, so the free tier's TLS check is answered by the relay
+// runtime and the exit address belongs to the relay's function instance.
+func relayEntry(clean string) (*url.URL, string, bool) {
+	if !strings.HasPrefix(strings.ToLower(clean), "relay://") && !strings.HasPrefix(strings.ToLower(clean), "relay+http://") {
+		return nil, "", false
+	}
+	u, err := url.Parse(clean)
+	if err != nil || u.Host == "" {
+		return nil, "", false
+	}
+	token := ""
+	if u.User != nil {
+		token = u.User.Username()
+		if password, ok := u.User.Password(); ok && token == "" {
+			token = password
+		}
+	}
+	endpoint := *u
+	endpoint.User = nil
+	if endpoint.Path == "" {
+		endpoint.Path = "/"
+	}
+	return &endpoint, token, true
 }
 
 // proxyHealthResult is the outcome of one health check. failed is set only
@@ -813,6 +877,12 @@ type upstreamNode struct {
 	proxyIndex     atomic.Int64
 	failures       atomic.Uint32
 	cooldownUntil  atomic.Int64
+	// credUntil is the credential quarantine horizon: an upstream 401/403
+	// rejected the key itself, so it stays out of rotation until a probe or a
+	// real request sees it accepted again. It is separate from cooldownUntil,
+	// which a 429 or a 5xx also sets, so the two failure classes never
+	// clear each other.
+	credUntil atomic.Int64
 }
 
 // upstreamNodes is one tier's key pool. bindingsMu serializes rebinding and
@@ -823,6 +893,7 @@ type upstreamNodes struct {
 	transports   *proxyTransports
 	next         atomic.Uint64
 	cooldown     time.Duration
+	quarantine   time.Duration
 	bindingsMu   sync.Mutex
 	bindingCount []int
 }
@@ -1068,6 +1139,12 @@ func (c *nodeCursor) Next() *upstreamNode {
 	for offset := range len(c.pool.nodes) {
 		i := (c.next + offset) % len(c.pool.nodes)
 		node := c.pool.nodes[i]
+		if node.credUntil.Load() > now {
+			// A quarantined credential is not a candidate at any priority: the
+			// upstream already said the key itself is rejected, so burning an
+			// attempt on it only repeats the 401.
+			continue
+		}
 		proxy := c.pool.Proxy(node)
 		healthy := proxy != nil && proxy.healthy.Load()
 		until := node.cooldownUntil.Load()
@@ -1104,14 +1181,32 @@ func (c *nodeCursor) Next() *upstreamNode {
 func (p *upstreamNodes) MarkSuccess(node *upstreamNode) {
 	node.failures.Store(0)
 	node.cooldownUntil.Store(0)
+	node.credUntil.Store(0)
 }
 
 // MarkFailure cools node down after an error or a 401, 403, 429 or 5xx
 // response; any other response leaves it untouched. The cooldown doubles with
 // each consecutive failure, from the base cooldown up to 8x, and an upstream
 // Retry-After longer than that is honored in full.
+//
+// A 401 or 403 is handled differently: the upstream rejected the key itself,
+// not the request and not the exit, so a two-minute cooldown would put the
+// same dead key back in front of the next caller (and, behind a fronting
+// gateway that auto-bans on a forwarded 401, can take the whole channel dark
+// while healthy keys sit one rotation away). With quarantine configured the
+// key stays out for the whole horizon; failures reset so it returns clean, and
+// the cooldown is pinned to that horizon because MarkSuccess, not the
+// cooldown, is what clears it.
 func (p *upstreamNodes) MarkFailure(node *upstreamNode, resp *http.Response, err error) {
 	if err == nil && resp != nil && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
+		return
+	}
+	now := time.Now()
+	if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && p.quarantine > 0 {
+		until := now.Add(p.quarantine).UnixNano()
+		node.credUntil.Store(until)
+		node.failures.Store(0)
+		node.cooldownUntil.Store(until)
 		return
 	}
 	failures := node.failures.Add(1)
@@ -1122,7 +1217,74 @@ func (p *upstreamNodes) MarkFailure(node *upstreamNode, resp *http.Response, err
 			delay = retryAfter
 		}
 	}
-	node.cooldownUntil.Store(time.Now().Add(delay).UnixNano())
+	until := now.Add(delay)
+	if cred := node.credUntil.Load(); cred > until.UnixNano() {
+		// A live credential quarantine outlasts any quota cooldown; letting a
+		// short 429 shorten it would put a rejected key back in rotation.
+		until = time.Unix(0, cred)
+	}
+	node.cooldownUntil.Store(until.UnixNano())
+}
+
+// QuarantinedUntil reports the credential quarantine horizon, zero when the
+// key is not quarantined.
+func (n *upstreamNode) QuarantinedUntil() time.Time {
+	if n == nil {
+		return time.Time{}
+	}
+	if nanos := n.credUntil.Load(); nanos > 0 {
+		return time.Unix(0, nanos)
+	}
+	return time.Time{}
+}
+
+// CoolingSummary counts the keys that are out of rotation right now and
+// reports the earliest moment one of them comes back: the first from the
+// quota/cooldown class and the first from the credential class.
+func (p *upstreamNodes) CoolingSummary(now time.Time) (cooling, quarantined int, nextReady, nextCredential time.Time) {
+	if p == nil {
+		return 0, 0, time.Time{}, time.Time{}
+	}
+	for _, node := range p.nodes {
+		cred := node.credUntil.Load()
+		if cred > now.UnixNano() {
+			quarantined++
+			when := time.Unix(0, cred)
+			if nextCredential.IsZero() || when.Before(nextCredential) {
+				nextCredential = when
+			}
+		}
+		until := node.cooldownUntil.Load()
+		if until > now.UnixNano() {
+			cooling++
+			when := time.Unix(0, until)
+			if nextReady.IsZero() || when.Before(nextReady) {
+				nextReady = when
+			}
+		}
+	}
+	return cooling, quarantined, nextReady, nextCredential
+}
+
+// AllCooling reports whether every key in the pool is out of rotation, and
+// when the earliest one returns. An empty pool is not "cooling": it is
+// unconfigured, which the caller reports separately.
+func (p *upstreamNodes) AllCooling(now time.Time) (bool, time.Time) {
+	if p == nil || len(p.nodes) == 0 {
+		return false, time.Time{}
+	}
+	cooling, _, nextReady, _ := p.CoolingSummary(now)
+	return cooling == len(p.nodes), nextReady
+}
+
+// AllQuarantined reports whether every key in the pool was rejected by the
+// upstream credential check, and when the earliest quarantine expires.
+func (p *upstreamNodes) AllQuarantined(now time.Time) (bool, time.Time) {
+	if p == nil || len(p.nodes) == 0 {
+		return false, time.Time{}
+	}
+	_, quarantined, _, nextCredential := p.CoolingSummary(now)
+	return quarantined == len(p.nodes), nextCredential
 }
 
 // parseRetryAfter reads a Retry-After header in delta-seconds or HTTP-date

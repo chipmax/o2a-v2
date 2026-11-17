@@ -331,6 +331,201 @@ function renderLedger() {
 function renderRoute() {
   renderMetadata();
   renderRouteModels();
+  renderPreviewModels();
+}
+
+// renderPreviewModels fills the datalist from the catalog the routing table
+// already loaded, so the operator picks a model the gateway actually serves.
+function renderPreviewModels() {
+  const list = $("#preview-models");
+  const input = $("#preview-model");
+  const debug = store.get("debug");
+  if (!list || !input || !debug) return;
+  list.replaceChildren();
+  (debug.models || []).forEach((item) => {
+    if (item?.model) list.append(el("option", { value: item.model }));
+  });
+  if (input.value) return;
+  const first = (debug.models || []).find((item) => item?.model);
+  if (!first) return;
+  input.value = first.model;
+  const select = $("#preview-protocol");
+  if (select && first.native_protocol) select.value = first.native_protocol;
+}
+
+const previewVerdicts = () => ({
+  try: { label: t("Sẽ thử", "preview.verdict.try"), cls: "ok" },
+  fallback: { label: t("Dự phòng", "preview.verdict.fallback"), cls: "warn" },
+  skip: { label: t("Bỏ qua", "preview.verdict.skip"), cls: "bad" },
+});
+
+function previewStepDetail(step) {
+  const parts = [];
+  if (step.keys) parts.push(t("key {0}/{1}", "preview.keys", step.usable_keys || 0, step.keys));
+  if (step.cooling_keys) parts.push(t("nghỉ {0}", "preview.cooling", step.cooling_keys));
+  if (step.quarantined_keys) parts.push(t("khoá {0}", "preview.quarantined", step.quarantined_keys));
+  if (step.retry_after_seconds) parts.push(t("chờ {0}s", "preview.retry", step.retry_after_seconds));
+  if (step.exits) parts.push(t("exit {0}/{1}", "preview.exits", step.healthy_exits || 0, step.exits));
+  return parts.join(" · ") || "—";
+}
+
+function renderPreview(plan) {
+  const host = $("#preview-result");
+  const status = $("#preview-status");
+  if (!host) return;
+  host.replaceChildren();
+  if (status) {
+    status.className = `section-caption ${plan.ready ? "ok" : "warn"}`;
+    status.textContent = plan.note || (plan.ready ? t("Đi được.", "preview.ready") : t("Không đi được.", "preview.blocked"));
+  }
+  const verdicts = previewVerdicts();
+  const chips = el("div", { class: "chips" }, [
+    el("span", { class: `chip ${plan.ready ? "ok" : "warn"}`, text: plan.ready ? t("Đi được", "preview.ready") : t("Bị chặn", "preview.blocked") }),
+    el("span", { class: "chip mono", text: `${plan.model} · ${plan.protocol || "chat"}` }),
+  ]);
+  if (plan.transport) chips.append(el("span", { class: "chip mono", text: plan.transport }));
+  (plan.blockers || []).forEach((blocker) => chips.append(el("span", { class: "chip bad mono", text: blocker })));
+  host.append(chips);
+
+  if (!(plan.steps || []).length) {
+    host.append(el("p", { class: "empty", text: t("Không có làn nào cho model này.", "preview.noSteps") }));
+    return;
+  }
+  const head = el("tr", {}, [
+    el("th", { class: "num", text: "#" }),
+    el("th", { text: t("Làn", "preview.col.lane") }),
+    el("th", { text: t("Tầng", "preview.col.tier") }),
+    el("th", { text: t("Kết luận", "preview.col.verdict") }),
+    el("th", { text: t("Lý do", "preview.col.reason") }),
+    el("th", { class: "num", text: t("Chi tiết", "preview.col.detail") }),
+  ]);
+  const body = el("tbody", {});
+  plan.steps.forEach((step, index) => {
+    const verdict = verdicts[step.verdict] || { label: step.verdict || "—", cls: "" };
+    body.append(
+      el("tr", {}, [
+        el("td", { class: "num", text: String(index + 1) }),
+        el("td", { class: "mono", text: step.lane || "—" }),
+        el("td", { text: step.tier || "—" }),
+        el("td", { class: `status ${verdict.cls}`, text: verdict.label }),
+        el("td", { text: step.reason || "—" }),
+        el("td", { class: "num", text: previewStepDetail(step) }),
+      ]),
+    );
+  });
+  host.append(el("div", { class: "table-wrap" }, [el("table", { class: "table" }, [head, body])]));
+}
+
+// runPreview asks the gateway what it would do right now. The plan is read
+// only: no request leaves the box and no cooldown moves.
+async function runPreview() {
+  const button = $("#preview-run");
+  const status = $("#preview-status");
+  const model = ($("#preview-model")?.value || "").trim();
+  if (!model) {
+    toast(t("Nhập model trước", "preview.needModel"), true);
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) {
+    status.className = "section-caption";
+    status.textContent = t("Đang tính…", "preview.running");
+  }
+  try {
+    const plan = await api("/api/diagnostics/preview", {
+      method: "POST",
+      body: JSON.stringify({ model, protocol: $("#preview-protocol")?.value || "chat" }),
+    });
+    renderPreview(plan);
+  } catch (error) {
+    toast(error.message, true);
+    if (status) {
+      status.className = "section-caption bad";
+      status.textContent = error.message;
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+let gateTimer = null;
+
+// refreshGate polls the gatecheck run and returns whether it is still active.
+async function refreshGate() {
+  const status = $("#gate-status");
+  const output = $("#gate-output");
+  try {
+    const state = await api("/api/diagnostics/gate");
+    if (state.running) {
+      if (status) status.textContent = t("Đang chạy… {0} dòng", "gate.running", (state.lines || []).length);
+      if (output) output.textContent = (state.lines || []).join("\n") || "…";
+      return true;
+    }
+    if (state.error) {
+      if (status) status.textContent = state.error;
+      return false;
+    }
+    if (state.report) {
+      const report = state.report;
+      if (status) {
+        status.textContent = t(
+          "Xong: {0} phép lệch · {1} cổng đang chặn · {2} exit",
+          "gate.done",
+          report.mismatched || 0,
+          (report.enforced || []).length,
+          report.egress || "—",
+        );
+      }
+      if (output) {
+        const lines = (state.lines || []).slice();
+        lines.push("", t("Cổng đang chặn: {0}", "gate.enforced", (report.enforced || []).join(", ") || "—"));
+        output.textContent = lines.join("\n");
+      }
+    } else if (status) {
+      status.textContent = t("Chưa chạy lần nào.", "gate.idle");
+    }
+    return false;
+  } catch (error) {
+    if (status) status.textContent = error.message;
+    return false;
+  }
+}
+
+async function runGate() {
+  const button = $("#gate-run");
+  if (button) button.disabled = true;
+  try {
+    await api("/api/diagnostics/gate", { method: "POST", body: "{}" });
+    const status = $("#gate-status");
+    if (status) status.textContent = t("Đang gửi 9 phép qua một exit đang sống…", "gate.started");
+    clearInterval(gateTimer);
+    gateTimer = setInterval(async () => {
+      const running = await refreshGate();
+      if (!running) {
+        clearInterval(gateTimer);
+        gateTimer = null;
+        if (button) button.disabled = false;
+      }
+    }, 2000);
+    await refreshGate();
+  } catch (error) {
+    toast(error.message, true);
+    if (button) button.disabled = false;
+  }
+}
+
+// applyLogDeepLink lets /#/diagnostics?request=<id> open the log stream with
+// that request already filtered, which is how the ledger links to it.
+function applyLogDeepLink() {
+  const hash = location.hash || "";
+  const index = hash.indexOf("?");
+  if (index < 0) return;
+  const params = new URLSearchParams(hash.slice(index + 1));
+  const request = params.get("request") || params.get("q");
+  const search = $("#log-search");
+  if (!request || !search) return;
+  search.value = request;
+  search.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 export default {
@@ -350,6 +545,16 @@ export default {
       if (id === "access") access.show();
     });
     logstream.bind();
+    $("#gate-run")?.addEventListener("click", runGate);
+    $("#preview-run")?.addEventListener("click", runPreview);
+    $("#preview-model")?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        runPreview();
+      }
+    });
+    refreshGate();
+    applyLogDeepLink();
     $("#play-protocol").addEventListener("change", resetTemplate);
     $("#play-model").addEventListener("change", () => {
       try {

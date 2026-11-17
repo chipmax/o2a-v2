@@ -87,6 +87,10 @@ type exit struct {
 	penalized bool
 	closeOnce sync.Once
 
+	// startedAt is when the tunnel was admitted, so an exit can be retired on
+	// age instead of waiting for the upstream to refuse it.
+	startedAt time.Time
+
 	// regID/regToken identify the Cloudflare registration behind this exit and
 	// drop deletes it once the exit is gone, so the next registration is a new
 	// device with a new egress block.
@@ -145,14 +149,14 @@ func (e *exit) admit(ctx context.Context, probe LaneProbe) error {
 		},
 	}
 	defer transport.CloseIdleConnections()
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ok"}],"max_tokens":1}`, probe.Model)
+	body := laneProbeBody(probe)
 	req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, probe.URL, strings.NewReader(body))
 	if err != nil {
 		return err
 	}
 	session := probeSession()
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "*/*")
 	req.Header.Set("User-Agent", "opencode/latest/2.1.1/cli")
 	req.Header.Set("x-opencode-client", "cli")
 	req.Header.Set("x-opencode-session", session)
@@ -178,19 +182,56 @@ func (e *exit) admit(ctx context.Context, probe LaneProbe) error {
 	}
 }
 
-// probeSession mints a session id in the CLI's shape so the admission request
-// carries the identity headers the gateway fingerprints.
-func probeSession() string {
-	var raw [6]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return "ses_0000000000000000000000000000"
+// laneProbeTool is one tool definition for the admission body. The free-lane
+// gate rejects a body whose tools array is empty, and the doc-tested minimum is
+// a single tool; its names are not inspected on the inference surface.
+const laneProbeTool = `{"type":"function","function":{"name":"read","description":"Read a file","parameters":{"type":"object","properties":{"filePath":{"type":"string"}},"required":["filePath"]}}}`
+
+// laneProbeSystem is the fallback system message: the gate requires an <env>
+// element that states the working directory, so a bare prompt or one without
+// that line is refused no matter how healthy the tunnel is.
+const laneProbeSystem = "<env>\nWorking directory: /workspace\n</env>"
+
+// laneProbeBody builds an admission request shaped like the official CLI's free
+// lane traffic: streaming, a leading system message with the env block, and a
+// non-empty tools array. A minimal {"role":"user"} body is refused by the gate,
+// which is why an exit could look burnt while its egress was fine.
+func laneProbeBody(probe LaneProbe) string {
+	system := strings.TrimSpace(probe.SystemPrompt)
+	if system == "" {
+		system = laneProbeSystem
 	}
+	return fmt.Sprintf(`{"model":%q,"stream":true,"max_tokens":1,"messages":[{"role":"system","content":%q},{"role":"user","content":"ok"}],"tools":[%s]}`,
+		probe.Model, system, laneProbeTool)
+}
+
+// probeSession mints a session id the free-lane gate accepts. The gate decodes
+// the twelve hex characters as Identifier.descending() — "~(unix_ms<<12|counter)"
+// — and refuses a value whose timestamp falls outside its window (measured at
+// least ±30 days). A random hex part therefore decodes to an arbitrary date and
+// is refused, which is why an exit with a perfectly good egress was reported as
+// burnt: of the two accepted encodings, only the clock-derived one passes.
+func probeSession() string {
 	const alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+	// Only the low 48 bits are rendered, so the inverted payload must be masked
+	// to them; the complement of the whole uint64 would decode as a date far
+	// outside the window.
+	value := ^(uint64(time.Now().UnixMilli())<<12 | 1) & 0xFFFFFFFFFFFF
+	var stamp [12]byte
+	const hexDigits = "0123456789abcdef"
+	for index := len(stamp) - 1; index >= 0; index-- {
+		stamp[index] = hexDigits[value&0xf]
+		value >>= 4
+	}
+	var raw [14]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "ses_" + string(stamp[:]) + "00000000000000"
+	}
 	var tail [14]byte
 	for index := range tail {
-		tail[index] = alphabet[int(raw[index%len(raw)])%len(alphabet)]
+		tail[index] = alphabet[int(raw[index])%len(alphabet)]
 	}
-	return "ses_" + hex.EncodeToString(raw[:]) + string(tail[:])
+	return "ses_" + string(stamp[:]) + string(tail[:])
 }
 
 func newExit(ctx context.Context, reg registration) (*exit, error) {
@@ -282,7 +323,7 @@ func newExitWithStack(ctx context.Context, reg registration, stack Stack, source
 		<-wg.Wait()
 		return nil, fmt.Errorf("start WARP device: %w", err)
 	}
-	e := &exit{id: reg.ID, source: source, stack: stack, device: wg, network: network}
+	e := &exit{id: reg.ID, source: source, stack: stack, device: wg, network: network, startedAt: time.Now()}
 	egress, err := e.probe(ctx, wg, peerKey, endpoints)
 	if err != nil {
 		e.close()
@@ -571,6 +612,14 @@ func (e *exit) observe(status int, body []byte) (bool, string) {
 		return false, ""
 	}
 	if status == http.StatusForbidden {
+		// The shape gate's 403 ("free tier can only be used from within
+		// OpenCode") is a property of the lane, not of the exit: every exit
+		// answers it identically, so retiring this one would spend a
+		// registration to learn nothing. Only an IP-abuse 403 belongs to the
+		// exit and is worth a replacement.
+		if laneGateRefusal(body) {
+			return false, ""
+		}
 		reason := "HTTP 403"
 		if networkAnomaly(body) {
 			reason += " network anomaly"
@@ -614,6 +663,24 @@ func (e *exit) clearPenalty() {
 
 func networkAnomaly(body []byte) bool {
 	return strings.Contains(strings.ToLower(string(body)), "network")
+}
+
+// laneGateRefusal reports a 403 that refuses the client or the lane itself
+// rather than the egress address. The same request gets the same answer from
+// every exit, so the pool keeps the exit instead of paying for a registration.
+func laneGateRefusal(body []byte) bool {
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "freetiererror") ||
+		strings.Contains(text, "can only be used from within opencode") ||
+		strings.Contains(text, "free tier can only be used")
+}
+
+// age is how long this exit has been serving.
+func (e *exit) age(now time.Time) time.Duration {
+	if e == nil || e.startedAt.IsZero() {
+		return 0
+	}
+	return now.Sub(e.startedAt)
 }
 
 func (e *exit) dialContext(ctx context.Context, network, address string) (net.Conn, error) {

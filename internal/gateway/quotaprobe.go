@@ -26,6 +26,10 @@ type quotaProbeTarget struct {
 	anonymous *anonymousNode
 	proxy     *proxyTransport
 	until     time.Time
+	// credential marks a key in credential quarantine rather than a quota
+	// cooldown, so a still-rejected probe rolls the quarantine forward instead
+	// of being treated as an unrelated status.
+	credential bool
 }
 
 // StartQuotaProbe launches the loop that re-tests cooling upstream credentials
@@ -92,6 +96,13 @@ func (g *Gateway) probeCoolingQuota(ctx context.Context) {
 		outcome = "reopened"
 	case status == http.StatusTooManyRequests:
 		g.extendQuotaTarget(target, retryAfter)
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		// The upstream still rejects the credential itself. The probe is
+		// diagnostic, so the attempt recorded nothing; roll the quarantine
+		// forward here or the key expires out of it between two probes, takes
+		// the next live request, and re-enters the 401 cycle.
+		g.quarantineTarget(target)
+		outcome = "still_credential_dead"
 	default:
 		outcome = "unchanged"
 	}
@@ -119,8 +130,16 @@ func (g *Gateway) nextQuotaProbeTarget(now time.Time) (quotaProbeTarget, bool) {
 		if !target.until.After(now) || g.probedRecently(target.id, now, interval) {
 			return
 		}
-		if !found || target.until.Before(best.until) {
+		switch {
+		case !found:
 			best, found = target, true
+		case target.credential && !best.credential:
+			// A quarantined key is the only class that needs a live success to
+			// come back, and its horizon is a day: probe it before any quota
+			// cooldown, which expires by itself.
+			best = target
+		case target.credential == best.credential && target.until.Before(best.until):
+			best = target
 		}
 	}
 	considerNodes := func(nodes *upstreamNodes, tier config.Tier) {
@@ -128,6 +147,16 @@ func (g *Gateway) nextQuotaProbeTarget(now time.Time) (quotaProbeTarget, bool) {
 			return
 		}
 		for _, node := range nodes.nodes {
+			if cred := node.credUntil.Load(); cred > now.UnixNano() {
+				// A quarantined key is the most valuable probe target: only a
+				// successful request can clear it, and the horizon is a full
+				// day unless the loop tests it sooner.
+				consider(quotaProbeTarget{
+					id: config.Fingerprint(node.key), tier: tier, key: node.key, node: node,
+					until: time.Unix(0, cred), credential: true,
+				})
+				continue
+			}
 			if until := node.cooldownUntil.Load(); until > 0 {
 				consider(quotaProbeTarget{
 					id: config.Fingerprint(node.key), tier: tier, key: node.key, node: node,
@@ -232,7 +261,8 @@ func (g *Gateway) reopenQuotaTarget(target quotaProbeTarget) {
 }
 
 // extendQuotaTarget keeps the target cooling until the new hint, bounded to one
-// day: the free tier's counting window is the UTC calendar day.
+// day: the free tier's counting window is the UTC calendar day. A credential
+// quarantine is never shortened by a quota hint; only MarkSuccess clears it.
 func (g *Gateway) extendQuotaTarget(target quotaProbeTarget, retryAfter time.Duration) {
 	delay := retryAfter
 	if delay <= 0 {
@@ -245,7 +275,26 @@ func (g *Gateway) extendQuotaTarget(target quotaProbeTarget, retryAfter time.Dur
 		target.anonymous.quotaCooldown.Store(true)
 		return
 	}
+	if cred := target.node.credUntil.Load(); cred > target.until.UnixNano() {
+		target.until = time.Unix(0, cred)
+	}
 	target.node.cooldownUntil.Store(target.until.UnixNano())
+}
+
+// quarantineTarget restarts a key's credential quarantine after a probe saw
+// the upstream reject it again.
+func (g *Gateway) quarantineTarget(target quotaProbeTarget) {
+	if target.node == nil {
+		return
+	}
+	duration := g.cfg.Performance.CredentialQuarantine()
+	if duration <= 0 {
+		return
+	}
+	horizon := time.Now().Add(duration).UnixNano()
+	target.node.credUntil.Store(horizon)
+	target.node.cooldownUntil.Store(horizon)
+	target.node.failures.Store(0)
 }
 
 // coolingNodes counts the key nodes whose cooldown is still running.
@@ -262,7 +311,8 @@ func coolingNodes(nodes *upstreamNodes, now time.Time) int {
 	return count
 }
 
-func (g *Gateway) probedRecently(id string, now time.Time, interval time.Duration) bool {	g.probeMu.Lock()
+func (g *Gateway) probedRecently(id string, now time.Time, interval time.Duration) bool {
+	g.probeMu.Lock()
 	defer g.probeMu.Unlock()
 	last, ok := g.probedAt[id]
 	return ok && now.Sub(last) < interval

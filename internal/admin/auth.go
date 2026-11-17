@@ -7,9 +7,11 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -82,6 +84,7 @@ func (a *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		a.removeEarliestSessionLocked()
 	}
 	a.sessions[tokenDigest(token)] = adminSession{Username: cfg.WebUI.Username, AuthVersion: config.Fingerprint(cfg.WebUI.PasswordHash), CSRF: csrf, Expires: expires}
+	a.saveSessionsLocked()
 	a.mu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: expires, MaxAge: int(time.Until(expires).Seconds()), Secure: requestIsSecure(r)})
 	w.Header().Set("Cache-Control", "no-store")
@@ -104,6 +107,7 @@ func (a *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if cookie != nil {
 		a.mu.Lock()
 		delete(a.sessions, tokenDigest(cookie.Value))
+		a.saveSessionsLocked()
 		a.mu.Unlock()
 	}
 	http.SetCookie(w, &http.Cookie{Name: adminCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: -1, Secure: requestIsSecure(r)})
@@ -265,6 +269,66 @@ func (a *Server) removeOldestLoginWindowLocked() {
 	}
 	if !oldest.IsZero() {
 		delete(a.attempts, oldestAddress)
+	}
+}
+
+// sessionFile is the on-disk session map. Keys are token digests, so the file
+// is useless without the matching browser cookie.
+type sessionFile struct {
+	Version  int                     `json:"version"`
+	Sessions map[string]adminSession `json:"sessions"`
+}
+
+// loadSessionsLocked restores unexpired sessions from sessionPath; a.mu must
+// be held. A missing or unreadable file only costs a login.
+func (a *Server) loadSessionsLocked(now time.Time) {
+	if a.sessionPath == "" {
+		return
+	}
+	raw, err := os.ReadFile(a.sessionPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			a.logger.Warn("admin sessions could not be read", "component", "auth", "event", "session_load_failed", "path", a.sessionPath, "error", err)
+		}
+		return
+	}
+	var file sessionFile
+	if err := json.Unmarshal(raw, &file); err != nil {
+		a.logger.Warn("admin sessions file is invalid", "component", "auth", "event", "session_load_failed", "path", a.sessionPath, "error", err)
+		return
+	}
+	restored := 0
+	for token, session := range file.Sessions {
+		if now.After(session.Expires) {
+			continue
+		}
+		a.sessions[token] = session
+		restored++
+	}
+	if restored > 0 {
+		a.logger.Info("admin sessions restored", "component", "auth", "event", "sessions_restored", "count", restored)
+	}
+}
+
+// saveSessionsLocked writes every live session; a.mu must be held. The file is
+// private because it holds CSRF tokens.
+func (a *Server) saveSessionsLocked() {
+	if a.sessionPath == "" {
+		return
+	}
+	raw, err := json.Marshal(sessionFile{Version: 1, Sessions: a.sessions})
+	if err != nil {
+		a.logger.Warn("admin sessions could not be encoded", "component", "auth", "event", "session_save_failed", "error", err)
+		return
+	}
+	temporary := a.sessionPath + ".tmp"
+	if err := os.WriteFile(temporary, raw, 0o600); err != nil {
+		a.logger.Warn("admin sessions could not be written", "component", "auth", "event", "session_save_failed", "path", a.sessionPath, "error", err)
+		return
+	}
+	if err := os.Rename(temporary, a.sessionPath); err != nil {
+		os.Remove(temporary)
+		a.logger.Warn("admin sessions could not be replaced", "component", "auth", "event", "session_save_failed", "path", a.sessionPath, "error", err)
 	}
 }
 

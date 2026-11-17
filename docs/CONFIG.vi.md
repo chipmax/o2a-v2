@@ -38,8 +38,10 @@ Fingerprint là 16 ký tự hex đầu của SHA-256 khoá, xem ở trang **Kho�
 | --- | --- | --- | --- |
 | `warp.enabled` | bool | `false` | Bật egress Cloudflare WARP (userspace WireGuard). Bật mà không lên được tunnel thì tiến trình báo lỗi thay vì chạy tiếp. |
 | `warp.pool_size` | int | `2` | Số exit WARP giữ nóng, 1–32. Quota free tier tính **theo IP exit**, nên pool lớn hơn = nhiều "xô" quota hơn. Bản đang chạy dùng 4. |
-| `warp.stack` | string | `ipv6` | `ipv6` (khuyến nghị) hoặc `ipv4`. |
+| `warp.stack` | string | `ipv6` | `ipv6` (máy có IPv6 routed), `dual` (máy **chỉ có IPv4** — handshake IPv4, tunnel vẫn có địa chỉ IPv6), `ipv4` (không khuyến nghị: egress ra IP Cloudflare dùng chung). |
 | `warp.source_ipv6` | string | `""` | Prefix ngoài (thường /64) để mỗi exit bắt socket từ một địa chỉ khác nhau. Bắt buộc khi `stack=ipv6` muốn xoay IP. Khi để trống, gateway ưu tiên endpoint IPv4 để máy chỉ có IPv4 (WSL, NAT) vẫn lên được tunnel; khi có prefix, endpoint IPv6 được ưu tiên và IPv4 giữ làm dự phòng. |
+| `warp.preload` | int | `pool_size / 2` | Số exit giữ sẵn lúc rỗi (tối đa bằng `pool_size`). Đặt 4–8 trên máy đăng ký chậm (~50 s/exit) để burst không phải chờ. |
+| `warp.require_ipv6_egress` | bool | `false` | Bỏ exit có egress IPv4 dùng chung. **Nên bật khi dùng `dual`**: số `active` trong health có thể đếm cả exit IPv4-sharing, nhưng số đó không tăng quota. Với `ipv6` thuần tuý không cần bật. |
 
 Đăng ký WARP được lưu ở `config.json.warp-state.json` (0600). Restart trong vòng 45s
 sẽ bỏ qua probe (tunnel cũ còn giữ session) và đăng ký mới; restart sau đó sẽ thử
@@ -78,7 +80,30 @@ dấu proxy lỗi ngay khi có traffic thật thất bại.
 | `upstream.zen` | string | `https://opencode.ai/zen` | Origin tier Zen (shape OpenCode 1.x). |
 | `upstream.go` | string | `https://opencode.ai/zen/go` | Origin tier Go (shape OpenCode 2.x). |
 | `upstream.anonymous` | string | `https://opencode.ai/inference` | Origin free tier (`/inference`). |
+| `upstream.prompt_environment` | object | — | Ghi đè các giá trị trong khối `<env>` của prompt CLI chính thức và mô tả tool `shell`. Xem bảng dưới. |
 | `retry.max_attempts` | int | `3` | Số lần thử tối đa: với lane anonymous là số exit tối thiểu được xoay. |
+
+`upstream.prompt_environment` hữu ích khi Gateway chạy trên VPS Linux nhưng client dùng Windows/macOS: upstream đọc khối `<env>` nên giá trị nên mô tả môi trường của **client**, không phải máy chủ. Tên trường và thứ tự vẫn giữ nguyên; gateway vẫn chỉ chèn **đúng một** cặp `<env>` (một bản stale/duplicate ở trên sẽ bị upstream đọc trước và trả 429).
+
+| Trường con | Kiểu | Giá trị cho phép | Ý nghĩa |
+| --- | --- | --- | --- |
+| `working_directory` | string | không chứa ký tự điều khiển, `<`, `>` | Thay dòng `Working directory:` và làm mặc định cho workspace root. |
+| `workspace_root` | string | như trên | Thay riêng dòng `Workspace root folder:`. |
+| `platform` | string | `linux`, `darwin`, `win32` (`windows` được đổi thành `win32`) | Thay dòng `Platform:` và mô tả shell của tool. Để trống = dùng hệ điều hành máy chủ. |
+| `is_git_repo` | bool | `true`/`false` | Thay dòng `Is directory a git repo:`. |
+
+Ví dụ cho client Windows:
+
+```json
+"upstream": {
+  "prompt_environment": {
+    "working_directory": "C:/work/repo",
+    "workspace_root": "C:/work",
+    "platform": "win32",
+    "is_git_repo": true
+  }
+}
+```
 | `retry.timeout_seconds` | int | `300` | Hạn toàn bộ request (gồm retry). Stream dài nên để 900–1800. |
 
 ## 5. Mô hình
@@ -91,6 +116,7 @@ dấu proxy lỗi ngay khi có traffic thật thất bại.
 | `models.active_probes` | bool | `false` | Probe chủ động để đo sẵn sàng (tốn quota); mặc định học thụ động từ request thật. |
 | `models.context_overrides` | object | `{}` | Giá trị khởi điểm cho `context`/`input`/`output` quảng cáo trong `/v1/models`. Traffic thật có thể nâng hoặc hạ `context` quanh giá trị này. |
 | `models.quota_probe_seconds` | int | `600` | Chu kỳ dò lại key/relay đang cooling bằng một request tối thiểu; `0` = tắt, tối thiểu 60. Không áp dụng cho exit WARP đã đóng tunnel. |
+| `models.dead_ids` | string[] | 2 id Zen đã retire | Ẩn model upstream đã ngừng phục vụ khỏi route và `/v1/models`, kể cả khi cache đĩa cũ còn liệt kê. Mặc định: `longcat-2.5-preview-free` (410), `nemotron-3-ultra-free` (400). Đặt `[]` để bỏ filter. |
 | `models.anonymous_backoff` | object | — | Cầu dao lane miễn phí: `threshold` (6), `base_hours` (1), `max_hours` (24). |
 
 `context_overrides` chỉ đổi con số **quảng cáo** cho discovery; gateway không chặn
@@ -121,6 +147,13 @@ với `{"model": "...", "max_requests": 4}` — hoặc nút **Đo trần** ở t
 | `performance.max_anonymous_exits` | int | `8` | Số exit tĩnh một request anonymous được đi qua. |
 | `performance.free_tier_block_seconds` | int | `900` | Thời gian loại một exit bị free tier chặn IP. |
 | `performance.model_timeouts` | object | `{}` | Hạn riêng theo model (giây), ghi đè `attempt_timeout_seconds`. |
+| `performance.heartbeat_seconds` | int | `15` | Gửi frame keepalive (`: keepalive` hoặc `event: ping`) sau bao nhiêu giây im lặng; 0 = tắt. |
+| `performance.idle_timeout_seconds` | int | `300` | Cắt stream đã commit nếu upstream không gửi byte nào; client nhận lỗi in-band `upstream_idle_timeout`; 0 = tắt. |
+| `performance.credential_quarantine_seconds` | int | `86400` | Thời gian một khoá bị upstream trả 401/403 nằm ngoài vòng xoay; probe hoặc request thành công mới gỡ; 0 = tắt. |
+| `performance.max_inflight` | int | `0` | Giới hạn số lượt inference chạy song song toàn gateway; 0 = không giới hạn. |
+| `performance.queue_wait_seconds` | int | `0` | Thời gian request dư chờ một slot trước khi nhận 429 `gateway_busy`. |
+| `performance.pprof_enabled` | bool | `false` | Mở `/debug/pprof/` trên cổng WebUI (sau đăng nhập); chỉ có hiệu lực khi khởi động. |
+| `performance.memory_limit_bytes` | int | `0` | Đặt soft memory limit của Go (`debug.SetMemoryLimit`); 0 = mặc định runtime. |
 
 ### Peer dự phòng
 

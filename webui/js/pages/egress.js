@@ -29,6 +29,8 @@ function stateLabel(state) {
       return t("Đang kiểm tra", "egress.state.checking");
     case "unavailable":
       return t("Không dùng được", "egress.state.unavailable");
+    case "running":
+      return t("Đang chạy · không ra được", "egress.state.running");
     case "active":
       return t("Sẵn sàng", "egress.state.active");
     default:
@@ -40,7 +42,7 @@ function stateBadge(state) {
   const cls =
     state === "active" || state === "standby"
       ? "status ok"
-      : state === "cooling" || state === "checking"
+      : state === "cooling" || state === "checking" || state === "running"
         ? "status warn"
         : state === "blocked" || state === "unavailable"
           ? "status bad"
@@ -286,11 +288,17 @@ function proxyRows(proxies) {
         ? "checking"
         : proxy.healthy
           ? "active"
-          : "unavailable";
+          : proxy.listening
+            ? "running"
+            : "unavailable";
     const binding = [`Z ${proxy.zen_keys || 0}`, `G ${proxy.go_keys || 0}`];
     if (proxy.pool) binding.push(t("pool xoay", "egress.sources.pool"));
     if (proxy.last_checked) {
       binding.push(t("kiểm tra {0}", "egress.sources.checked", localTime(proxy.last_checked)));
+    }
+    if (!proxy.healthy && proxy.last_error) {
+      const reason = String(proxy.last_error);
+      binding.push(reason.length > 70 ? `${reason.slice(0, 70)}…` : reason);
     }
     return sourceRow(
       "proxy",
@@ -388,7 +396,16 @@ function parentRow(row) {
   return el("tr", { class: row.kind === "orphan" ? "muted-row" : "" }, [
     nameCell,
     addressCell,
-    el("td", {}, [stateBadge(row.state)]),
+    el("td", {}, [
+      stateBadge(row.state),
+      (row.quota?.quotaHits || 0) > 0
+        ? el("span", {
+            class: "status warn",
+            text: "429",
+            title: t("{0} lần 429 trong ngày", "egress.sources.hits", row.quota.quotaHits),
+          })
+        : null,
+    ].filter(Boolean)),
     el("td", { class: "num", text: String(row.load ?? "—") }),
     el("td", {
       class: "num mono",
@@ -437,6 +454,27 @@ function renderSources() {
   const readyPeers = peers.filter((peer) => !peer.cooling_seconds).length;
   $("#egress-m-peers").textContent = peers.length ? `${readyPeers}/${peers.length}` : "—";
   $("#egress-m-quota").textContent = snapshot ? String(snapshot.observed || 0) : "—";
+  // The static notes were a legend ("ready / standby / cooling") that read like
+  // a second value. Replace them with the actual split for this moment.
+  const warpNote = $("#egress-m-warp-note");
+  if (warpNote) {
+    warpNote.textContent = warp?.enabled
+      ? t(
+          "dự phòng {0} · nghỉ {1} dải /64{2}",
+          "egress.metrics.warp.detail",
+          warp.standby || 0,
+          warp.cooling || 0,
+          warp.lane_gated ? t(" · lane tạm dừng", "egress.metrics.warp.paused") : "",
+        )
+      : t("Sẵn sàng / dự phòng / đang nghỉ", "egress.metrics.warp.note");
+  }
+  const proxyNote = $("#egress-m-proxies-note");
+  if (proxyNote) {
+    const healthy = proxies.filter((proxy) => proxy.healthy).length;
+    proxyNote.textContent = proxies.length
+      ? t("{0} khoẻ · {1} lỗi", "egress.metrics.proxies.detail", healthy, proxies.length - healthy)
+      : t("Đang dùng được / tổng cấu hình", "egress.metrics.proxies.note");
+  }
 
   const needle = search.trim().toLowerCase();
   const matches = (row) =>
@@ -480,8 +518,65 @@ function renderSources() {
         localTime(snapshot.reset_at),
       )
     : t("Pool chưa phát request nào trong phiên này.", "egress.emptySummary");
+  renderLaneBanner();
   renderHeatmap();
   renderCanary();
+}
+
+// parseStamp ignores Go's zero time, which serializes as 0001-01-01.
+function parseStamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) || date.getFullYear() < 1970 ? null : date;
+}
+
+// renderLaneBanner surfaces the free-lane pause: the pool can look healthy
+// while it is really waiting out an upstream refusal, and the reset is the
+// one action that shortens that wait.
+function renderLaneBanner() {
+  const node = $("#egress-lane");
+  if (!node) return;
+  const gated = !!snapshot?.lane_gated;
+  const refusals = Number(snapshot?.lane_refusals || 0);
+  if (!gated && !refusals) {
+    node.classList.add("hidden");
+    return;
+  }
+  node.classList.remove("hidden");
+  node.classList.toggle("danger", gated);
+  const until = parseStamp(snapshot?.lane_until);
+  const minutes = until ? Math.max(0, Math.round((until.getTime() - Date.now()) / 60000)) : 0;
+  node.replaceChildren(
+    el("span", {
+      text: gated
+        ? t(
+            "Lane đang tạm dừng đăng ký: {0} lần từ chối liên tiếp, thử lại sau ~{1} phút.",
+            "egress.lane.gated",
+            refusals,
+            minutes,
+          )
+        : t("Lane đã từ chối {0} lần liên tiếp; pool vẫn chạy bằng các exit còn lại.", "egress.lane.refusals", refusals),
+    }),
+    gated
+      ? el("button", {
+          class: "btn btn-sm",
+          type: "button",
+          text: t("Mở khoá ngay", "egress.lane.reset"),
+          onclick: resetLane,
+        })
+      : null,
+  );
+}
+
+async function resetLane() {
+  try {
+    await api("/api/egress/lane-reset", { method: "POST", body: "{}" });
+    toast(t("Đã mở khoá lane, pool sẽ thử đăng ký lại.", "egress.lane.resetDone"));
+    await refreshMonitor();
+    await load();
+  } catch (error) {
+    toast(error.message, true);
+  }
 }
 
 async function load() {

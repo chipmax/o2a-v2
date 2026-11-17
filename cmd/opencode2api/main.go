@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,6 +53,38 @@ func main() {
 	redactor.Replace(cfg)
 	logger := telemetry.StructuredLogger(level, hub, redactor)
 	monitor := telemetry.Monitor()
+	if limit := cfg.Performance.MemoryLimitBytes; limit > 0 {
+		// A soft limit makes the GC work harder as the heap approaches the
+		// ceiling instead of letting the process be OOM-killed. 0 keeps the Go
+		// runtime default.
+		debug.SetMemoryLimit(limit)
+		logger.Info("soft memory limit applied", "component", "gateway", "event", "memory_limit_applied", "limit_bytes", limit)
+	}
+
+	// Listen before the WARP pool is ready. A cold start spends tens of seconds
+	// registering or probing exits, and until this process was listening every
+	// request from the router (chat and WebUI alike) failed with "connection
+	// refused". Requests that arrive during startup now wait for the runtime,
+	// which the router's timeout comfortably covers.
+	apiHandler := newReadyHandler(ctx)
+	apiServer := &http.Server{
+		Addr: cfg.Listen, Handler: apiHandler, ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
+	}
+	servers := []*http.Server{apiServer}
+	go serveHTTP(cancel, logger, apiServer, "api")
+
+	var webHandler *readyHandler
+	if cfg.WebUI.Enabled {
+		webHandler = newReadyHandler(ctx)
+		webServer := &http.Server{
+			Addr: cfg.WebUI.Listen, Handler: webHandler, ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
+		}
+		servers = append(servers, webServer)
+		go serveHTTP(cancel, logger, webServer, "webui")
+	}
+
+	startWatchdog()
+
 	manager, err := gateway.RuntimeManager(ctx, *configPath, cfg, logger, monitor, hub, redactor, level)
 	if err != nil {
 		logger.Error("failed to initialize runtime", "component", "runtime", "event", "runtime_initialization_failed", "error", err)
@@ -58,22 +92,20 @@ func main() {
 	}
 	defer manager.Shutdown()
 
-	apiServer := &http.Server{
-		Addr: cfg.Listen, Handler: manager.Handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
-	}
-	servers := []*http.Server{apiServer}
-	go serveHTTP(cancel, logger, apiServer, "api")
-
-	if cfg.WebUI.Enabled {
-		admin := adminui.New(manager, monitor, hub, logger)
-		webServer := &http.Server{
-			Addr: cfg.WebUI.Listen, Handler: admin.Handler(), ReadHeaderTimeout: 15 * time.Second, IdleTimeout: 120 * time.Second,
-		}
-		servers = append(servers, webServer)
-		go serveHTTP(cancel, logger, webServer, "webui")
+	apiHandler.set(manager.Handler())
+	var console *adminui.Server
+	if webHandler != nil {
+		console = adminui.New(manager, monitor, hub, logger)
+		console.SetSessionPath(*configPath + ".admin-sessions.json")
+		webHandler.set(console.Handler())
 	}
 
 	<-ctx.Done()
+	// End server-sent event streams first: a handler still writing to one
+	// would keep http.Server.Shutdown waiting until its deadline.
+	if console != nil {
+		console.Close()
+	}
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 	for _, server := range servers {
@@ -91,4 +123,42 @@ func serveHTTP(cancel context.CancelFunc, logger *slog.Logger, server *http.Serv
 		logger.Error("server stopped unexpectedly", "component", component, "event", "server_failed", "address", server.Addr, "error", err)
 		cancel()
 	}
+}
+
+// readyHandler holds a request until the gateway runtime is ready, then hands
+// it to the real handler. It exists so the listener is up during WARP startup:
+// waiting is recoverable, refusing the connection is not.
+type readyHandler struct {
+	ctx   context.Context
+	ready chan struct{}
+	mu    sync.RWMutex
+	next  http.Handler
+}
+
+func newReadyHandler(ctx context.Context) *readyHandler {
+	return &readyHandler{ctx: ctx, ready: make(chan struct{})}
+}
+
+func (h *readyHandler) set(next http.Handler) {
+	h.mu.Lock()
+	h.next = next
+	h.mu.Unlock()
+	close(h.ready)
+}
+
+func (h *readyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	select {
+	case <-h.ready:
+	case <-h.ctx.Done():
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	h.mu.RLock()
+	next := h.next
+	h.mu.RUnlock()
+	if next == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	next.ServeHTTP(w, r)
 }

@@ -1,0 +1,20 @@
+[Unit]
+Description=o2a Proton WireGuard exits (one SOCKS inbound per tunnel)
+Documentation=https://github.com/anomalyco/opencode2api
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/o2a-v2/bin/sing-box run -c /opt/o2a-v2/egress/proton-singbox.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/opt/o2a-v2/egress
+
+[Install]
+WantedBy=multi-user.target

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,13 +43,42 @@ type Server struct {
 	// probeRunning admits one context probe at a time: a probe sends real,
 	// large prompts and the free lane is shared.
 	probeRunning atomic.Bool
+	// gate is the one gatecheck run the console may have in flight.
+	gate gateState
+	// streamCtx is cancelled by Close so long-lived SSE handlers return
+	// instead of holding http.Server.Shutdown until its deadline.
+	streamCtx    context.Context
+	streamCancel context.CancelFunc
+	// sessionPath, when set, makes sessions survive a restart. The file holds
+	// token digests, never the raw cookie tokens.
+	sessionPath string
+}
+
+// SetSessionPath loads sessions saved by an earlier process and writes future
+// ones to path, so a gateway restart no longer logs the operator out.
+func (a *Server) SetSessionPath(path string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sessionPath = path
+	a.loadSessionsLocked(time.Now())
+}
+
+// Close ends every server-sent event stream. Call it before Shutdown: a
+// handler blocked in a stream would otherwise make Shutdown wait out its
+// whole deadline and log "graceful shutdown failed".
+func (a *Server) Close() {
+	if a != nil && a.streamCancel != nil {
+		a.streamCancel()
+	}
 }
 
 // New returns a Server for manager, reporting to monitor and logs.
 func New(manager *gateway.RuntimeController, monitor *telemetry.Metrics, logs *telemetry.LogBroker, logger *slog.Logger) *Server {
+	streamCtx, streamCancel := context.WithCancel(context.Background())
 	return &Server{
 		manager: manager, monitor: monitor, logs: logs, logger: logger, sessions: make(map[string]adminSession),
 		attempts: make(map[string]loginWindow), debugAttempts: make(map[string]loginWindow),
+		streamCtx: streamCtx, streamCancel: streamCancel,
 	}
 }
 
@@ -81,6 +111,11 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("GET /api/model-quotas", a.authenticate(http.HandlerFunc(a.handleModelQuotas)))
 	mux.Handle("GET /api/egress-quota", a.authenticate(http.HandlerFunc(a.handleEgressQuota)))
 	mux.Handle("POST /api/egress/action", a.authenticate(a.csrf(http.HandlerFunc(a.handleEgressAction))))
+	mux.Handle("POST /api/egress/lane-reset", a.authenticate(a.csrf(http.HandlerFunc(a.handleLaneReset))))
+	mux.Handle("GET /api/events", a.authenticate(http.HandlerFunc(a.handleEvents)))
+	mux.Handle("POST /api/diagnostics/gate", a.authenticate(a.csrf(http.HandlerFunc(a.handleGateCheckStart))))
+	mux.Handle("GET /api/diagnostics/gate", a.authenticate(http.HandlerFunc(a.handleGateCheckStatus)))
+	mux.Handle("POST /api/diagnostics/preview", a.authenticate(http.HandlerFunc(a.handlePreview)))
 	mux.Handle("GET /api/egress/insights", a.authenticate(http.HandlerFunc(a.handleEgressInsights)))
 	mux.Handle("GET /api/agents", a.authenticate(http.HandlerFunc(a.handleAgents)))
 	mux.Handle("POST /api/agents/preview", a.authenticate(a.csrf(http.HandlerFunc(a.handleAgentPreview))))
@@ -93,6 +128,17 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("POST /api/debug/inference", a.authenticate(a.csrf(http.HandlerFunc(a.handleDebugInference))))
 	mux.Handle("GET /api/logs", a.authenticate(http.HandlerFunc(a.handleLogs)))
 	mux.Handle("GET /api/logs/stream", a.authenticate(http.HandlerFunc(a.handleLogStream)))
+	if a.manager != nil && a.manager.Config().Performance.PprofEnabled {
+		// A startup-only diagnostic surface: profiles describe the whole
+		// process, so they stay behind the same session auth as every API
+		// route and are never mounted on the public listener.
+		mux.Handle("GET /debug/pprof/", a.authenticate(http.HandlerFunc(pprof.Index)))
+		mux.Handle("GET /debug/pprof/cmdline", a.authenticate(http.HandlerFunc(pprof.Cmdline)))
+		mux.Handle("GET /debug/pprof/profile", a.authenticate(http.HandlerFunc(pprof.Profile)))
+		mux.Handle("GET /debug/pprof/symbol", a.authenticate(http.HandlerFunc(pprof.Symbol)))
+		mux.Handle("POST /debug/pprof/symbol", a.authenticate(http.HandlerFunc(pprof.Symbol)))
+		mux.Handle("GET /debug/pprof/trace", a.authenticate(http.HandlerFunc(pprof.Trace)))
+	}
 	mux.Handle("/", a.staticHandler())
 	return a.securityHeaders(telemetry.Recover(a.logger, mux))
 }
@@ -356,9 +402,16 @@ func (a *Server) handleCheckProxies(w http.ResponseWriter, r *http.Request) {
 // current resource counts.
 func (a *Server) handleMonitor(w http.ResponseWriter, _ *http.Request) {
 	metrics := a.monitor.Snapshot()
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"version": buildinfo.Version, "metrics": metrics, "usage": metrics.Usage, "upstream": metrics.Upstream, "resources": a.manager.Resources(),
-	})
+	}
+	// The overview reads the pool here: /healthz lives on the API listener and
+	// a browser on the admin origin cannot call it.
+	payload["health"] = a.manager.Readiness()
+	if warp, ok := a.manager.WarpSnapshot(); ok {
+		payload["warp"] = warp
+	}
+	httpx.WriteJSON(w, http.StatusOK, payload)
 }
 
 // handleLogs returns the buffered log events after the "after" sequence,
@@ -407,6 +460,8 @@ func (a *Server) handleLogStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-r.Context().Done():
+			return
+		case <-a.streamCtx.Done():
 			return
 		case event := <-stream:
 			if after > 0 && event.Sequence > after+1 {

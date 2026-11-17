@@ -12,7 +12,14 @@ import (
 // OpenCode set the gateway appends, and lets responses be restored to the names
 // the client declared. What follows it is a digest, never the client name: the
 // free tier refuses bodies that still read as another client's session.
-const ClientToolPrefix = "clint_"
+//
+// The free tier refuses the literal "clint_" (case-insensitively) in a tool
+// name while serving any other prefix, so this stays an ordinary namespace a
+// tool name could carry. mcp_ also prefixes MCP clients' mcp__<server>__<tool>
+// names, so refusing it would refuse their traffic too. Upstream may learn
+// this prefix as well: rotate the value when 429s return only on tool-bearing
+// requests.
+const ClientToolPrefix = "mcp_"
 
 // clientToolDigestLength is how many hex characters of the client name digest
 // a wire name carries. Twelve is far past the collision point for the handful

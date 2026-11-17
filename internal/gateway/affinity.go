@@ -6,9 +6,12 @@ import (
 )
 
 // affinityTTL bounds how long a session is pinned to one egress /64. Pinning
-// keeps the prompt-cache prefix warm, but a long session must eventually move
-// so one bucket does not drain alone.
-const affinityTTL = 30 * time.Minute
+// keeps the upstream's per-IP accounting and prompt cache stable. Six hours
+// outlives a working session without holding a dead exit: a lease that is no
+// longer active, or that answers 429, falls back to rotation and forgets the
+// pin. The free tier accounts quota per key and egress, so churn between
+// buckets is what makes a key look suspicious.
+const affinityTTL = 6 * time.Hour
 
 type affinityEntry struct {
 	egress string

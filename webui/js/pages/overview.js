@@ -1,4 +1,5 @@
 // Page: overview — readiness checklist, metrics, resources and token usage.
+import { api } from "../api.js";
 import * as store from "../store.js";
 import { $, bindTabs, el, emptyRow, formatNumber, timeOnly } from "../ui.js";
 import egress from "./egress.js";
@@ -68,8 +69,13 @@ function renderResources(resources) {
       el("tr", {}, [
         el("td", { text: proxy.address }),
         el("td", {
-          class: `status ${proxy.healthy ? "ok" : "bad"}`,
-          text: proxy.healthy ? t("Khỏe", "state.healthy") : t("Không dùng được", "state.unavailable"),
+          class: `status ${proxy.healthy ? "ok" : proxy.listening ? "warn" : "bad"}`,
+          title: proxy.last_error || "",
+          text: proxy.healthy
+            ? t("Khỏe", "state.healthy")
+            : proxy.listening
+              ? t("Đang chạy · không ra được", "state.running")
+              : t("Không dùng được", "state.unavailable"),
         }),
         el("td", {
           text: `Z ${proxy.zen_keys} · G ${proxy.go_keys} · A ${
@@ -173,8 +179,93 @@ function renderSummary(monitor) {
   $("#m-rate").textContent = `${((metrics.last_hour.success_rate || 0) * 100).toFixed(1)}%`;
   $("#m-p95").textContent = `${metrics.last_hour.p95_ms || 0} ms`;
   $("#m-active").textContent = `${metrics.active_requests || 0} / ${metrics.active_streams || 0}`;
+  const total = metrics.last_hour.total || 0;
+  const quota = Number(metrics.statuses?.["429"] || 0);
+  $("#m-429").textContent = total ? `${((quota / total) * 100).toFixed(1)}%` : "—";
+  renderReadiness(monitor.health);
+  renderLane(monitor.warp || monitor.resources?.warp);
   renderResources(monitor.resources);
   renderBreakdowns(metrics);
+}
+
+// renderReadiness shows the same verdict /healthz answers with, so the overview
+// cannot say "ready" while the endpoint clients call is refusing traffic.
+function renderReadiness(health) {
+  const value = $("#m-ready");
+  const note = $("#m-ready-note");
+  if (!value) return;
+  const ready = !!health?.ready;
+  const status = health?.status || (health ? "unknown" : "");
+  value.textContent = health ? (ready ? t("Sẵn sàng", "overview.ready.on") : status || "—") : "—";
+  value.classList.toggle("ok", !!health && ready);
+  value.classList.toggle("warn", !!health && !ready);
+  if (!note) return;
+  const issues = Array.isArray(health?.issues) ? health.issues : [];
+  note.textContent = !health
+    ? t("Chưa có báo cáo", "overview.ready.unknown")
+    : ready
+      ? t("Khớp với /healthz", "overview.readyNote")
+      : issues.slice(0, 2).join(", ") || t("Không sẵn sàng", "overview.ready.blocked");
+}
+
+// parseStamp accepts a server timestamp and ignores Go's zero time, which
+// serializes as 0001-01-01 instead of being omitted.
+function parseStamp(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) || date.getFullYear() < 1970 ? null : date;
+}
+
+// renderLane shows the free-lane pause on the overview: it is the difference
+// between "the pool is small" and "the pool is waiting out an upstream refusal".
+function renderLane(warp) {
+  const node = $("#overview-lane");
+  if (!node) return;
+  const gated = !!warp?.lane_gated;
+  const refusals = Number(warp?.lane_refusals || 0);
+  if (!gated && !refusals) {
+    node.classList.add("hidden");
+    return;
+  }
+  node.classList.remove("hidden");
+  node.classList.toggle("danger", gated);
+  const until = parseStamp(warp?.lane_until);
+  const minutes = until ? Math.max(0, Math.round((until.getTime() - Date.now()) / 60000)) : 0;
+  node.textContent = gated
+    ? t(
+        "Lane đang tạm dừng đăng ký: {0} lần từ chối liên tiếp, thử lại sau ~{1} phút.",
+        "overview.lane.gated",
+        refusals,
+        minutes,
+      )
+    : t("Lane đã từ chối {0} lần liên tiếp.", "overview.lane.refusals", refusals);
+}
+
+let eventsTimer = null;
+
+async function loadEvents() {
+  const host = $("#overview-events");
+  if (!host) return;
+  try {
+    const value = await api("/api/events?limit=20");
+    host.replaceChildren();
+    for (const event of value.events || []) {
+      host.append(
+        el("div", { class: `event-row ${event.level || ""}` }, [
+          el("span", { class: "event-time", text: timeOnly(event.time) }),
+          el("span", { class: "event-component", text: event.component || "—" }),
+          el("span", { class: "event-message", text: event.message || "" }),
+        ]),
+      );
+    }
+    if (!host.children.length) {
+      host.append(el("div", { class: "event-empty", text: t("Chưa có sự kiện vận hành.", "overview.events.empty") }));
+    }
+    const meta = $("#overview-ops-meta");
+    if (meta) meta.textContent = value.events?.length ? `${value.events.length} · ${timeOnly(new Date().toISOString())}` : "";
+  } catch {
+    // The feed is best-effort: a failed read must not break the dashboard.
+  }
 }
 
 function renderTrend(metrics) {
@@ -201,20 +292,28 @@ function renderTrend(metrics) {
 function renderUsageModels(usage) {
   const host = $("#usage-models");
   host.replaceChildren();
+  const requests = usage.model_requests || {};
   Object.entries(usage.models || {})
     .sort((a, b) => (b[1].total_tokens || 0) - (a[1].total_tokens || 0))
     .slice(0, 15)
     .forEach(([model, value]) => {
+      const count = Number(requests[model] || 0);
+      const average = count ? Math.round((value.input_tokens || 0) / count) : 0;
       host.append(
         el("tr", {}, [
           el("td", { class: "mono", text: model }),
           el("td", { class: "num", text: formatNumber(value.input_tokens) }),
+          el("td", {
+            class: "num",
+            text: count ? formatNumber(average) : "—",
+            title: count ? t("{0} request báo usage", "usage.models.avgTitle", count) : null,
+          }),
           el("td", { class: "num", text: formatNumber(value.output_tokens) }),
           el("td", { class: "num", text: formatNumber(value.total_tokens) }),
         ]),
       );
     });
-  if (!host.children.length) emptyRow(host, 4, t("Chưa có mức dùng token", "usage.empty.models"));
+  if (!host.children.length) emptyRow(host, 5, t("Chưa có mức dùng token", "usage.empty.models"));
 }
 
 function renderTiers(usage) {
@@ -276,10 +375,15 @@ export default {
   },
   show() {
     render();
+    loadEvents();
+    clearInterval(eventsTimer);
+    eventsTimer = setInterval(loadEvents, 15000);
     if (activeTab === "egress") egress.show();
     else egress.hide();
   },
   hide() {
+    clearInterval(eventsTimer);
+    eventsTimer = null;
     egress.hide();
   },
 };

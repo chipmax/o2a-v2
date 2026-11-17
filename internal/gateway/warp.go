@@ -50,6 +50,13 @@ func (g *Gateway) pauseWARP() {
 	if g.warp == nil || seconds <= 0 {
 		return
 	}
+	// An exit that is merely busy — every tunnel leased to an in-flight request
+	// — is not a quota wall. Parking the lane then would turn a burst into
+	// minutes without WARP while healthy exits sit idle, so only a pool with no
+	// active exit at all parks the lane.
+	if snapshot := g.warp.Snapshot(); snapshot.Active > 0 {
+		return
+	}
 	g.warpPausedUntil.Store(time.Now().Add(time.Duration(seconds) * time.Second).UnixNano())
 }
 
@@ -309,7 +316,7 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 	prepared := make([][]byte, len(upstreams))
 	renames := make([]*wire.ToolRenames, len(upstreams))
 	for index, baseURL := range upstreams {
-		prepared[index], renames[index] = prepareAnonymousBody(rawBody, protocol, models.IsV1Upstream(baseURL))
+		prepared[index], renames[index] = prepareAnonymousBody(rawBody, protocol, models.IsV1Upstream(baseURL), g.cfg.Upstream.PromptEnvironment)
 	}
 	// A 429 is scoped to the exit that carried it, so the request keeps
 	// rotating exits until the configured attempt budget is spent; only then

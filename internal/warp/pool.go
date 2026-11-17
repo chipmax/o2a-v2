@@ -3,12 +3,16 @@ package warp
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"net/netip"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,14 +41,165 @@ const (
 // already active or cooling down.
 var errDuplicateEgress = errors.New("WARP egress is already active or cooling down")
 
+// errSharedIPv4Egress reports a registration whose public egress is IPv4 while
+// the pool requires a private /64 bucket. Cloudflare's IPv4 WARP egress is
+// shared by every user, so keeping it would add an exit without adding quota.
+var errSharedIPv4Egress = errors.New("WARP exit uses the shared IPv4 egress")
+
+// errRegistrationRetryable marks a registration that should be tried again
+// while the pool is still cold: a dual-stack device can lose its IPv6 probe
+// to an unreachable endpoint even though the next device verifies fine.
+var errRegistrationRetryable = errors.New("WARP registration is retryable")
+
+// ipv6Required rejects an exit whose public egress cannot give this pool a
+// separate free-tier bucket. An unset egress is rejected too: without a
+// measured address there is no evidence it is a distinct bucket.
+func ipv6Required(options Options, e *exit) bool {
+	return options.RequireIPv6Egress && (e == nil || !e.egress.IsValid() || !e.egress.Is6())
+}
+
 // scaleDownDelay keeps exits created for a burst hot for a while after the
 // burst, so a following burst reuses them instead of paying for new
 // registrations.
 const scaleDownDelay = 60 * time.Second
 
+// DefaultRotateCooldown is the default spacing between two registrations
+// caused by retiring an exit.
+const DefaultRotateCooldown = 90 * time.Second
+
+// ageSweepInterval is how often the pool looks for exits that reached MaxAge.
+// A minute keeps an ageing rotation visible in the logs without polling often.
+const ageSweepInterval = time.Minute
+
 // ErrClosed is returned when a pool is used after Close. Callers use it to
 // tell a retiring pool apart from a temporary capacity wait.
 var ErrClosed = errors.New("WARP pool is closed")
+
+// A laneGate paces registrations when the free lane refuses freshly registered
+// exits. Cloudflare keeps handing out addresses in that state, but the upstream
+// refuses each one within seconds, so minting device after device only spends
+// the registration budget without ever landing on a usable egress. A process
+// always gets one registration (every restart deserves a try); after a few
+// refusals in a row the gate closes for a while.
+type laneGate struct {
+	mu       sync.Mutex
+	refusals int
+	until    time.Time
+	// path keeps the gate across a restart: a process that just learned the
+	// lane refuses fresh exits should not mint another device on boot.
+	path string
+}
+
+// newLaneGate restores the pause saved by an earlier process. An expired pause
+// keeps its refusal count for display but no longer blocks registration.
+func newLaneGate(path string) *laneGate {
+	gate := &laneGate{path: path}
+	if path == "" {
+		return gate
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return gate
+	}
+	var saved struct {
+		Refusals int       `json:"refusals"`
+		Until    time.Time `json:"until"`
+	}
+	if json.Unmarshal(data, &saved) != nil {
+		return gate
+	}
+	gate.refusals = saved.Refusals
+	gate.until = saved.Until
+	return gate
+}
+
+func (g *laneGate) saveLocked() {
+	if g == nil || g.path == "" {
+		return
+	}
+	payload, err := json.Marshal(struct {
+		Refusals int       `json:"refusals"`
+		Until    time.Time `json:"until"`
+	}{g.refusals, g.until})
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(g.path, payload, 0o600)
+}
+
+const (
+	// laneGateFreeRefusals is how many new exits may be refused in a row
+	// before registrations pause. A single burnt device is normal; three in a
+	// row means the lane, not the registration, is the problem.
+	laneGateFreeRefusals = 3
+	laneGatePauseBase    = 5 * time.Minute
+	laneGatePauseMax     = time.Hour
+)
+
+// state reports the pause in force, the consecutive refusal count and whether
+// the gate is closed right now.
+func (g *laneGate) state(now time.Time) (time.Time, int, bool) {
+	if g == nil {
+		return time.Time{}, 0, false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.until, g.refusals, now.Before(g.until)
+}
+
+// refused records one refused exit and returns the running count and the pause
+// it imposes (0 while the free allowance lasts). The pause escalates with each
+// additional refusal and never shrinks the one already in force.
+func (g *laneGate) refused(now time.Time) (int, time.Duration) {
+	if g == nil {
+		return 0, 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refusals++
+	if g.refusals <= laneGateFreeRefusals {
+		g.saveLocked()
+		return g.refusals, 0
+	}
+	pause := laneGatePauseBase << min(g.refusals-laneGateFreeRefusals-1, 4)
+	if pause > laneGatePauseMax {
+		pause = laneGatePauseMax
+	}
+	if until := now.Add(pause); until.After(g.until) {
+		g.until = until
+	}
+	g.saveLocked()
+	return g.refusals, pause
+}
+
+// admitted clears the gate after the lane accepted an exit again.
+func (g *laneGate) admitted() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refusals = 0
+	g.until = time.Time{}
+	g.saveLocked()
+}
+
+// laneGatedError reports that the free lane refused too many fresh exits, so
+// the pool is not registering another one yet. RetryAfter lets the refill loop
+// pace itself instead of retrying into the same answer.
+type laneGatedError struct {
+	until    time.Time
+	refusals int
+}
+
+func (e *laneGatedError) Error() string {
+	return fmt.Sprintf("free lane refused %d fresh WARP exits; next registration after %s",
+		e.refusals, e.until.UTC().Format(time.RFC3339))
+}
+
+func (e *laneGatedError) RetryAfter() time.Duration {
+	return time.Until(e.until)
+}
 
 type logger interface {
 	Debugf(string, ...interface{})
@@ -91,6 +246,10 @@ type Pool struct {
 	stack   Stack
 	newExit func(context.Context) (*exit, error)
 
+	maxAge         time.Duration
+	rotateCooldown time.Duration
+	ageSweep       time.Duration
+
 	mu        sync.Mutex
 	active    []*exit
 	inflight  int
@@ -102,6 +261,9 @@ type Pool struct {
 	closed    bool
 	refilling bool
 	scaling   bool
+	// lastRotate is when the previous voluntary (age) retirement was booked;
+	// the next one waits until rotateCooldown has passed since then.
+	lastRotate time.Time
 	// refillFailures counts consecutive failed preload registrations;
 	// refillPaused keeps every refill trigger quiet until it expires.
 	refillFailures int
@@ -114,6 +276,9 @@ type Pool struct {
 	pending     int
 	wait        sync.WaitGroup
 	createMu    sync.Mutex
+	// laneGate paces registrations once the free lane starts refusing every
+	// freshly minted egress.
+	laneGate *laneGate
 }
 
 type Lease struct {
@@ -124,27 +289,40 @@ type Lease struct {
 
 // Snapshot is a point-in-time view of a pool for health and admin reporting.
 type Snapshot struct {
-	Stack string
-	Size  int
+	Stack string `json:"stack"`
+	Size  int    `json:"size"`
 	// Preload is the number of exits kept hot even when the pool is idle:
 	// half of Size (at least one), registered in the background after the
 	// first exit so a burst does not wait for a registration.
-	Preload int
+	Preload int `json:"preload"`
 	// Active is the number of exits currently in the ring. Standby counts the
 	// idle part of it: exits not held by a lease and ready to replace a
 	// penalized one immediately.
-	Active  int
-	Standby int
-	Cooling int
-	Egress  []string
+	Active  int `json:"active"`
+	Standby int `json:"standby"`
+	// Cooling is the number of egress prefixes the free lane refused recently.
+	// It counts prefixes, not exits, so it can exceed Size while replacements
+	// land on fresh blocks; CoolingPrefixes is the same number under its
+	// explicit name for callers that display both.
+	Cooling         int      `json:"cooling"`
+	CoolingPrefixes int      `json:"cooling_prefixes"`
+	Egress          []string `json:"egress,omitempty"`
+	// LaneGated is true while the free lane refuses fresh exits often enough
+	// that the pool stopped registering new ones; LaneUntil is when it tries
+	// again and LaneRefusals counts the refusals in a row.
+	LaneGated    bool      `json:"lane_gated"`
+	LaneUntil    time.Time `json:"lane_until"`
+	LaneRefusals int       `json:"lane_refusals"`
 }
 
 // Options configure a WARP pool.
 type Options struct {
-	// Size is the upper bound on exits. Half of it (at least one) is kept hot
-	// as a preload even while the pool is idle; beyond that the pool keeps as
+	// Size is the upper bound on exits. Beyond the preload the pool keeps as
 	// many exits hot as the current concurrency needs and never exceeds Size.
 	Size int
+	// Preload is how many exits to keep warm while idle. Zero uses half of Size
+	// (at least one); a positive value is capped at Size.
+	Preload int
 	// Stack selects the address family inside the tunnel. An IPv6 stack makes
 	// the public egress an IPv6 address.
 	Stack Stack
@@ -153,6 +331,15 @@ type Options struct {
 	// replacement reaches Cloudflare from a new source and receives a new
 	// public egress — the only way past an egress-scoped free usage limit.
 	SourceIPv6 netip.Prefix
+	// Sources, when non-empty, replaces SourceIPv6 with a set: every exit draws
+	// its outer address from one prefix of the set, so several routed /64s — or
+	// a single /48 from a tunnel broker — extend the number of independent
+	// egress blocks the free tier meters separately.
+	Sources []netip.Prefix
+	// RequireIPv6Egress discards exits whose public egress is IPv4: that
+	// address is shared by every Cloudflare user and its quota is usually
+	// already spent. Useful with the dual stack on an IPv4-only host.
+	RequireIPv6Egress bool
 	// StatePath is where successful registrations are saved so a restart can
 	// rebuild the pool without registering every exit again. An empty path
 	// keeps registrations in memory only.
@@ -162,6 +349,16 @@ type Options struct {
 	// it is closed and its Cloudflare device deleted, so the next attempt is a
 	// new registration instead of a retry of the same spent egress.
 	LaneProbe LaneProbe
+	// MaxAge retires an idle exit once it has served this long, so a working
+	// address is not kept for a whole day. Retirement happens between requests
+	// and reuses the same replacement path as a refusal. Zero disables it.
+	MaxAge time.Duration
+	// RotateCooldown spaces out voluntary registrations: a replacement for an
+	// exit retired on age waits until this much time has passed since the
+	// previous voluntary retirement, so a burst of ageing exits does not mint
+	// Cloudflare devices faster than its rate limit. Refused exits are replaced
+	// at once, because the pool just lost capacity.
+	RotateCooldown time.Duration
 }
 
 // LaneProbe is the admission request for a new exit: a minimal free-lane
@@ -171,6 +368,12 @@ type LaneProbe struct {
 	URL   string
 	Model string
 	Auth  string
+	// SystemPrompt, when set, is the leading system message of the admission
+	// request. The gateway passes the same prompt it injects into real free-lane
+	// traffic, because the gate judges that prompt: an env block without a
+	// working directory is refused even from a healthy exit. Empty falls back to
+	// a minimal gate-shaped block.
+	SystemPrompt string
 }
 
 // NewWithOptions creates a WARP pool whose exits use the selected IP stack and,
@@ -182,6 +385,11 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 	}
 	if opts.SourceIPv6.IsValid() && (!opts.SourceIPv6.Addr().Is6() || opts.SourceIPv6.Bits() > 64) {
 		return nil, fmt.Errorf("WARP outer source must be an IPv6 prefix of /64 or shorter, got %s", opts.SourceIPv6)
+	}
+	for _, prefix := range opts.Sources {
+		if !prefix.IsValid() || !prefix.Addr().Is6() || prefix.Bits() > 64 {
+			return nil, fmt.Errorf("WARP outer sources must be IPv6 prefixes of /64 or shorter, got %s", prefix)
+		}
 	}
 	size := opts.Size
 	if size <= 0 {
@@ -199,7 +407,49 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			log.Warn("WARP registration not deleted", "component", "warp", "event", "registration_delete_failed", "id", id, "error", err)
 		}
 	}
-	pool, err := newPool(ctx, slogLogger{log: log}, size, func(ctx context.Context) (*exit, error) {
+	gatePath := ""
+	if opts.StatePath != "" {
+		gatePath = opts.StatePath + ".lane"
+	}
+	gate := newLaneGate(gatePath)
+	// A fresh process always attempts one registration before the gate can stop
+	// it: a saved registration may be gone and the lane may have recovered.
+	var registrations atomic.Int32
+	// maxRegistrationsPerMinute caps device minting. Cloudflare rate-limits
+	// registration per network, and a burst of replacements would otherwise
+	// spend the whole budget without producing a usable exit.
+	const maxRegistrationsPerMinute = 6
+	var regMu sync.Mutex
+	var regTimes []time.Time
+	throttleRegistration := func(ctx context.Context) error {
+		for {
+			regMu.Lock()
+			now := time.Now()
+			kept := regTimes[:0]
+			for _, at := range regTimes {
+				if now.Sub(at) < time.Minute {
+					kept = append(kept, at)
+				}
+			}
+			regTimes = kept
+			if len(regTimes) < maxRegistrationsPerMinute {
+				regTimes = append(regTimes, now)
+				regMu.Unlock()
+				return nil
+			}
+			wait := time.Minute - now.Sub(regTimes[0])
+			regMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+	}
+	pool, err := newPool(ctx, slogLogger{log: log}, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
+		if err := throttleRegistration(ctx); err != nil {
+			return nil, err
+		}
 		// Prefer a registration saved by an earlier process: it is ready to
 		// use, so the pool stays warm across restarts. A saved registration
 		// that no longer builds a working exit is dropped.
@@ -236,6 +486,12 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 					slogLogger{log: log}.Warnf("saved WARP registration %s refused by the free lane (%v); registering a fresh exit", reg.ID, admitErr)
 					continue
 				}
+				if ipv6Required(opts, reused) {
+					reused.close()
+					slogLogger{log: log}.Warnf("Discarding saved WARP exit %s: %v", reused.id, errSharedIPv4Egress)
+					continue
+				}
+				gate.admitted()
 				store.remember(reg)
 				return reused, nil
 			}
@@ -249,10 +505,19 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			slogLogger{log: log}.Warnf("saved WARP registration %s unusable (%v); registering a fresh exit", reg.ID, err)
 			drop(reg.ID, reg.Token)
 		}
+		// A saved registration is always allowed (it costs no Cloudflare
+		// device), but once the lane has refused several fresh ones in a row,
+		// minting another is pointless until the pause it asked for ends.
+		if registrations.Load() > 0 {
+			if until, refusals, gated := gate.state(time.Now()); gated {
+				return nil, &laneGatedError{until: until, refusals: refusals}
+			}
+		}
 		reg, err := r.register(ctx)
 		if err != nil {
 			return nil, err
 		}
+		registrations.Add(1)
 		source, err := opts.sampleSource()
 		if err != nil {
 			drop(reg.ID, reg.Token)
@@ -261,23 +526,38 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 		fresh, err := newExitWithStack(ctx, reg, normalized, source)
 		if err != nil {
 			drop(reg.ID, reg.Token)
+			if opts.RequireIPv6Egress {
+				return nil, fmt.Errorf("%w: %v", errRegistrationRetryable, err)
+			}
 			return nil, err
 		}
 		fresh.bindRegistration(reg, drop)
+		// A burnt registration is not saved: its device is deleted when the exit
+		// goes, so the next process would only spend a probe and a delete on it.
+		keep := true
 		if err := fresh.admit(ctx, opts.LaneProbe); err != nil {
 			if errors.Is(err, errLaneBurnt) {
-				// The tunnel is healthy but the free lane refuses this egress.
-				// Keeping it beats failing the whole anonymous lane closed: the
-				// first real 429 rotates it as before. It is marked spent so its
-				// Cloudflare device is deleted when it goes and never reused.
+				keep = false
+				// The tunnel works but the free lane refused the probe. That is
+				// only a hint: an exit the probe refused has served real traffic
+				// minutes later, so a probe verdict must not park the lane. The
+				// exit is marked spent so its device is deleted when it goes.
 				fresh.markBurned()
 				slogLogger{log: log}.Warnf("WARP exit %s admitted unverified: %v", fresh.id, err)
 			} else {
 				fresh.close()
 				return nil, err
 			}
+		} else {
+			gate.admitted()
 		}
-		store.remember(reg)
+		if ipv6Required(opts, fresh) {
+			fresh.close()
+			return nil, errSharedIPv4Egress
+		}
+		if keep {
+			store.remember(reg)
+		}
 		return fresh, nil
 	})
 	if err != nil {
@@ -289,10 +569,21 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 
 // sampleSource draws the outer source address for one exit.
 func (o Options) sampleSource() (netip.Addr, error) {
-	if !o.SourceIPv6.IsValid() {
-		return netip.Addr{}, nil
+	prefixes := o.Sources
+	if len(prefixes) == 0 {
+		if !o.SourceIPv6.IsValid() {
+			return netip.Addr{}, nil
+		}
+		prefixes = []netip.Prefix{o.SourceIPv6}
 	}
-	return randomSource(o.SourceIPv6)
+	if len(prefixes) == 1 {
+		return randomSource(prefixes[0])
+	}
+	var pick [1]byte
+	if _, err := rand.Read(pick[:]); err != nil {
+		return netip.Addr{}, fmt.Errorf("draw WARP outer source: %w", err)
+	}
+	return randomSource(prefixes[int(pick[0])%len(prefixes)])
 }
 
 // randomSource draws one host address from prefix. The bits above the prefix
@@ -318,17 +609,23 @@ func randomSource(prefix netip.Prefix) (netip.Addr, error) {
 	return netip.AddrFrom16(address), nil
 }
 
-func newPool(ctx context.Context, log logger, size int, create func(context.Context) (*exit, error)) (*Pool, error) {
+func newPool(ctx context.Context, log logger, size, preload int, maxAge, rotateCooldown time.Duration, gate *laneGate, create func(context.Context) (*exit, error)) (*Pool, error) {
 	if size <= 0 {
 		size = DefaultPoolSize
 	}
-	// Keep half of the ceiling warm (at least one) so a burst finds ready
-	// exits instead of paying for registrations while requests queue. The
-	// first exit is synchronous and gates readiness; the rest register in the
-	// background.
-	preload := size / 2
+	// Keep exits warm so a burst finds ready exits instead of paying for
+	// registrations while requests queue. The first exit is synchronous and
+	// gates readiness; the rest register in the background. An explicit
+	// preload from config lets an IPv4-only host warm more /64 exits without
+	// waiting for rotations to trigger replacements.
+	if preload <= 0 {
+		preload = size / 2
+	}
 	if preload < 1 {
 		preload = 1
+	}
+	if preload > size {
+		preload = size
 	}
 	// The caller's context bounds the synchronous first registration, not the
 	// pool: it is typically an initialization deadline that expires moments
@@ -337,15 +634,19 @@ func newPool(ctx context.Context, log logger, size int, create func(context.Cont
 	// leaving the pool stuck on its first egress forever.
 	poolCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	p := &Pool{
-		ctx:      poolCtx,
-		cancel:   cancel,
-		logger:   log,
-		size:     size,
-		preload:  preload,
-		newExit:  create,
-		reserved: make(map[string]bool),
-		cooling:  make(map[string]time.Time),
-		changed:  make(chan struct{}),
+		ctx:            poolCtx,
+		cancel:         cancel,
+		logger:         log,
+		size:           size,
+		preload:        preload,
+		maxAge:         maxAge,
+		rotateCooldown: rotateCooldown,
+		ageSweep:       ageSweepFor(maxAge),
+		laneGate:       gate,
+		newExit:        create,
+		reserved:       make(map[string]bool),
+		cooling:        make(map[string]time.Time),
+		changed:        make(chan struct{}),
 	}
 	// The first registration gates readiness. Cloudflare can answer it with a
 	// rate limit even when this process has just started (the limit follows the
@@ -353,7 +654,43 @@ func newPool(ctx context.Context, log logger, size int, create func(context.Cont
 	// instead of failing startup over a pause that is about to end. Any other
 	// failure still fails closed.
 	first, err := p.createExit(ctx)
+	sharedRetries, retryable := 0, 0
 	for err != nil {
+		if errors.Is(err, errRegistrationRetryable) && retryable < 6 {
+			retryable++
+			if log != nil {
+				log.Warnf("OpenCode WARP first exit failed verification; registering another (%d/6): %v", retryable, err)
+			}
+			timer := time.NewTimer(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				cancel()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+			first, err = p.createExit(ctx)
+			continue
+		}
+		// A dual-stack registration can legitimately land on Cloudflare's
+		// shared IPv4 egress. When the pool requires a private /64, retry a
+		// few times instead of failing startup over one unlucky device.
+		if errors.Is(err, errSharedIPv4Egress) && sharedRetries < 6 {
+			sharedRetries++
+			if log != nil {
+				log.Warnf("OpenCode WARP first exit used the shared IPv4 egress; registering another (%d/6)", sharedRetries)
+			}
+			timer := time.NewTimer(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				cancel()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+			first, err = p.createExit(ctx)
+			continue
+		}
 		pause := registrationPause(err)
 		if pause <= 0 {
 			cancel()
@@ -377,7 +714,87 @@ func newPool(ctx context.Context, log logger, size int, create func(context.Cont
 		log.Infof("OpenCode WARP/%s pool ready (max %d exits, preloading %d)", first.stack, size, preload)
 	}
 	p.startRefill()
+	p.startAgeSweep()
 	return p, nil
+}
+
+// ageSweepFor picks how often the pool looks for exits that reached maxAge:
+// never for an unlimited age, otherwise at most a minute but early enough that
+// an exit does not overshoot its limit by more than half of it.
+func ageSweepFor(maxAge time.Duration) time.Duration {
+	if maxAge <= 0 {
+		return 0
+	}
+	interval := ageSweepInterval
+	if half := maxAge / 2; half < interval {
+		interval = half
+		if interval < time.Second {
+			interval = time.Second
+		}
+	}
+	return interval
+}
+
+// startAgeSweep schedules the first look for exits that reached MaxAge. The
+// sweep runs under the pool's lifetime, so Close stops it like any other timer.
+func (p *Pool) startAgeSweep() {
+	if p.ageSweep <= 0 {
+		return
+	}
+	p.after(p.ageSweep, p.sweepAged)
+}
+
+// sweepAged retires one idle exit that has served MaxAge. It takes one exit per
+// pass so the replacement registration — and its cooldown — is spread out, and
+// it only takes idle exits, so an ageing rotation never interrupts a request.
+func (p *Pool) sweepAged() {
+	if p.maxAge <= 0 {
+		return
+	}
+	// Retiring a working address only makes sense if a replacement can be
+	// registered: while the lane refuses fresh exits, an aged rotation would
+	// trade a usable egress for nothing.
+	if _, _, gated := p.laneGate.state(time.Now()); gated {
+		p.after(p.ageSweep, p.sweepAged)
+		return
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	var aged *exit
+	for _, candidate := range p.active {
+		if candidate.age(now) >= p.maxAge && candidate.idle() {
+			aged = candidate
+			break
+		}
+	}
+	p.mu.Unlock()
+	if aged != nil {
+		// The address is healthy, but the device is deleted with it: a fresh
+		// registration is what yields a different egress /64.
+		aged.markBurned()
+		p.penalizeAfter(aged, "max age reached", 0, p.nextRotationDelay())
+	}
+	p.after(p.ageSweep, p.sweepAged)
+}
+
+// nextRotationDelay reports how long a voluntary rotation must wait so two
+// registrations are at least rotateCooldown apart, and books that slot.
+func (p *Pool) nextRotationDelay() time.Duration {
+	if p.rotateCooldown <= 0 {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delay := p.rotateCooldown - time.Since(p.lastRotate)
+	if delay < 0 {
+		delay = 0
+	}
+	p.lastRotate = time.Now().Add(delay)
+	return delay
 }
 
 // desiredLocked is the number of exits the pool should keep hot: one per
@@ -475,7 +892,29 @@ func (p *Pool) ReportWithRetryAfter(lease *Lease, status int, body []byte, retry
 	}
 	rotate, reason := lease.exit.observe(status, body)
 	if !rotate {
+		// A 2xx on real traffic is the only proof that this host is still
+		// admitted, so it clears the refusal streak. The admission probe is not
+		// used for this: it has refused exits that then served a 200.
+		if status/100 == 2 {
+			p.laneGate.admitted()
+		}
 		return
+	}
+	// While the lane refuses fresh exits, replacing this one would only trade a
+	// working tunnel for another refusal: keep it so the client sees the
+	// upstream's real 429 (with its Retry-After) instead of a minted device.
+	if status == http.StatusTooManyRequests {
+		if until, _, gated := p.laneGate.state(time.Now()); gated {
+			if p.logger != nil {
+				p.logger.Warnf("free lane is refusing fresh exits; keeping %s instead of rotating (registrations paused until %s)",
+					lease.exit.id, until.UTC().Format(time.RFC3339))
+			}
+			return
+		}
+		refusals, pause := p.laneGate.refused(time.Now())
+		if pause > 0 && p.logger != nil {
+			p.logger.Warnf("free lane refused %d requests in a row across fresh exits; keeping exits and pausing registrations for %s", refusals, pause)
+		}
 	}
 	p.penalizeFor(lease.exit, reason, max(retryAfter, egressCooldown))
 }
@@ -652,7 +1091,23 @@ func (p *Pool) Size() int { return p.size }
 func (p *Pool) Snapshot() Snapshot {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	snapshot := Snapshot{Stack: string(p.stack), Size: p.size, Preload: p.preload, Active: len(p.active), Cooling: len(p.cooling)}
+	now := time.Now()
+	// A cooling entry outlives its window only on paper: drop it here so the
+	// reported count follows the cooldown instead of growing all day.
+	for key, until := range p.cooling {
+		if !until.After(now) {
+			delete(p.cooling, key)
+		}
+	}
+	snapshot := Snapshot{
+		Stack: string(p.stack), Size: p.size, Preload: p.preload, Active: len(p.active),
+		Cooling: len(p.cooling), CoolingPrefixes: len(p.cooling),
+	}
+	if until, refusals, gated := p.laneGate.state(time.Now()); refusals > 0 || gated {
+		snapshot.LaneGated = gated
+		snapshot.LaneUntil = until
+		snapshot.LaneRefusals = refusals
+	}
 	for _, active := range p.active {
 		if active.idle() {
 			snapshot.Standby++
@@ -664,11 +1119,29 @@ func (p *Pool) Snapshot() Snapshot {
 	return snapshot
 }
 
+// ResetLaneGate clears the refusal streak and any pause so an operator can ask
+// the pool for a fresh registration immediately, then starts a refill.
+func (p *Pool) ResetLaneGate() {
+	if p == nil || p.laneGate == nil {
+		return
+	}
+	p.laneGate.admitted()
+	p.startRefill()
+}
+
 func (p *Pool) penalize(bad *exit, reason string) {
 	p.penalizeFor(bad, reason, egressCooldown)
 }
 
 func (p *Pool) penalizeFor(bad *exit, reason string, cooldown time.Duration) {
+	p.penalizeAfter(bad, reason, cooldown, 0)
+}
+
+// penalizeAfter removes bad from the ring and schedules its replacement. delay
+// postpones only the registration: the exit is gone at once, so a refusal
+// (delay 0) keeps the pool responsive while a voluntary rotation can be spaced
+// out to avoid registering devices in a burst.
+func (p *Pool) penalizeAfter(bad *exit, reason string, cooldown, delay time.Duration) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
@@ -711,6 +1184,15 @@ func (p *Pool) penalizeFor(bad *exit, reason string, cooldown time.Duration) {
 			p.notifyLocked()
 			p.mu.Unlock()
 		}()
+		if delay > 0 {
+			timer := time.NewTimer(delay)
+			defer timer.Stop()
+			select {
+			case <-p.ctx.Done():
+				return
+			case <-timer.C:
+			}
+		}
 		p.replace(bad, reason)
 	}()
 }

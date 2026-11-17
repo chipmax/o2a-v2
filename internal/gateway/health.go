@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"net/netip"
 	"slices"
 	"strconv"
 	"time"
@@ -22,6 +23,7 @@ type healthResponse struct {
 	Proxies healthProxies    `json:"proxies"`
 	Warp    *healthWarp      `json:"warp,omitempty"`
 	Peers   []map[string]any `json:"peers,omitempty"`
+	Load    *healthLoad      `json:"load,omitempty"`
 	Issues  []string         `json:"issues,omitempty"`
 }
 
@@ -38,10 +40,20 @@ type healthModels struct {
 }
 
 type healthKeys struct {
-	Zen       int  `json:"zen"`
-	Go        int  `json:"go"`
-	Total     int  `json:"total"`
-	Anonymous bool `json:"anonymous"`
+	Zen         int  `json:"zen"`
+	Go          int  `json:"go"`
+	Total       int  `json:"total"`
+	Anonymous   bool `json:"anonymous"`
+	Quarantined int  `json:"credential_quarantined,omitempty"`
+}
+
+// healthLoad reports the admission gate. It is omitted when max_inflight is 0,
+// so a deployment that never enabled the gate keeps the same document.
+type healthLoad struct {
+	Inflight int    `json:"inflight"`
+	Max      int    `json:"max"`
+	Total    uint64 `json:"total"`
+	Queued   uint64 `json:"queued_total"`
 }
 
 type healthProxies struct {
@@ -59,7 +71,21 @@ type healthWarp struct {
 	Preload int    `json:"preload"`
 	Active  int    `json:"active"`
 	Standby int    `json:"standby"`
-	Cooling int    `json:"cooling"`
+	// EgressIPv6 counts active exits on a public IPv6 address. Those are the
+	// exits with their own free-tier /64 bucket; an IPv4 WARP egress is a
+	// Cloudflare address shared with every other user and is not a bucket.
+	EgressIPv6 int `json:"egress_ipv6"`
+	Cooling    int `json:"cooling"`
+	// CoolingPrefixes is the number of egress prefixes parked by the free lane.
+	// It is the honest denominator for "cooling": the count is per /64, so it
+	// can exceed Size while replacements keep landing on fresh blocks.
+	CoolingPrefixes int `json:"cooling_prefixes,omitempty"`
+	// LaneGated reports that the free lane refused several fresh exits in a row
+	// and the pool paused registrations until LaneUntil. Without it the pool
+	// looks merely "small" while it is really waiting out an upstream refusal.
+	LaneGated    bool       `json:"lane_gated,omitempty"`
+	LaneUntil    *time.Time `json:"lane_until,omitempty"`
+	LaneRefusals int        `json:"lane_refusals,omitempty"`
 }
 
 // handleHealth reports readiness. It answers 503 while the model catalog is
@@ -69,6 +95,13 @@ type healthWarp struct {
 // credentials, marks the status degraded, except that a pending catalog reports
 // starting.
 func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	report, httpStatus := g.HealthReport()
+	httpx.WriteJSON(w, httpStatus, report)
+}
+
+// HealthReport builds the readiness document /healthz serves. The console reads
+// it too, so its "Ready" chip cannot disagree with the endpoint clients use.
+func (g *Gateway) HealthReport() (healthResponse, int) {
 	_, models := g.availableModels()
 	proxyTotal, proxyHealthy := g.transports.healthCounts()
 	zenKeys, goKeys := g.zenNodes.Len(), g.goNodes.Len()
@@ -78,14 +111,30 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if g.warp != nil {
 		snapshot := g.warp.Snapshot()
 		warpActive = snapshot.Active
+		egressIPv6 := 0
+		for _, raw := range snapshot.Egress {
+			if address, err := netip.ParseAddr(raw); err == nil && address.Is6() {
+				egressIPv6++
+			}
+		}
 		warpStatus = &healthWarp{
-			Status:  "unavailable",
-			Stack:   snapshot.Stack,
-			Size:    snapshot.Size,
-			Preload: snapshot.Preload,
-			Active:  snapshot.Active,
-			Standby: snapshot.Standby,
-			Cooling: snapshot.Cooling,
+			Status:          "unavailable",
+			Stack:           snapshot.Stack,
+			Size:            snapshot.Size,
+			Preload:         snapshot.Preload,
+			Active:          snapshot.Active,
+			Standby:         snapshot.Standby,
+			EgressIPv6:      egressIPv6,
+			Cooling:         snapshot.Cooling,
+			CoolingPrefixes: snapshot.CoolingPrefixes,
+		}
+		if snapshot.LaneRefusals > 0 || snapshot.LaneGated {
+			warpStatus.LaneRefusals = snapshot.LaneRefusals
+			warpStatus.LaneGated = snapshot.LaneGated
+			if !snapshot.LaneUntil.IsZero() {
+				until := snapshot.LaneUntil.UTC()
+				warpStatus.LaneUntil = &until
+			}
 		}
 		if snapshot.Active > 0 {
 			warpStatus.Status = "ready"
@@ -136,7 +185,21 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			status = "starting"
 		}
 	}
-	httpx.WriteJSON(w, httpStatus, healthResponse{
+	quarantined := 0
+	now := time.Now()
+	_, zenQuarantined, _, _ := g.zenNodes.CoolingSummary(now)
+	_, goQuarantined, _, _ := g.goNodes.CoolingSummary(now)
+	quarantined = zenQuarantined + goQuarantined
+	var load *healthLoad
+	if g.inflight != nil {
+		load = &healthLoad{
+			Inflight: int(g.inflightNow.Load()),
+			Max:      cap(g.inflight),
+			Total:    g.inflightTotal.Load(),
+			Queued:   g.queuedTotal.Load(),
+		}
+	}
+	return healthResponse{
 		Status:  status,
 		Ready:   ready,
 		Version: buildinfo.Version,
@@ -151,7 +214,7 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			CacheSource:       models.CacheSource,
 			Stale:             models.Stale,
 		},
-		Keys: healthKeys{Zen: zenKeys, Go: goKeys, Total: zenKeys + goKeys, Anonymous: g.cfg.Anonymous},
+		Keys: healthKeys{Zen: zenKeys, Go: goKeys, Total: zenKeys + goKeys, Anonymous: g.cfg.Anonymous, Quarantined: quarantined},
 		Proxies: healthProxies{
 			Total:     proxyTotal,
 			Healthy:   proxyHealthy,
@@ -159,8 +222,9 @@ func (g *Gateway) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		},
 		Warp:   warpStatus,
 		Peers:  g.peers.peerSnapshot(),
+		Load:   load,
 		Issues: issues,
-	})
+	}, httpStatus
 }
 
 func (g *Gateway) availableModels() ([]modelcatalog.Route, modelcatalog.CatalogSnapshot) {

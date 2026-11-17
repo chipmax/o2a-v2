@@ -155,6 +155,7 @@ func (g *Gateway) CheckProxiesNow(ctx context.Context) int {
 // proxy is still healthy, and an inconclusive error changes nothing. source
 // and upstreamStatus only label the log.
 func (g *Gateway) applyProxyHealthResult(result proxyHealthResult, source string, upstreamStatus int) {
+	result.proxy.setLastError(result.err)
 	if result.err == nil {
 		if !result.wasHealthy {
 			g.restoreProxy(result.proxy)

@@ -139,6 +139,13 @@ type Gateway struct {
 	// relay, so the quota probe rotates instead of retrying one target.
 	probeMu  sync.Mutex
 	probedAt map[string]time.Time
+	// inflight is the global admission gate: a nil channel means unbounded.
+	// queueWait is how long an overflow request may wait for a slot.
+	inflight      chan struct{}
+	queueWait     time.Duration
+	inflightNow   atomic.Int64
+	inflightTotal atomic.Uint64
+	queuedTotal   atomic.Uint64
 }
 
 // New builds a Gateway for cfg: one proxy transport per runtime proxy (a
@@ -155,7 +162,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 	if err != nil {
 		return nil, err
 	}
-	transports, err := transportPool(cfg.RuntimeProxies(), cfg.Performance, cfg.Performance.AttemptTimeout(time.Duration(cfg.Retry.TimeoutSeconds)*time.Second))
+	transports, err := transportPool(cfg.RuntimeProxies(), cfg.Performance, cfg.Performance.AttemptTimeout(time.Duration(cfg.Retry.TimeoutSeconds)*time.Second), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -168,9 +175,17 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 	if err != nil {
 		return nil, fmt.Errorf("go node pool: %w", err)
 	}
+	quarantine := cfg.Performance.CredentialQuarantine()
+	zenNodes.quarantine = quarantine
+	goNodes.quarantine = quarantine
+	var inflight chan struct{}
+	if cfg.Performance.MaxInflight > 0 {
+		inflight = make(chan struct{}, cfg.Performance.MaxInflight)
+	}
 	catalog := models.Catalog(cfg.Prefer, cfg.Models.Protocols)
 	catalog.SetRefreshInterval(time.Duration(cfg.Models.RefreshSeconds) * time.Second)
 	catalog.SetFreeOnly(cfg.Models.FreeOnly)
+	catalog.SetDeadModels(cfg.Models.DeadIDs)
 	contextLimits, _ := models.OpenContextLimits("")
 	return &Gateway{
 		cfg:            cfg,
@@ -189,6 +204,8 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 		quota:          egressQuota,
 		affinity:       newEgressAffinity(),
 		contextLimits:  contextLimits,
+		inflight:       inflight,
+		queueWait:      time.Duration(cfg.Performance.QueueWaitSeconds) * time.Second,
 	}, nil
 }
 
@@ -211,10 +228,10 @@ func anonymousBackoffFromConfig(cfg *config.AnonymousBackoffConfig) anonymousBac
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/models", g.authenticate(g.handleModels))
-	mux.HandleFunc("POST /v1/chat/completions", g.authenticate(g.handleInference(wire.Chat)))
-	mux.HandleFunc("POST /v1/responses", g.authenticate(g.handleInference(wire.Responses)))
-	mux.HandleFunc("POST /v1/messages", g.authenticate(g.handleInference(wire.Anthropic)))
-	mux.HandleFunc("POST /v1/systemone", g.authenticate(g.handleSystemOne))
+	mux.HandleFunc("POST /v1/chat/completions", g.authenticate(g.gated(wire.Chat, g.handleInference(wire.Chat))))
+	mux.HandleFunc("POST /v1/responses", g.authenticate(g.gated(wire.Responses, g.handleInference(wire.Responses))))
+	mux.HandleFunc("POST /v1/messages", g.authenticate(g.gated(wire.Anthropic, g.handleInference(wire.Anthropic))))
+	mux.HandleFunc("POST /v1/systemone", g.authenticate(g.gated(wire.SystemOne, g.handleSystemOne)))
 	mux.HandleFunc("GET /healthz", g.handleHealth)
 	mux.HandleFunc("GET /metrics", g.handleMetrics)
 	return telemetry.Recover(g.logger, mux)
@@ -490,6 +507,27 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				wire.WriteError(w, external, http.StatusServiceUnavailable, warpUnavailableMessage, "warp_unavailable", ids.Request)
 				return
 			}
+			// The key pool answered from its own state: every key was cooling
+			// (429) or every key was rejected as a credential (503). Both
+			// carry the real retry horizon, so the client backs off with a
+			// number instead of replaying the request.
+			if retryAfter, ok := keyPoolRetryAfter(err); ok {
+				status, message, code := http.StatusServiceUnavailable, keyPoolCredentialMessage, "key_pool_credential_exhausted"
+				if errors.Is(err, errKeyPoolCooling) {
+					status, message, code = http.StatusTooManyRequests, keyPoolCoolingMessage, "key_pool_cooling"
+				}
+				if seconds := int(retryAfter.Seconds()); seconds > 0 {
+					w.Header().Set("Retry-After", strconv.Itoa(seconds))
+				}
+				wire.WriteError(w, external, status, message, code, ids.Request)
+				return
+			}
+			// The upstream refuses this model from this country. Report the
+			// region as the cause: rotating keys or retrying cannot fix it.
+			if errors.Is(err, errModelUnavailableInRegion) {
+				wire.WriteError(w, external, http.StatusNotFound, modelUnavailableInRegionMessage, "model_not_available_in_region", ids.Request)
+				return
+			}
 			// An exhausted request budget is a timeout, not a bad gateway: the
 			// distinction matters to clients that retry on 502.
 			if errors.Is(err, context.DeadlineExceeded) {
@@ -605,13 +643,19 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("X-Accel-Buffering", "no")
 			w.WriteHeader(resp.StatusCode)
-			streamBody := wire.RenameStreamReader(resp.Body, upstreamRoute.Protocol, toolRenames)
+			keepalive := newStreamKeepalive(w, external, g.cfg.Performance.Heartbeat(), g.cfg.Performance.StreamIdleTimeout())
+			defer keepalive.Stop()
+			idleTimeout := g.cfg.Performance.StreamIdleTimeout()
+			streamBody := wire.RenameStreamReader(newIdleReadCloser(resp.Body, idleTimeout, func() {
+				g.logger.Warn("upstream stream idle", "component", "upstream", "event", "stream_idle", "request_id", ids.Request, "timeout_seconds", int(idleTimeout.Seconds()))
+				keepalive.WriteIdle()
+			}), upstreamRoute.Protocol, toolRenames)
 			var usage wire.Usage
 			var usageReported bool
 			if external == upstreamRoute.Protocol {
-				usage, usageReported, err = wire.ForwardStream(r.Context(), w, streamBody, upstreamRoute.Protocol, model)
+				usage, usageReported, err = wire.ForwardStream(r.Context(), keepalive, streamBody, upstreamRoute.Protocol, model)
 			} else {
-				usage, usageReported, err = wire.TranscodeStream(r.Context(), w, streamBody, upstreamRoute.Protocol, external, model)
+				usage, usageReported, err = wire.TranscodeStream(r.Context(), keepalive, streamBody, upstreamRoute.Protocol, external, model)
 			}
 			if meta != nil {
 				meta.Usage, meta.UsageReported = usage, usageReported
@@ -622,6 +666,11 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 					meta.Outcome = "stream_error"
 					if wire.ClientCanceled(r.Context(), err) {
 						meta.Outcome = "client_canceled"
+					}
+					if keepalive.IdleTripped() {
+						// The watchdog closed the upstream body, so the read
+						// error looks like a cancel. Name the real cause.
+						meta.Outcome = "upstream_idle_timeout"
 					}
 				}
 			}
@@ -775,6 +824,21 @@ func (g *Gateway) forwardSystemOne(w http.ResponseWriter, r *http.Request, body 
 			wire.WriteError(w, wire.SystemOne, http.StatusServiceUnavailable, warpUnavailableMessage, "warp_unavailable", ids.Request)
 			return
 		}
+		if retryAfter, ok := keyPoolRetryAfter(err); ok {
+			status, message, code := http.StatusServiceUnavailable, keyPoolCredentialMessage, "key_pool_credential_exhausted"
+			if errors.Is(err, errKeyPoolCooling) {
+				status, message, code = http.StatusTooManyRequests, keyPoolCoolingMessage, "key_pool_cooling"
+			}
+			if seconds := int(retryAfter.Seconds()); seconds > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			}
+			wire.WriteError(w, wire.SystemOne, status, message, code, ids.Request)
+			return
+		}
+		if errors.Is(err, errModelUnavailableInRegion) {
+			wire.WriteError(w, wire.SystemOne, http.StatusNotFound, modelUnavailableInRegionMessage, "model_not_available_in_region", ids.Request)
+			return
+		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			// Same split as the chat path: a write-phase failure means the
 			// payload is too large (413), every other phase is a slow
@@ -807,7 +871,13 @@ func (g *Gateway) forwardSystemOne(w http.ResponseWriter, r *http.Request, body 
 		w.Header().Set("Content-Type", contentType)
 		w.Header().Set("Cache-Control", "no-cache")
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
+		keepalive := newStreamKeepalive(w, wire.SystemOne, g.cfg.Performance.Heartbeat(), g.cfg.Performance.StreamIdleTimeout())
+		defer keepalive.Stop()
+		idleTimeout := g.cfg.Performance.StreamIdleTimeout()
+		_, _ = io.Copy(keepalive, newIdleReadCloser(resp.Body, idleTimeout, func() {
+			g.logger.Warn("upstream stream idle", "component", "upstream", "event", "stream_idle", "request_id", ids.Request, "timeout_seconds", int(idleTimeout.Seconds()))
+			keepalive.WriteIdle()
+		}))
 		return
 	}
 	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))

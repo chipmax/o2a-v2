@@ -385,11 +385,17 @@ func (g *Gateway) writePeerSuccess(ctx context.Context, w http.ResponseWriter, r
 	if observe && strings.HasPrefix(contentType, "text/event-stream") {
 		copyPeerResponseHeaders(w, resp, peerName, requestID)
 		w.WriteHeader(resp.StatusCode)
+		idleTimeout := g.cfg.Performance.StreamIdleTimeout()
+		keepalive := newStreamKeepalive(w, protocol, g.cfg.Performance.Heartbeat(), idleTimeout)
+		defer keepalive.Stop()
 		if _, ok := w.(http.Flusher); !ok {
-			_, _ = io.Copy(w, resp.Body)
+			_, _ = io.Copy(keepalive, newIdleReadCloser(resp.Body, idleTimeout, nil))
 			return
 		}
-		usage, reported, err := wire.ForwardStream(ctx, w, resp.Body, protocol, model)
+		usage, reported, err := wire.ForwardStream(ctx, keepalive, newIdleReadCloser(resp.Body, idleTimeout, func() {
+			g.logger.Warn("peer stream idle", "component", "peer", "event", "stream_idle", "peer", peerName, "request_id", requestID, "timeout_seconds", int(idleTimeout.Seconds()))
+			keepalive.WriteIdle()
+		}), protocol, model)
 		if err == nil && reported && usage.Input > 0 {
 			g.contextLimits.ObserveSuccess(model, tier, usage.Input, requestBytes)
 		}
@@ -418,16 +424,19 @@ func (g *Gateway) writePeerResponse(w http.ResponseWriter, resp *http.Response, 
 	defer resp.Body.Close()
 	copyPeerResponseHeaders(w, resp, peerName, requestID)
 	w.WriteHeader(resp.StatusCode)
-	flusher, _ := w.(http.Flusher)
+	idleTimeout := g.cfg.Performance.StreamIdleTimeout()
+	keepalive := newStreamKeepalive(w, wire.SystemOne, g.cfg.Performance.Heartbeat(), idleTimeout)
+	defer keepalive.Stop()
+	body := newIdleReadCloser(resp.Body, idleTimeout, func() {
+		g.logger.Warn("peer stream idle", "component", "peer", "event", "stream_idle", "peer", peerName, "request_id", requestID, "timeout_seconds", int(idleTimeout.Seconds()))
+		keepalive.WriteIdle()
+	})
 	buf := make([]byte, 16<<10)
 	for {
-		n, err := resp.Body.Read(buf)
+		n, err := body.Read(buf)
 		if n > 0 {
-			if _, werr := w.Write(buf[:n]); werr != nil {
+			if _, werr := keepalive.Write(buf[:n]); werr != nil {
 				return
-			}
-			if flusher != nil {
-				flusher.Flush()
 			}
 		}
 		if err != nil {

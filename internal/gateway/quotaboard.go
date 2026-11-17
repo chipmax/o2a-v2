@@ -39,6 +39,11 @@ type EgressQuotaSnapshot struct {
 	Cooling  int                `json:"cooling"`
 	Active   int                `json:"active"`
 	Observed int                `json:"observed"`
+	// LaneGated reports that the free lane refused several real requests in a
+	// row, so registrations are paused and exits are kept instead of rotated.
+	LaneGated    bool      `json:"lane_gated,omitempty"`
+	LaneUntil    time.Time `json:"lane_until,omitempty"`
+	LaneRefusals int       `json:"lane_refusals,omitempty"`
 }
 
 // quotaBoard remembers, per egress and model family, how often the free tier

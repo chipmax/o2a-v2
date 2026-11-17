@@ -118,7 +118,28 @@
                   <div id="m-active" class="metric-value">—</div>
                   <div class="metric-note" data-i18n="overview.concurrent">Số request đồng thời</div>
                 </div>
+                <div class="metric">
+                  <div class="metric-label" data-i18n="overview.quota">Tỷ lệ 429</div>
+                  <div id="m-429" class="metric-value">—</div>
+                  <div class="metric-note" data-i18n="overview.quotaNote">Hết hạn mức /64</div>
+                </div>
+                <div class="metric">
+                  <div class="metric-label" data-i18n="overview.ready">Trạng thái sẵn sàng</div>
+                  <div id="m-ready" class="metric-value">—</div>
+                  <div id="m-ready-note" class="metric-note" data-i18n="overview.readyNote">Khớp với /healthz</div>
+                </div>
               </div>
+              <section class="section" id="overview-ops">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="overview.ops.title">Sự kiện gần đây</h2>
+                    <p class="section-caption" data-i18n="overview.ops.caption">Xoay đầu ra, chặn lane, đăng ký lỗi — 20 dòng mới nhất.</p>
+                  </div>
+                  <span id="overview-ops-meta" class="section-caption"></span>
+                </div>
+                <div id="overview-lane" class="lane-banner hidden"></div>
+                <div id="overview-events" class="event-list"></div>
+              </section>
               <div class="quick-actions" aria-label="Thao tác nhanh">
                 <button id="quick-api-keys" class="btn btn-sm" data-i18n="quick.apiKeys">Quản lý API Key</button>
                 <button id="quick-diagnostics" class="btn btn-sm" data-i18n="quick.diagnostics">Chẩn đoán</button>
@@ -221,6 +242,7 @@
                         <tr>
                           <th data-i18n="usage.models.col.model">Mô hình</th>
                           <th class="num" data-i18n="usage.models.col.input">Input</th>
+                          <th class="num" data-i18n="usage.models.col.avg">TB vào/req</th>
                           <th class="num" data-i18n="usage.models.col.output">Output</th>
                           <th class="num" data-i18n="usage.models.col.total">Tổng</th>
                         </tr>
@@ -245,12 +267,12 @@
                 <div class="metric">
                   <div class="metric-label" data-i18n="egress.metrics.warp">WARP đang chạy</div>
                   <div id="egress-m-warp" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="egress.metrics.warp.note">Sẵn sàng / dự phòng / đang nghỉ</div>
+                  <div id="egress-m-warp-note" class="metric-note" data-i18n="egress.metrics.warp.note">Sẵn sàng / dự phòng / đang nghỉ</div>
                 </div>
                 <div class="metric">
                   <div class="metric-label" data-i18n="egress.metrics.proxies">Proxy khoẻ</div>
                   <div id="egress-m-proxies" class="metric-value">—</div>
-                  <div class="metric-note" data-i18n="egress.metrics.proxies.note">Đang dùng được / tổng cấu hình</div>
+                  <div id="egress-m-proxies-note" class="metric-note" data-i18n="egress.metrics.proxies.note">Đang dùng được / tổng cấu hình</div>
                 </div>
                 <div class="metric">
                   <div class="metric-label" data-i18n="egress.metrics.peers">Peer sẵn sàng</div>
@@ -293,6 +315,7 @@
                   aria-live="polite"
                   data-i18n="egress.pending"
                 >Đang đọc trạng thái pool.</div>
+                <div id="egress-lane" class="lane-banner hidden"></div>
                 <div class="heatmap" id="egress-heatmap" aria-label="Sử dụng 30 ngày"></div>
                 <p id="egress-canary" class="section-caption" role="status"></p>
                 <div class="table-wrap">
@@ -477,6 +500,17 @@
               </section>
             </div>
             <div data-panel="logs" class="stack hidden" role="tabpanel">
+              <section class="section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="gate.title">Kiểm tra cổng miễn phí</h2>
+                    <p class="section-caption" data-i18n="gate.caption">Gửi 1 baseline và 8 vi phạm qua một exit đang sống: không đăng ký device mới, chỉ tốn 9 request nhỏ.</p>
+                  </div>
+                  <button id="gate-run" class="btn btn-sm btn-primary" data-i18n="gate.run">Chạy gatecheck</button>
+                </div>
+                <p id="gate-status" class="section-caption" role="status" aria-live="polite"></p>
+                <pre id="gate-output" class="code-card">—</pre>
+              </section>
               <div class="filters">
                 <select id="log-level" aria-label="Mức log">
                   <option value="" data-i18n="logs.level.all">Tất cả mức</option>
@@ -502,6 +536,33 @@
               <div id="log-list" class="logs"></div>
             </div>
             <div data-panel="route" class="stack hidden" role="tabpanel">
+              <section class="section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="diagnostics.preview.title">Xem trước định tuyến</h2>
+                    <p class="section-caption" data-i18n="diagnostics.preview.caption">Mô phỏng một request ngay lúc này: làn nào đi trước, làn nào bị bỏ qua và vì sao. Chỉ đọc — không gửi lên upstream, không đổi cooldown.</p>
+                  </div>
+                  <div class="actions">
+                    <input
+                      id="preview-model"
+                      class="head-search"
+                      list="preview-models"
+                      placeholder="Chọn hoặc nhập model"
+                      aria-label="Model cần xem trước"
+                      data-i18n-attr="placeholder:diagnostics.preview.model,aria-label:diagnostics.preview.model"
+                    />
+                    <datalist id="preview-models"></datalist>
+                    <select id="preview-protocol" class="head-search" aria-label="Giao thức">
+                      <option value="chat">Chat</option>
+                      <option value="responses">Responses</option>
+                      <option value="anthropic">Anthropic</option>
+                    </select>
+                    <button id="preview-run" class="btn btn-primary" type="button" data-i18n="diagnostics.preview.run">Xem trước</button>
+                  </div>
+                </div>
+                <p id="preview-status" class="section-caption" data-i18n="diagnostics.preview.idle">Chọn model rồi bấm Xem trước.</p>
+                <div id="preview-result"></div>
+              </section>
               <section class="section">
                 <div class="section-head">
                   <div>

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"opencode2api/internal/config"
 	wire "opencode2api/internal/protocol"
 )
 
@@ -38,12 +39,12 @@ Use the skill tool to load a skill when a task matches its description.
 </available_skills>`
 
 // opencodeEnvironment renders the <env> block the CLI puts after its base
-// prompt. The gateway deliberately omits the CLI's working-directory lines:
-// they would expose the service account's filesystem (for example
-// C:\Windows\System32) and tell the model to inspect paths that do not exist
-// for the caller. The upstream only needs the agent-shaped prompt; platform
-// and date keep the block in the official shape without leaking host paths.
-func opencodeEnvironment(model string) string {
+// prompt. The free-tier gate requires an <env> element that states a working
+// directory: an otherwise perfect request is refused with the quota-shaped 429
+// when the line is missing, so the block keeps it. The path is a fixed neutral
+// one rather than the service account's real directory — the gate checks the
+// line, not the path, and the host filesystem must not leak to the model.
+func opencodeEnvironment(model string, environment *config.PromptEnvironmentConfig) string {
 	apiModel := strings.TrimSpace(strings.TrimPrefix(model, "opencode/"))
 	if apiModel == "" {
 		apiModel = "unknown"
@@ -52,10 +53,29 @@ func opencodeEnvironment(model string) string {
 	if platform == "windows" {
 		platform = "win32"
 	}
+	directory, workspace, gitRepo := "/workspace", "/workspace", "yes"
+	if environment != nil {
+		if environment.WorkingDirectory != "" {
+			directory = environment.WorkingDirectory
+			workspace = directory
+		}
+		if environment.WorkspaceRoot != "" {
+			workspace = environment.WorkspaceRoot
+		}
+		if environment.Platform != "" {
+			platform = environment.Platform
+		}
+		if environment.IsGitRepo != nil && !*environment.IsGitRepo {
+			gitRepo = "no"
+		}
+	}
 	return strings.Join([]string{
 		"You are powered by the model named " + apiModel + ". The exact model ID is opencode/" + apiModel,
 		"Here is some useful information about the environment you are running in:",
 		"<env>",
+		"  Working directory: " + directory,
+		"  Workspace root folder: " + workspace,
+		"  Is directory a git repo: " + gitRepo,
 		"  Platform: " + platform,
 		"  Today's date: " + time.Now().UTC().Format("Mon Jan 02 2006"),
 		"</env>",
@@ -64,12 +84,12 @@ func opencodeEnvironment(model string) string {
 
 // opencodeSystemPrompt assembles the full CLI system prompt for model and the
 // upstream generation's tool naming.
-func opencodeSystemPrompt(model string, v1 bool) string {
+func opencodeSystemPrompt(model string, v1 bool, environment *config.PromptEnvironmentConfig) string {
 	base := opencodePromptV2
 	if v1 {
 		base = opencodePromptV1
 	}
-	return base + opencodeEnvironment(model) + "\n" + opencodeSkills
+	return base + opencodeEnvironment(model, environment) + "\n" + opencodeSkills
 }
 
 // injectOfficialPrompt prepends the official CLI system prompt to a shaped
@@ -77,12 +97,12 @@ func opencodeSystemPrompt(model string, v1 bool) string {
 // already carries the marker is left untouched, so repeated shaping cannot
 // duplicate the prompt. System One payloads are not chat bodies and are never
 // touched.
-func injectOfficialPrompt(payload map[string]any, protocol wire.Protocol, v1 bool) bool {
+func injectOfficialPrompt(payload map[string]any, protocol wire.Protocol, v1 bool, environment *config.PromptEnvironmentConfig) bool {
 	if payload == nil || protocol == wire.SystemOne {
 		return false
 	}
 	model, _ := payload["model"].(string)
-	prompt := opencodeSystemPrompt(model, v1)
+	prompt := opencodeSystemPrompt(model, v1, environment)
 	switch protocol {
 	case wire.Chat:
 		return injectChatPrompt(payload, prompt)
@@ -121,7 +141,10 @@ func injectChatPrompt(payload map[string]any, prompt string) bool {
 			return false
 		}
 		for _, part := range textFragments(content) {
-			if part = strings.TrimSpace(part); part != "" {
+			// The upstream reads only the first <env> pair. Our complete block
+			// is prepended, so a stale client block must not shadow it.
+			part = strings.TrimSpace(stripEnvBlocks(part))
+			if part != "" {
 				instructions = append(instructions, part)
 			}
 		}
@@ -147,13 +170,23 @@ func injectAnthropicPrompt(payload map[string]any, prompt string) bool {
 	}
 	switch value := system.(type) {
 	case string:
-		if strings.TrimSpace(value) == "" {
+		value = strings.TrimSpace(stripEnvBlocks(value))
+		if value == "" {
 			payload["system"] = prompt
 		} else {
 			payload["system"] = prompt + "\n\n" + value
 		}
 	case []any:
-		payload["system"] = append([]any{map[string]any{"type": "text", "text": prompt}}, value...)
+		blocks := make([]any, 0, len(value))
+		for _, block := range value {
+			if item, ok := block.(map[string]any); ok {
+				if text, ok := item["text"].(string); ok {
+					item["text"] = stripEnvBlocks(text)
+				}
+			}
+			blocks = append(blocks, block)
+		}
+		payload["system"] = append([]any{map[string]any{"type": "text", "text": prompt}}, blocks...)
 	default:
 		payload["system"] = prompt
 	}
@@ -167,7 +200,8 @@ func injectResponsesPrompt(payload map[string]any, prompt string) bool {
 		return false
 	}
 	if text, ok := instructions.(string); exists && ok {
-		if strings.TrimSpace(text) == "" {
+		text = strings.TrimSpace(stripEnvBlocks(text))
+		if text == "" {
 			payload["instructions"] = prompt
 		} else {
 			payload["instructions"] = prompt + "\n\n" + text
@@ -176,6 +210,26 @@ func injectResponsesPrompt(payload map[string]any, prompt string) bool {
 	}
 	payload["instructions"] = prompt
 	return true
+}
+
+// stripEnvBlocks removes every <env>...</env> pair from caller-supplied text.
+// The upstream reads only the first pair, so a stale or partial copy above the
+// gateway's own complete block would shadow it and answer 429 as if the egress
+// quota were spent. Only caller text is cleaned; the official prompt keeps its
+// block.
+func stripEnvBlocks(text string) string {
+	for {
+		start := strings.Index(text, "<env>")
+		if start < 0 {
+			return text
+		}
+		end := strings.Index(text[start:], "</env>")
+		if end < 0 {
+			// A lone opening tag can also shadow the real pair; drop the tail.
+			return text[:start]
+		}
+		text = text[:start] + text[start+end+len("</env>"):]
+	}
 }
 
 // textFragments flattens a system or instruction value into its text: a plain

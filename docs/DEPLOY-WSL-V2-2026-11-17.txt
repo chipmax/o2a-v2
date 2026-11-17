@@ -1,0 +1,29 @@
+WSL: THAY o2a v1.4.6 BANG o2a-v2 + TOI UU (17/11 23:4x)
+=========================================================
+Truoc: service o2a.service chay /opt/o2a/opencode2api_v1.4.6_linux_amd64/opencode2api,
+       WARP tat (stack ipv4), 8 proxy, health "Proxy khoe 8/8" nhung van 429.
+Sau:   ExecStart=/opt/o2a/opencode2api_v2 -config /opt/o2a/config.json
+       WorkingDirectory=/opt/o2a
+       Binary md5 573b2bb92cef99ccc38dbb97de0e4c8d (giong VPS1/VPS2).
+       Backup: opencode2api_v1.4.6.bak-before-v2, o2a.service.bak-before-v2,
+       config.json.bak-v2opt-20261117.
+
+Ly do cac lan dry-run dau that bai (da khac phuc):
+  - chay tu cwd sai -> SQLite usage.sqlite "out of memory (14)" (can cwd /opt/o2a)
+  - /opt/o2a/usage thuoc root:0700 -> admin khong ghi duoc; da chown admin:admin 755
+  - port 18091 bi process cu giu -> doi sang 19090/19091 cho dry-run cuoi.
+
+Config toi uu WSL:
+  warp.enabled true, stack dual, pool_size 4, preload 2,
+  attempt_timeout 20, pause_after_quota 900, rotate_cooldown 60,
+  KHONG dat source_ipv6 (PC khong co IPv6 -> endpoint IPv4, egress AAAA /64).
+  performance.max_inflight 8, queue_wait_seconds 5.
+
+Verify:
+  - health 200 ready, warp stack dual active 2 egress_ipv6 1, issues None,
+    load.max 8.
+  - 5/5 chat deepseek-v4.1-flash-free -> 200, TTFB 1.8-11.2s (lan dau dang ky WARP).
+  - Log legs: anon:429@warp:104.28.222.73/32 (shared) -> anon:429@warp:/64 ->
+    key tier zen 200. Filter require_ipv6_egress van de mac dinh false o day de
+    giu fallback; co the bat neu muon loai shared IPv4.
+  - opencode CLI WSL chay OK; model mac dinh da sua thanh o2a-v2 (VPS2)/beam-free.

@@ -1,0 +1,53 @@
+QUET RONG EGRESS / WARP / TOR / RELAY - 17/11 22:xx
+====================================================
+Nguon: agent-reach (Exa + GitHub gh). Bo sung cho RESEARCH-2026-11-17-TOI.txt.
+
+1) WARP TOI UU HON
+------------------
+trefeon/warp-relay-pool (da theo doi, doc cap nhat):
+  - Keep-cold: khi relay 429, chi restart warp-N (KHONG restart tunnel/relay de
+    khong doi public URL / khong drop connection cua relay khac).
+  - QUAN TRONG: verify /64 that thay sau rotate; escalation soft restart ->
+    full re-key chi khi address block khong doi. Minh hien co duplicate detect
+    (errDuplicateEgress) va cooling nhung chua verify /64 that doi sau rotate.
+  - 5 relay la sweet spot; 1.8 MiB RAM/node; Tailscale ingress ~50 MB tong.
+  -> DE XUAT P6: sau khi rotate, goi Cloudflare trace de so sanh /64 moi voi
+     /64 cu; neu trung thi full re-key thay vi admit exit do. (Trung Voi de xuat
+     R4 cu va dang duoc ap dung tu doc WARP-HAI-MOI-TRUONG.)
+
+atlas-comstock/warp-pool (0★, y nguyen van dung):
+  - Pin hostname opencode.ai vao 1 AAAA trong /etc/hosts de wireproxy luon ra
+    IPv6 unique cua tung node; khong pin -> IPv4 shared NAT, de trung quota.
+  - Theo doi "max_attempts" (so node mot request duoc di qua) = 15.
+  - Watchdog: redial device lien tiep that bai; toan pool health ve 0 2 vong
+    => redial ca pool. Minh co laneGate pause 5 phut nhung chua co full redial.
+  -> DE XUAT P7: pin AAAA cho opencode.ai trong DNS cua warp netstack (hien
+     dns = 2606:4700:4700::1111, da uu tien AAAA; kiem chung bang log legs
+     '/64' -> dang dug, khong can them /etc/hosts).
+
+2) TOR / RESIDENTIAL / RELAY KHAC
+---------------------------------
+- Tor: cac nguon (cleanip.io, Cloudflare blog) deu xep Tor vao nhom shared/anonymizing
+  lam tang CAPTCHA/verify; Cloudflare chan datacenter + Tor reputation. Khong nen
+  dung Tor lam egress cho free lane - khong tang bucket, con them block.
+- Residential proxy tra phi (007proxy...) khong can thiet: free lane gate la shape,
+  khong phai reputation; traffic da 200 qua WARP IPv6. Chi can nhieu /64 that.
+- MASQUE/QUIC (usque) da do tu truoc: khac /48 van 429 => khong giup.
+- HE 6in4 tunnel: dang dung tren VPS2, cho prefix /64 thu 2. La cach tot nhat
+  de tang bucket cho VPS1 (P5).
+- AmneziaWG / obfuscated WG: khong tim thay repo nao danh cho viec nay; khong
+  doi duoc egress /64, chi de camouflage - khong co gia tri o day.
+
+3) KET LUAN QUET RONG
+---------------------
+Khong co "WARP tot hon" ve mat so bucket: so bucket = so /64 distinct. Nhung
+co 3 cai tien dang gia tri, xep theo uu tien:
+  P5 (production)  them /64 thu 2 cho VPS1 (HE tunnel nhu VPS2) - chua lam, can xac nhan.
+  P6 (code)        verify /64 sau rotate + full re-key khi trung (from warp-relay-pool).
+  P7 (doc/test)    ghi ro ly do khong dung Tor/residential/MASQUE (file nay).
+
+Da trien khai trong dot nay:
+  P0 gate self-check: DA CO SAN (gatecheck 9 variant baseline+8 am tinh).
+  P1 egress marker: DA LAM (state.go markDrain/DrainedKeys + pool seed cooling),
+     test state_drain_test.go xanh, deploy VPS2 md5 573b2bb9, backup .bak-20261117e.
+  P2 SSE active-flow lock: DA CO SAN (exit.refs, retire khong close khi refs>0).

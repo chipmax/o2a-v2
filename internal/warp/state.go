@@ -22,6 +22,12 @@ type persistedRegistration struct {
 	PeerPublicKey string   `json:"peer_public_key"`
 	Endpoint      string   `json:"endpoint,omitempty"`
 	Endpoints     []string `json:"endpoints,omitempty"`
+	// Drain marker: why and when this registration's egress was retired. It
+	// survives a restart so a replacement does not land on a known-spent /64
+	// simply because the cooling map lived only in memory.
+	EgressKey   string    `json:"egress_key,omitempty"`
+	DrainReason string    `json:"drain_reason,omitempty"`
+	DrainedAt   time.Time `json:"drained_at,omitempty"`
 }
 
 func persistRegistration(reg registration) persistedRegistration {
@@ -36,6 +42,45 @@ func persistRegistration(reg registration) persistedRegistration {
 		Endpoint:      reg.Endpoint,
 		Endpoints:     reg.Endpoints,
 	}
+}
+
+// markDrain records a spent/duplicate egress on the saved registration so a
+// later process can avoid reusing the same prefix. The tunnel identity is
+// untouched; only the marker fields change.
+func (s *registrationStore) markDrain(id, egressKey, reason string, at time.Time) {
+	if s.path == "" || id == "" || egressKey == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.known {
+		if s.known[i].ID != id {
+			continue
+		}
+		s.known[i].EgressKey = egressKey
+		s.known[i].DrainReason = reason
+		s.known[i].DrainedAt = at.UTC()
+		s.writeLocked()
+		return
+	}
+}
+
+// DrainedKeys returns egress prefixes marked spent by an earlier process. The
+// pool uses them to seed its cooling map at startup.
+func (s *registrationStore) DrainedKeys(now time.Time, ttl time.Duration) map[string]time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]time.Time)
+	for _, saved := range s.known {
+		if saved.EgressKey == "" || saved.DrainedAt.IsZero() || now.Sub(saved.DrainedAt) > ttl {
+			continue
+		}
+		until := saved.DrainedAt.Add(ttl)
+		if until.After(out[saved.EgressKey]) {
+			out[saved.EgressKey] = until
+		}
+	}
+	return out
 }
 
 func (p persistedRegistration) registration() registration {
@@ -108,6 +153,25 @@ func newRegistrationStore(path string, limit int) *registrationStore {
 	return store
 }
 
+// writeLocked persists the known registrations. The caller must hold s.mu.
+func (s *registrationStore) writeLocked() {
+	payload, err := json.MarshalIndent(struct {
+		Version int                     `json:"version"`
+		SavedAt time.Time               `json:"saved_at,omitempty"`
+		Exits   []persistedRegistration `json:"exits"`
+	}{Version: 1, SavedAt: time.Now().UTC(), Exits: s.known}, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
+	}
+}
+
 // quickRestartWindow is the age below which saved registrations are known to be
 // bound to the previous process's tunnel sessions.
 const quickRestartWindow = 45 * time.Second
@@ -155,19 +219,5 @@ func (s *registrationStore) remember(reg registration) {
 		kept = kept[:s.limit]
 	}
 	s.known = kept
-	payload, err := json.MarshalIndent(struct {
-		Version int                     `json:"version"`
-		SavedAt time.Time               `json:"saved_at,omitempty"`
-		Exits   []persistedRegistration `json:"exits"`
-	}{Version: 1, SavedAt: time.Now().UTC(), Exits: kept}, "", "  ")
-	if err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, payload, 0o600); err != nil {
-		return
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		_ = os.Remove(tmp)
-	}
+	s.writeLocked()
 }

@@ -244,6 +244,7 @@ type Pool struct {
 	size    int
 	preload int
 	stack   Stack
+	store   *registrationStore
 	newExit func(context.Context) (*exit, error)
 
 	maxAge         time.Duration
@@ -446,7 +447,7 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			}
 		}
 	}
-	pool, err := newPool(ctx, slogLogger{log: log}, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
+	pool, err := newPool(ctx, slogLogger{log: log}, store, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
 		if err := throttleRegistration(ctx); err != nil {
 			return nil, err
 		}
@@ -609,7 +610,7 @@ func randomSource(prefix netip.Prefix) (netip.Addr, error) {
 	return netip.AddrFrom16(address), nil
 }
 
-func newPool(ctx context.Context, log logger, size, preload int, maxAge, rotateCooldown time.Duration, gate *laneGate, create func(context.Context) (*exit, error)) (*Pool, error) {
+func newPool(ctx context.Context, log logger, store *registrationStore, size, preload int, maxAge, rotateCooldown time.Duration, gate *laneGate, create func(context.Context) (*exit, error)) (*Pool, error) {
 	if size <= 0 {
 		size = DefaultPoolSize
 	}
@@ -637,6 +638,7 @@ func newPool(ctx context.Context, log logger, size, preload int, maxAge, rotateC
 		ctx:            poolCtx,
 		cancel:         cancel,
 		logger:         log,
+		store:          store,
 		size:           size,
 		preload:        preload,
 		maxAge:         maxAge,
@@ -647,6 +649,13 @@ func newPool(ctx context.Context, log logger, size, preload int, maxAge, rotateC
 		reserved:       make(map[string]bool),
 		cooling:        make(map[string]time.Time),
 		changed:        make(chan struct{}),
+	}
+	// A previous process may have drained an egress for quota. Seed the cooling
+	// map so a fresh device does not immediately land on that same /64.
+	if store != nil {
+		for key, until := range store.DrainedKeys(time.Now(), egressCooldown) {
+			p.cooling[key] = until
+		}
 	}
 	// The first registration gates readiness. Cloudflare can answer it with a
 	// rate limit even when this process has just started (the limit follows the
@@ -1157,8 +1166,12 @@ func (p *Pool) penalizeAfter(bad *exit, reason string, cooldown, delay time.Dura
 		return
 	}
 	if key := bad.egressKey(); key != "" {
-		p.cooling[key] = time.Now().Add(cooldown)
+		until := time.Now().Add(cooldown)
+		p.cooling[key] = until
 		delete(p.reserved, key)
+		if p.store != nil {
+			p.store.markDrain(bad.id, key, reason, until)
+		}
 	}
 	p.active = append(p.active[:index], p.active[index+1:]...)
 	if p.next >= len(p.active) {

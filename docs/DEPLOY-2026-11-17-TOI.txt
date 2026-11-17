@@ -1,0 +1,44 @@
+DEPLOY TOI 17/11 - VPS1 CHUYEN SANG o2a-v2 + TOI UU CA 2 VPS
+============================================================
+
+1) VPS1 (129.221.227.118) - thay upstream bang o2a-v2
+------------------------------------------------------
+Dry-run truoc khi thay: binary v2 chay voi copy config VPS1 o port 18080 ->
+health 200, 86 model / 12 exposed, warp ready. Khong co "unknown field".
+Backup: /opt/opencode2api/opencode2api.bak-v148-before-v2 (upstream v1.4.8).
+Binary hien tai: md5 573b2bb92cef99ccc38dbb97de0e4c8d (giong VPS2).
+Giu nguyen: port 8080/8081, key 3b6bfbd3..., WebUI admin/b47fcc00...
+Verify: health 200, /v1/models 200, WebUI login 200, 0 panic/fatal.
+
+2) TOI UU CONFIG (ca 2 VPS)
+---------------------------
+VPS1 config backup: config.json.bak-v2opt-20261117
+  warp.pool_size 5 (giam tu 10), preload 2 (mac dinh), attempt_timeout 20,
+  pause_after_quota_seconds 900, rotate_cooldown 60
+  performance.max_inflight 8, queue_wait_seconds 5
+VPS2 config backup: config.json.bak-v2opt-20261117
+  warp.pool_size 6, preload 3, 2 prefix /64 (giu nguyen),
+  attempt_timeout 20, pause_after_quota 900, rotate_cooldown 60
+  performance.max_inflight 16, queue_wait_seconds 5
+
+Ly do: giam device trung ho /48 (VPS1), skip WARP 15 phut sau khi lane tu choi,
+va co backpressure de khong dot quota khi burst.
+
+3) SMOKE SAU TOI UU
+--------------------
+VPS1: 5/5 chat 200 (beam-free), ttfb 0.6-1.7s.
+VPS2: 5/5 chat 200 (deepseek), ttfb 1.7-4.0s.
+Ca 2: /healthz 200 ready, load.max 8/16, khong gateway_busy, khong panic.
+
+4) CODE DA trien khai truoc do (trong dot nay)
+----------------------------------------------
+P1 egress marker: state.go markDrain/DrainedKeys, pool seed cooling khi restart.
+  VPS2 binary 573b2bb9 da co (backup .bak-20261117e).
+P0/P2: da co san (gatecheck 9 variant; exit.refs active-flow lock).
+
+5) CON LAI
+----------
+P5: them prefix /64 thu 2 cho VPS1 (HE tunnel) - chua lam, can thao tac OCI/HE.
+P6: verify /64 sau rotate + full re-key - ve co ban co san trong createExit
+    (cool key cu -> exit trung bi discard va dang ky lai), nen ghi nhan la da co.
+Khong dung Tor / residential proxy / MASQUE (xem RESEARCH-EGRESS-RONG).

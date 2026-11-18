@@ -1,0 +1,67 @@
+NGUON GOC 8 PROXY TRONG WSL - DIEU TRA 18/11
+=============================================
+1) NO LA GI
+-----------
+/opt/o2a/config.json co 8 proxies socks5h://127.0.0.1:13001..13008.
+Khong phai proxy cong khai hay tai khoan tra phi: chung la cac tunnel MASQUE/QUIC
+do binary /opt/usque/usque (v1, file 12.9MB, dated 2026-07-20) tao ra:
+  pid 159 /opt/usque/usque l4-socks -c /opt/usque/n2/config.json  -p 13001 -b 127.0.0.1
+  pid 160 ... n3 -> 13002 ; pid 161 n4 -> 13003 ; pid 168 n6 -> 13004
+  pid 169 n8 -> 13005 ; pid 170 n9 -> 13006 ; pid 171 n10 -> 13007
+  pid 172 n7 -> 13008 ; (con n5->13009, n11->13010, tong 10 tunnel, config chi dung 8)
+Moi config n*/config.json co private_key, endpoint_v4/v6, endpoint_h2_v4/v6,
+endpoint_pub_key, id, access_token, ipv4, ipv6 - tuc la mot thiet bi WARP/MASQUE
+rieng, duoc dad dang nhap tu truoc. Co run-socks, usque-watchdog.sh, socks.log.
+
+2) TU LUC NAO
+-------------
+- /opt/usque/n2..n5 config: 2026-10-27 16:15-16:16 (batch dau tien).
+- n6: 2026-10-28 15:46.
+- n7: 2026-11-04 17:10; n8, n9: 2026-11-04 17:53; n10, n11: 2026-11-04 17:54.
+- /opt/o2a/config.json.bak.1793269490 (2026-10-29) co 11 proxy, da co
+  socks5h://127.0.0.1:8888 + mot so port 108xx.
+- backup 2026-11-04 15:25 (tune2) co 7 proxy = 8888 + 13001..13006.
+- backup 2026-11-04 18:00 (noanon) co 8 proxy = 13001..13008 (bo 8888).
+  => thoi diem hinh thanh danh sach 8 la chieu 04/11/2026, sau batch n7-n11.
+- /opt/o2a/proxyfile: 0 byte (khong dung) - danh sach nam thang trong config.
+
+3) TAO RA DE LAM GI
+-------------------
+ nam trong dot nghien cuu egress dau thang 11, khi WARP pool bi 429 toan bo.
+Bang chung:
+- git commit 2eaf275 (local repo): "egress: MASQUE/QUIC (usque) measured -
+  other /48, same 429", them 28 dong vao deploy/egress-selfhost/README.vi.md.
+- docs/RESEARCH-2026-11-10.vi.md: do 430 repo, ket luan quota theo IP, thu
+  84 exit Tor -> 84x429, 15231 proxy cong khai -> 107 x 429.
+- config cu co ten file zen_key_proxies.removed.json (chi chua 2 dong 13001,
+  13002) -> ban dau dinh gan proxy rieng cho Zen key (per-key proxy binding),
+  sau bo phan lon, de lai 8 proxy cho anonymous/key pool.
+- Backup config.json.bak.warpstack-20261109-1637, .bak.warp-on-... chung deu
+  co 8 proxy => duoc giu qua nhieu lan chinh WARP stack (ipv4/ipv6/dual).
+
+4) CO DANG HOAT DONG HAY KHONG
+------------------------------
+Co: ss hien 13001..13010 deu LISTEN, 10 process usque con song. Tuy nhien
+ket luan nghien cuu luc do la "other /48, same 429" - cac exit MASQUE cung khong
+tang bucket that. Hien o2a-v2 (WSL) bat WARP dual + require_ipv6_egress va van
+giu 8 proxy nhu mot lop fallback; P10/P14 dam bao quota wall khong bi mo lai.
+
+5) DE XUAT
+----------
+- Giữ nguyên (da duoc kiem chung 3/3 chat 200 tren WSL) - khong xoa vo cu.
+- Khi muon giam tai nguyen: dung 2 trong 10 process (n5->13009, n11->13010)
+  vi config hien chi dung 13001..13008; tiet kiem RAM ma khong doi hanh vi.
+- Khong them MO re tu usque: cung /48, cung 429; uu tien WARP dual /64 that.
+
+6) A+C DA TRIEN KHAI TRONG DOT NAY
+-----------------------------------
+A: WebUI overview them card "IP kha dung" (m-capacity) doc tu
+   /api/monitor.capacity; mau xanh/vang/do theo ty le usable/observed; note hien
+   so bucket da spent + gio reset. i18n en/vi day du.
+C: warnLowQuota trong admin/server.go: canh bao khi usable/observed < 20%,
+   throtte 10 phut, publish LogEvent warn event=low_capacity vao /api/events.
+Gates xanh; deploy VPS2 test: UI marker=2, JS renderCapacity=3,
+capacity 22 observed/15 usable/7 spent, 412 requests, 11 quota hits,
+low_capacity events=0 (chua dung nguong - dung thiet ke), models/chat 200.
+Deploy tiep VPS1 + WSL: health 200, models 200.
+Binary md5 dcbeaddd88237d68f23dba09982e4c9f, backup .bak-20261118-ui.

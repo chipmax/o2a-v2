@@ -43,6 +43,9 @@ type Server struct {
 	// probeRunning admits one context probe at a time: a probe sends real,
 	// large prompts and the free lane is shared.
 	probeRunning atomic.Bool
+	// lowQuotaAt throttles the low-capacity warning: the console polls
+	// /api/monitor, so an unthrottled warning would spam the event log.
+	lowQuotaAt atomic.Int64
 	// gate is the one gatecheck run the console may have in flight.
 	gate gateState
 	// streamCtx is cancelled by Close so long-lived SSE handlers return
@@ -408,11 +411,40 @@ func (a *Server) handleMonitor(w http.ResponseWriter, _ *http.Request) {
 	// The overview reads the pool here: /healthz lives on the API listener and
 	// a browser on the admin origin cannot call it.
 	payload["health"] = a.manager.Readiness()
-	payload["capacity"] = a.manager.CapacityEstimate()
+	capacity := a.manager.CapacityEstimate()
+	payload["capacity"] = capacity
+	a.warnLowQuota(capacity)
 	if warp, ok := a.manager.WarpSnapshot(); ok {
 		payload["warp"] = warp
 	}
 	httpx.WriteJSON(w, http.StatusOK, payload)
+}
+
+// warnLowQuota publishes one throttled warning when the rough capacity view
+// shows fewer than a fifth of the observed egress buckets still usable. The
+// estimate is not an upstream counter; it only prevents silent exhaustion.
+func (a *Server) warnLowQuota(capacity gateway.CapacityEstimate) {
+	if capacity.IPsObserved < 1 || capacity.IPsUsable >= capacity.IPsObserved/5 {
+		return
+	}
+	now := time.Now()
+	last := time.Unix(0, a.lowQuotaAt.Load())
+	if !last.IsZero() && now.Sub(last) < 10*time.Minute {
+		return
+	}
+	if !a.lowQuotaAt.CompareAndSwap(last.UnixNano(), now.UnixNano()) {
+		return
+	}
+	if a.logger != nil {
+		a.logger.Warn("free-lane egress capacity is low", "component", "egress", "event", "low_capacity",
+			"usable", capacity.IPsUsable, "observed", capacity.IPsObserved, "requests_today", capacity.RequestsToday)
+	}
+	if a.logs != nil {
+		a.logs.Publish(telemetry.LogEvent{
+			Time: now, Level: "warn", Component: "egress", Message: "free-lane egress capacity is low",
+			Fields: map[string]any{"event": "low_capacity", "usable": capacity.IPsUsable, "observed": capacity.IPsObserved},
+		})
+	}
 }
 
 // handleLogs returns the buffered log events after the "after" sequence,

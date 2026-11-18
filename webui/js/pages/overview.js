@@ -183,9 +183,40 @@ function renderSummary(monitor) {
   const quota = Number(metrics.statuses?.["429"] || 0);
   $("#m-429").textContent = total ? `${((quota / total) * 100).toFixed(1)}%` : "—";
   renderReadiness(monitor.health);
+  renderCapacity(monitor.capacity);
   renderLane(monitor.warp || monitor.resources?.warp);
   renderResources(monitor.resources);
   renderBreakdowns(metrics);
+}
+
+// renderCapacity shows the rough egress-budget estimate. It is a planning aid,
+// not an upstream counter: usability is inferred from local quota hits.
+function renderCapacity(capacity) {
+  const value = $("#m-capacity");
+  const note = $("#m-capacity-note");
+  if (!value) return;
+  if (!capacity || !Number.isFinite(capacity.ips_observed)) {
+    value.textContent = "—";
+    value.classList.remove("ok", "warn", "bad");
+    if (note) note.textContent = t("Chưa có ước tính", "overview.capacity.unknown");
+    return;
+  }
+  const usable = capacity.ips_usable || 0;
+  const observed = capacity.ips_observed || 0;
+  value.textContent = `${usable} / ${observed}`;
+  const ratio = observed ? usable / observed : 0;
+  const cls = ratio < 0.2 ? "bad" : ratio < 0.5 ? "warn" : "ok";
+  value.classList.remove("ok", "warn", "bad");
+  value.classList.add(cls);
+  if (note) {
+    const spent = capacity.ips_spent || 0;
+    note.textContent = t(
+      "đã spent {0} · reset {1}",
+      "overview.capacity.detail",
+      spent,
+      capacity.reset_at ? new Date(capacity.reset_at).toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" }) : "—",
+    );
+  }
 }
 
 // renderReadiness shows the same verdict /healthz answers with, so the overview

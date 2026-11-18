@@ -1,0 +1,71 @@
+GIAI THICH: SAO VPS2 DI VONG ROUTER, VPS1 DI THANG
+==================================================
+Nguon: agent-reach (Exa + gh) + config/log may. Khong sua gi them.
+
+1) KIEN TRUC THIET KE (co chu dich, khong phat sinh ngay hirom)
+-----------------------------------------------------------------
+- commit 3368a42 "feat(router): Kilo keyless lane, TLS upstreams, models merge"
+  them router Python optional.
+- docs/PROVIDERS.vi.md:19-20: OMP/Pi dung provider `o2a-v2 (VPS2)` base URL
+  http://161.118.246.9:8090/v1; o2a-router :8090 la "front door duy nhat":
+  tier 1 = o2a-v2 :8000, tier 2 = Kilo api.kilo.ai/api/openrouter.
+- docs/PROVIDERS.vi.md:26-32 so do:
+  DSH NEXT / Hermes / OMP -> router :8090 -> o2a-v2 :8000 -> OpenCode Zen (free)
+                                      \-> Kilo :free (fallback tier 2)
+- Muc dich: mot endpoint cho agent, mot danh sach model (router merge catalog),
+  failover sang Kilo, va co the gop nhieu gateway. Day la ly do OMP config van
+  tro :8090 (models.yml:98-102).
+
+2) SAO VPS1 KHONG DI VONG
+-------------------------
+- VPS1 KHONG co /opt/o2a-router (kiem tra truc tiep: khong co dir,
+  khong co service; chi co :8080 gateway va :8787 zen-gate).
+- OMP models.yml:194-197: provider `o2a-vps (VPS1)` base URL thang
+  http://129.221.227.118:8080/v1.
+- Kilo cua VPS1 nam o provider rieng `zen-gate-vps (VPS1)` :8787
+  (models.yml:290-293), khong di qua router.
+=> Khong co router tren VPS1 nen khong the di vong. Day la su bat doi lich su,
+khong phai yeu cau ky thuat. Tai lieu PROVIDERS.vi.md:38 muon thong nhat het ve
+router nhung OMP van giu provider cu (chua ap dụng đong bo toan phan).
+
+3) ROUTER CO GAYS 429 KHONG?
+----------------------------
+KHONG. Router chi chon tier:
+- model co trong kilo_models -> chi goi Kilo; model khac (vd deepseek-v4.1-flash-free)
+  -> chi goi tier 1 gateway :8000 (router.py KILO_UPSTREAMS logic).
+- log VPS2 15:49:52Z: `upstream vps2-o2a -> 429, cooldown 30s` -> router nhan 429
+  tu gateway, khong tao ra 429.
+- log gateway cung thoi diem: key_id=CE0nZ, channel=key, legs CE0nZ:429 lap lai.
+  => Quota do xay ra o BEN TRONG gateway VPS2, sau khi anonymous WARP het va
+     gateway fallback sang Zen key duy nhat cua no (config zen_keys=1).
+- VPS1 config zen_keys=0 -> khong co key fallback -> log la anon:429@direct.
+
+4) VI SAO HAI MAY KHAC NHAU THAT
+--------------------------------
+| | VPS2 | VPS1 |
+|---|---|---|
+| Router :8090 | co | khong |
+| OMP base URL | :8090 (router) | :8080 (gateway) |
+| Zen key trong gateway | 1 (CE0nZ) | 0 |
+| Duong khi anonymous het | fallback vao Zen key -> key 429 | fallback vao direct IP -> anon 429 |
+| Kilo | qua router tier 2 | qua zen-gate :8787 rieng |
+
+Router khong quyet dinh key hay direct; chinh gateway quyet dinh sau anonymous.
+Tai lieu upstream (https://github.com/jasonxu114514/opencode2api) mo ta: free
+model thu anonymous lane truoc, roi moi den authenticated tiers theo prefer order;
+key la fallback, khong phai bat buoc.
+
+5) CO NEN BO VONG KHONG?
+------------------------
+Khong nen chi de doi phu 429:
+- tro OMP VPS2 thang :8000 van gap key tier CE0nZ vi gateway van co zen_keys=1;
+  mat them Kilo tier 2 va catalog merge cua router.
+- neu muon dong bo that su: deploy router len VPS1 va doi OMP provider VPS1 sang
+  :8090, hoac nguoc lai bo router VPS2 va chuyen Kilo sang zen-gate :8787.
+  Viec nay khong giam 429 - 429 nam o quota/key/direct, khong nam o so hop.
+
+6) KET LUAN
+-----------
+"Vong" VPS2 la thiet ke co chu de thong nhat endpoint + them Kilo fallback.
+Nguyen nhan OMP van limit la key CE0nZ (VPS2) va direct IP (VPS1) spent,
+da duoc P27/P28/P29 them vao dashboard o commit 5ae5b50.

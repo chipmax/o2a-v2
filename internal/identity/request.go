@@ -18,6 +18,7 @@ import (
 	"math/big"
 	"net/http"
 	"regexp"
+	"sync"
 	"time"
 
 	"opencode2api/internal/jsonutil"
@@ -208,6 +209,54 @@ const base62Alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 // conversation. Official client sessions bypass it and stay verbatim.
 var bootNonce = mintBootNonce()
 
+// sessionRetirements remembers which derived conversations were rejected by a
+// free-tier gate. A stable session id is normally derived once per request, so
+// a gate-flagged value needs a generation bump on its underlying signal to
+// mint a fresh id. Entries are bounded and expire with the session window.
+var sessionRetirements = struct {
+	mu          sync.Mutex
+	generations map[string]uint64
+}{generations: make(map[string]uint64)}
+
+const maxSessionRetirements = 1024
+
+// RetireSession drops a derived session by value: the next derivation of its
+// signal gets a new generation and therefore a new canonical id. Official
+// client sessions are never registered and return false.
+func RetireSession(session string) bool {
+	// Only sessions the gateway minted are in the index. Official client
+	// sessions return early in CanonicalSessionID and cannot be retired.
+	if session == "" {
+		return false
+	}
+	sessionRetirements.mu.Lock()
+	defer sessionRetirements.mu.Unlock()
+	for minted, source := range sessionSignalIndex {
+		if minted == session {
+			sessionRetirements.generations[source]++
+			delete(sessionSignalIndex, minted)
+			if len(sessionRetirements.generations) > maxSessionRetirements {
+				for key := range sessionRetirements.generations {
+					delete(sessionRetirements.generations, key)
+					break
+				}
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// sessionSignalIndex maps a derived session back to the signal that produced
+// it, so a 403 can retire by the value the client actually sent upstream.
+var sessionSignalIndex = make(map[string]string)
+
+func retirementGeneration(signal string) uint64 {
+	sessionRetirements.mu.Lock()
+	defer sessionRetirements.mu.Unlock()
+	return sessionRetirements.generations[signal]
+}
+
 // mintBootNonce returns the per-process session salt. It panics when the
 // system random source fails.
 func mintBootNonce() []byte {
@@ -249,11 +298,29 @@ func CanonicalSessionID(signal string) string {
 	hasher.Write([]byte("ses\x00"))
 	hasher.Write(bootNonce)
 	hasher.Write([]byte{0})
+	// A retired session gets a new generation so the next mint differs from
+	// the value the free tier flagged, while staying canonical and stable.
+	if gen := retirementGeneration(signal); gen > 0 {
+		hasher.Write([]byte{byte(gen)})
+		hasher.Write([]byte{0})
+	}
 	hasher.Write([]byte(signal))
 	sum := hasher.Sum(nil)
 	timePart := descendingTimePart(time.Now(), sum[:6])
 	randomPart := base62Fixed(new(big.Int).SetBytes(sum[6:16]), 14)
-	return "ses_" + timePart + randomPart
+	session := "ses_" + timePart + randomPart
+	// Register the derived value so a free-tier 403 can retire this exact
+	// conversation by value. Official ids returned above are never registered.
+	sessionRetirements.mu.Lock()
+	if len(sessionSignalIndex) >= maxSessionRetirements {
+		for key := range sessionSignalIndex {
+			delete(sessionSignalIndex, key)
+			break
+		}
+	}
+	sessionSignalIndex[session] = signal
+	sessionRetirements.mu.Unlock()
+	return session
 }
 
 // isOfficialSessionID reports whether signal is a session minted by the

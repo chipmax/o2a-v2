@@ -189,6 +189,19 @@ func isNetworkAbuseBlock(status int, body []byte) bool {
 		strings.Contains(text, "from your current network")
 }
 
+// isFreeTierGate reports the 403 that rejects a session or request shape,
+// distinct from the network-abuse 403 above. Only this class can justify
+// retiring a session; a 429 is quota on the egress/model bucket and must leave
+// the stable id (and its prompt cache) alone.
+func isFreeTierGate(status int, body []byte) bool {
+	if status != http.StatusForbidden {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "freetiererror") ||
+		strings.Contains(text, "free tier can only be used from within opencode")
+}
+
 // peekResponseBody reads the start of a response body and puts it back in
 // front of the rest, so classification and downstream error handling both see
 // the full payload.

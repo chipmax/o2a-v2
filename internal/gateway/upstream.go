@@ -151,6 +151,20 @@ func debugKeyOverrideFrom(ctx context.Context) (DebugKeyOverride, bool) {
 	return override, ok && override.KeyID != ""
 }
 
+// retireGateSession drops a session the free tier explicitly flagged with a
+// shape/gate 403. Only that class is session-scoped: a quota 429 leaves the id
+// and its prompt-cache affinity intact. Official client sessions are ignored.
+func (g *Gateway) retireGateSession(ids identity.RequestIDs, reason string) {
+	for _, session := range []string{ids.Session, ids.ChildSession, ids.ParentSession} {
+		if identity.RetireSession(session) && g.affinity != nil {
+			g.affinity.forget(session)
+		}
+	}
+	if g.logger != nil {
+		g.logger.Warn("free-tier gate retired the session id", "component", "upstream", "event", "session_retired", "request_id", ids.Request, "reason", reason)
+	}
+}
+
 // doUpstream sends one inference request through the anonymous and key tiers
 // (see doUpstreamTiers) and returns the response, whose body the caller must
 // close, together with the route that produced it. It repairs one known
@@ -685,6 +699,13 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 				blocked = true
 				g.logger.Warn("free tier blocked the egress IP; cooling the exit", "component", "upstream", "event", "free_tier_ip_blocked", "request_id", ids.Request, "attempt", attempts, "tier", config.TierZen, "upstream", config.RedactURL(baseURL), "proxy", config.RedactURL(node.proxy.name), "block_for", g.freeTierBlockTTL().String())
 				break
+			} else if isFreeTierGate(resp.StatusCode, peekResponseBody(resp)) {
+				// The free tier flagged the session itself, not the exit. Mint a
+				// fresh id for the next turn and drop its egress pin; otherwise
+				// every replay of the conversation keeps the same dead id.
+				g.retireGateSession(ids, "anonymous_403_gate")
+				lastErr = errDeterministicClientRejection
+				halted = true
 			} else if isDeterministicClientResponse(resp.StatusCode, peekResponseBody(resp)) {
 				// The request is too long, malformed, or otherwise invalid on
 				// every lane. Stop here and hand this 4xx to the client.

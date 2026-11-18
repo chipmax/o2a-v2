@@ -210,6 +210,7 @@ type ConfigView struct {
 	ProxyFile     string                   `json:"proxyfile"`
 	ProxyBindings map[string]string        `json:"proxy_bindings,omitempty"`
 	Upstream      config.UpstreamConfig    `json:"upstream"`
+	Kilo          config.KiloConfig        `json:"kilo"`
 	Retry         config.RetryConfig       `json:"retry"`
 	Models        config.ModelsConfig      `json:"models"`
 	Performance   config.PerformanceConfig `json:"performance"`
@@ -259,6 +260,7 @@ type ConfigUpdate struct {
 	ProxyFile     string                   `json:"proxyfile"`
 	ProxyBindings map[string]string        `json:"proxy_bindings,omitempty"`
 	Upstream      config.UpstreamConfig    `json:"upstream"`
+	Kilo          config.KiloConfig        `json:"kilo"`
 	Retry         config.RetryConfig       `json:"retry"`
 	Models        config.ModelsConfig      `json:"models"`
 	Performance   config.PerformanceConfig `json:"performance"`
@@ -340,6 +342,12 @@ func candidateConfig(current config.Config, update ConfigUpdate, serverKeys, zen
 	candidate.ProxyFile = update.ProxyFile
 	candidate.ProxyBindings = proxyBindings
 	candidate.Upstream = update.Upstream
+	// The console sends a fixed mask for an existing Kilo key; keep the stored
+	// value so saving an unrelated field cannot erase the credential.
+	if update.Kilo.Key == "********" {
+		update.Kilo.Key = current.Kilo.Key
+	}
+	candidate.Kilo = update.Kilo
 	candidate.Retry = update.Retry
 	// The UI edits only a subset of models; keep the fields it does not render
 	// (context overrides, anonymous backoff) when they are absent from the
@@ -538,12 +546,23 @@ func (a *Server) configView() ConfigView {
 	effective, restart := a.manager.RestartStatus()
 	return ConfigView{
 		Listen: cfg.Listen, ServerKeys: maskSecrets(cfg.ServerKeys, false), ZenKeys: maskSecrets(cfg.ZenKeys, false), GoKeys: maskSecrets(cfg.GoKeys, false), Anonymous: cfg.Anonymous, Warp: cfg.Warp,
-		Proxies: maskSecrets(cfg.Proxies, true), ProxyFile: cfg.ProxyFile, ProxyBindings: cfg.ProxyBindings, Upstream: cfg.Upstream, Retry: cfg.Retry, Models: cfg.Models,
+		Proxies: maskSecrets(cfg.Proxies, true), ProxyFile: cfg.ProxyFile, ProxyBindings: cfg.ProxyBindings, Upstream: cfg.Upstream,
+		Kilo: maskedKiloConfig(cfg.Kilo), Retry: cfg.Retry, Models: cfg.Models,
 		Performance: cfg.Performance, Logging: cfg.Logging, Prefer: cfg.Prefer, Reasoning: cfg.Reasoning,
 		WebUI:     WebUIView{Enabled: cfg.WebUI.Enabled, Listen: cfg.WebUI.Listen, Username: cfg.WebUI.Username, SessionTTLMinutes: cfg.WebUI.SessionTTLMinutes},
 		Effective: EffectiveView{Listen: effective.API, WebUIListen: effective.WebUI, WebUIEnabled: effective.WebUIEnabled},
 		Restart:   restart,
 	}
+}
+
+// maskedKiloConfig keeps the lane editable in the console without exposing its
+// optional credential. A non-empty key becomes a fixed placeholder; saving it
+// unchanged leaves the configured value intact.
+func maskedKiloConfig(cfg config.KiloConfig) config.KiloConfig {
+	if cfg.Key != "" {
+		cfg.Key = "********"
+	}
+	return cfg
 }
 
 // maskSecrets turns secrets into views carrying their fingerprint and either

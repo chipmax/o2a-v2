@@ -1105,6 +1105,36 @@
                 <section class="section">
                   <div class="section-head">
                     <div>
+                      <h2 class="section-title" data-i18n="config.kilo.title">Kilo free lane</h2>
+                      <p class="section-caption" data-i18n="config.kilo.caption">Làn riêng, không dùng WARP/Bun hay key OpenCode. Để trống danh sách model để tắt.</p>
+                    </div>
+                  </div>
+                  <div class="form-grid">
+                    <div class="field">
+                      <label for="c-kilo-models" data-i18n="config.kilo.models">Model IDs (mỗi dòng một ID :free)</label>
+                      <textarea id="c-kilo-models" rows="5"></textarea>
+                    </div>
+                    <div class="field">
+                      <label for="c-kilo-base">Base URL</label>
+                      <input id="c-kilo-base" />
+                    </div>
+                    <div class="field">
+                      <label for="c-kilo-catalog">Catalog URL</label>
+                      <input id="c-kilo-catalog" />
+                    </div>
+                    <div class="field">
+                      <label for="c-kilo-key" data-i18n="config.kilo.key">Key (tuỳ chọn)</label>
+                      <input id="c-kilo-key" type="password" autocomplete="off" />
+                    </div>
+                    <div class="field">
+                      <label for="c-kilo-cooldown" data-i18n="config.kilo.cooldown">Cooldown theo model (giây)</label>
+                      <input id="c-kilo-cooldown" type="number" />
+                    </div>
+                  </div>
+                </section>
+                <section class="section">
+                  <div class="section-head">
+                    <div>
                       <h2 class="section-title" data-i18n="config.upstream.title">Upstream và định tuyến giao thức</h2>
                       <p class="section-caption" data-i18n="config.upstream.caption">anonymous sẽ dùng hết các Proxy khả dụng; ánh xạ protocol tường minh được ưu tiên hơn việc suy luận từ tên mô hình.</p>
                     </div>

@@ -90,6 +90,12 @@ function fillConfig(value) {
   $("#c-proxyfile").value = value.proxyfile;
   $("#c-up-zen").value = value.upstream.zen;
   $("#c-up-go").value = value.upstream.go;
+  const kilo = value.kilo || {};
+  $("#c-kilo-models").value = (kilo.models || []).join("\n");
+  $("#c-kilo-base").value = kilo.base_url || "";
+  $("#c-kilo-catalog").value = kilo.catalog_url || "";
+  $("#c-kilo-key").value = kilo.key || "";
+  $("#c-kilo-cooldown").value = kilo.cooldown_seconds || 90;
   $("#c-attempts").value = value.retry.max_attempts;
   $("#c-timeout").value = value.retry.timeout_seconds;
   $("#c-refresh").value = value.models.refresh_seconds;
@@ -135,6 +141,17 @@ async function save(event) {
       proxyfile: $("#c-proxyfile").value,
       prefer: $("#c-prefer").value,
       upstream: { zen: $("#c-up-zen").value, go: $("#c-up-go").value },
+      kilo: {
+        base_url: $("#c-kilo-base").value.trim(),
+        catalog_url: $("#c-kilo-catalog").value.trim(),
+        key: $("#c-kilo-key").value.trim(),
+        models: $("#c-kilo-models").value.split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
+        cooldown_seconds: numberValue("#c-kilo-cooldown"),
+        quota_namespace: current.kilo?.quota_namespace || "kilo",
+        refresh_seconds: current.kilo?.refresh_seconds || 21600,
+        max_cooldown_seconds: current.kilo?.max_cooldown_seconds || 3600,
+        data_sharing_ids: current.kilo?.data_sharing_ids || ["kilo-auto/free"],
+      },
       retry: { max_attempts: numberValue("#c-attempts"), timeout_seconds: numberValue("#c-timeout") },
       models: {
         refresh_seconds: numberValue("#c-refresh"),

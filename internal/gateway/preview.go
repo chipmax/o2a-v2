@@ -58,6 +58,23 @@ func (g *Gateway) PreviewRoute(model string, requested wire.Protocol) PreviewPla
 		GeneratedAt: time.Now().UTC(),
 	}
 	now := time.Now()
+	if g.catalog.IsKilo(model) {
+		step := PreviewStep{Lane: "kilo", Tier: string(config.TierKilo), Verdict: verdictTry,
+			Reason: "làn Kilo độc lập: không WARP/Bun/key OpenCode"}
+		if g.kilo == nil || !g.kilo.enabled() {
+			step.Verdict, step.Reason = verdictSkip, "Kilo chưa được cấu hình"
+		} else if g.kilo.isCooled(model, now) {
+			step.Verdict, step.Reason = verdictSkip, "model đang nghỉ sau 429 shared-pool"
+		} else if sibling := g.kilo.sibling(model, now); sibling != "" {
+			step.Reason = "model này đang nghỉ; sẽ thử " + sibling
+		}
+		plan.Steps = append(plan.Steps, step)
+		plan.Ready = step.Verdict == verdictTry
+		if !plan.Ready {
+			plan.Blockers = append(plan.Blockers, step.Reason)
+		}
+		return plan
+	}
 	diagnostic := g.catalog.Diagnostic(model, requested, len(g.cfg.ZenKeys) > 0, len(g.cfg.GoKeys) > 0, g.cfg.Anonymous)
 	if diagnostic.NativeProtocol != "" {
 		plan.Protocol = string(diagnostic.NativeProtocol)

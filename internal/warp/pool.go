@@ -145,7 +145,28 @@ func (g *laneGate) state(now time.Time) (time.Time, int, bool) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// A pause that expired a while ago must not keep its streak forever: the
+	// next single refusal would otherwise jump straight back to a long pause.
+	if !now.Before(g.until) && g.refusals > 0 && !g.until.IsZero() &&
+		now.After(g.until.Add(laneGatePauseBase)) {
+		g.refusals = 0
+		g.until = time.Time{}
+		g.saveLocked()
+	}
 	return g.until, g.refusals, now.Before(g.until)
+}
+
+// isGateRefusal distinguishes a request-shape/identity gate from a quota wall.
+// Only the former means "fresh exits will be refused too"; a quota 429 is a
+// property of the egress bucket and must not close registration.
+func isGateRefusal(status int, body []byte) bool {
+	if status != http.StatusForbidden && status != http.StatusTooManyRequests {
+		return false
+	}
+	text := strings.ToLower(string(body))
+	return strings.Contains(text, "freetiererror") ||
+		strings.Contains(text, "free tier can only be used") ||
+		strings.Contains(text, "free models aren't available from your current network")
 }
 
 // refused records one refused exit and returns the running count and the pause
@@ -913,17 +934,24 @@ func (p *Pool) ReportWithRetryAfter(lease *Lease, status int, body []byte, retry
 	// While the lane refuses fresh exits, replacing this one would only trade a
 	// working tunnel for another refusal: keep it so the client sees the
 	// upstream's real 429 (with its Retry-After) instead of a minted device.
-	if status == http.StatusTooManyRequests {
-		if until, _, gated := p.laneGate.state(time.Now()); gated {
+	if status == http.StatusTooManyRequests || isGateRefusal(status, body) {
+		_, _, gated := p.laneGate.state(time.Now())
+		if gated {
 			if p.logger != nil {
-				p.logger.Warnf("free lane is refusing fresh exits; keeping %s instead of rotating (registrations paused until %s)",
-					lease.exit.id, until.UTC().Format(time.RFC3339))
+				if until, _, _ := p.laneGate.state(time.Now()); !until.IsZero() {
+					p.logger.Warnf("free lane is refusing fresh exits; keeping %s instead of rotating (registrations paused until %s)",
+						lease.exit.id, until.UTC().Format(time.RFC3339))
+				}
 			}
 			return
 		}
-		refusals, pause := p.laneGate.refused(time.Now())
-		if pause > 0 && p.logger != nil {
-			p.logger.Warnf("free lane refused %d requests in a row across fresh exits; keeping exits and pausing registrations for %s", refusals, pause)
+		// Only a shape/identity gate says fresh exits will fail too. A quota
+		// 429 retires this bucket but must not close the whole lane.
+		if isGateRefusal(status, body) {
+			refusals, pause := p.laneGate.refused(time.Now())
+			if pause > 0 && p.logger != nil {
+				p.logger.Warnf("free lane refused %d requests in a row across fresh exits; keeping exits and pausing registrations for %s", refusals, pause)
+			}
 		}
 	}
 	p.penalizeFor(lease.exit, reason, max(retryAfter, egressCooldown))

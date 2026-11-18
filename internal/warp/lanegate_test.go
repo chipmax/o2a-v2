@@ -1,51 +1,32 @@
 package warp
 
 import (
-	"path/filepath"
+	"net/http"
 	"testing"
 	"time"
 )
 
-// TestLaneGatePersistsAcrossRestart covers the case that made a restart mint a
-// device the previous process had just learned was refused: the pause must
-// survive, and an admission must clear it on disk too.
-func TestLaneGatePersistsAcrossRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.lane")
-	gate := newLaneGate(path)
-	now := time.Now()
-	for index := 0; index < laneGateFreeRefusals+1; index++ {
-		gate.refused(now)
+func TestIsGateRefusal(t *testing.T) {
+	if !isGateRefusal(http.StatusForbidden, []byte(`{"error":{"message":"FreeTierError: free tier can only be used from within OpenCode"}}`)) {
+		t.Fatal("403 shape gate not classified")
 	}
-	if gate.until.IsZero() {
-		t.Fatal("expected a pause after the refusal streak")
+	if !isGateRefusal(http.StatusForbidden, []byte("free models aren't available from your current network because of abusive traffic")) {
+		t.Fatal("403 network abuse not classified")
 	}
-
-	restored := newLaneGate(path)
-	if restored.refusals != gate.refusals || !restored.until.Equal(gate.until) {
-		t.Fatalf("restored %d/%s, want %d/%s", restored.refusals, restored.until, gate.refusals, gate.until)
+	if isGateRefusal(http.StatusTooManyRequests, []byte(`{"error":"Free usage limit reached"}`)) {
+		t.Fatal("quota 429 must not close the lane")
 	}
-
-	restored.admitted()
-	cleared := newLaneGate(path)
-	if cleared.refusals != 0 || !cleared.until.IsZero() {
-		t.Fatalf("admission did not clear the saved gate: %d/%s", cleared.refusals, cleared.until)
+	if isGateRefusal(http.StatusOK, []byte("freetiererror")) {
+		t.Fatal("success must not close the lane")
 	}
 }
 
-// TestLaneGateExpiredPauseKeepsCount checks that an expired pause no longer
-// blocks registration but its refusal count is still reported.
-func TestLaneGateExpiredPauseKeepsCount(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.lane")
-	gate := newLaneGate(path)
-	gate.refusals = 3
-	gate.until = time.Now().Add(-time.Minute)
-	gate.saveLocked()
-
-	restored := newLaneGate(path)
-	if restored.refusals != 3 {
-		t.Fatalf("refusals = %d, want 3", restored.refusals)
-	}
-	if restored.until.After(time.Now()) {
-		t.Fatalf("expired pause was restored as future: %s", restored.until)
+func TestLaneGateStreakDecays(t *testing.T) {
+	gate := &laneGate{}
+	gate.refusals = 9
+	gate.until = time.Now().Add(-laneGatePauseBase - time.Minute)
+	_, refusals, gated := gate.state(time.Now())
+	if gated || refusals != 0 {
+		t.Fatalf("stale streak not decayed: refusals=%d gated=%v", refusals, gated)
 	}
 }

@@ -1,0 +1,98 @@
+KILO: TRANG THAI THAT + DE XUAT BOT TRI LAI WEBUI BAN LON
+==========================================================
+Nguon: agent-reach (Exa + gh) + subagent audit doc hien thay (khong sua file).
+
+PHAN 1 - KILO DA DUNG DUOC BINH THUONG CHUA?
+---------------------------------------------
+CHUA ON DINH. Do 6 model qua router luc 18:0x:
+  200 : kilo-auto/free (1.83s), particle-ai/particle-1:free (1.05s),
+        nvidia/nemotron-3.5-lightning:free (0.58s)
+  429 : liquid/lfm-3-1.7b:free, cohere/north-mini-code:free, openrouter/free
+Nguyen nhan KHONG phai quota gio cua Kilo (docs: 200 req/gio/IP), ma la class
+moi: `model_rate_limit_exceeded`, `limit_source=upstream_provider_shared_pool`
+(provider con Liquid/Tidal qua OpenRouter), va KHONG co header Retry-After.
+Hien tuong dong loat: router log "upstream kilo -> 429, cooldown 90s" -> ca tier
+Kilo bi chan, 3 model sau do tra 429 ngay (ttfb 0.0006s) du chung chua bi limit.
+De xuat fix truoc khi dua Kilo len UI: model-scoped cooldown (khoa theo
+`model_id`, khong khoa ca upstream), va uu tien model khac cung tier khi 1 model
+bị shared-pool limit. Gia tri dung cho bo loc nguon o UI (xem P1).
+
+PHAN 2 - IA HIENTAI (6 section DOM / 18 tab / 5 nav item)
+----------------------------------------------------------
+Sidebar index.html:39-65 co 5 item (overview, model-quotas, egress, agents,
+config). Trong do egress KHONG co DOM rieng: main.js:79-83 chặn openPage va
+openEgress() (71-77) mượn tab cua overview, ghi de header (57-63).
+2 trang co DOM nhung KHONG co nav: #page-diagnostics (350), #page-api-keys (650)
+-> chi vao qua quick-action (148-151) hoac hash alias.
+
+7 diem ma sat (bang chứng file:line):
+ P1 readiness chim o metric thu 6, checklist luon hidden, khong co action
+     (index.html:91,126-130; overview.js:44-47,224-240)
+ P2 sua 429 phai nhin 3 cho: m-429, capacity, bang egress 10 cot
+     (index.html:121-135,326-345; overview.js:182-184,194-220; egress.js:344-428)
+ P3 nut Xoay/Loai o cot cuoi bang ngang -> phai cuon (egress.js:136-155,536-569)
+ P4 preview 3+ click tu trang khong co nav (index.html:150,355,543-566)
+ P5 2 loai key lan (server/zen/go vs caller API key) (index.html:997-1042,650-732)
+ P6 hidden section + stale chi bang chu (index.html:91,145,323,...)
+ P7 recompute ca page moi 3s/10s du panel an; sidebar mobile tran
+     (main.js:117; overview.js:383-389; diagnostics.js:593-596; base.css:215-269)
+
+PHAN 3 - IA MOI: 5 TRANG, 2-4 TAB
+----------------------------------
+1. Suc khoe (overview, mac dinh): summary | traffic | events
+   - status strip 4 chip Ready/429/Capacity/Lane + cards uu tien
+   - events nang tu section thanh tab; token trend, model ranking, Tier
+2. Egress & Relay (egress -> TRO THANH TRANG DOM THAT): sources | budget | checks | config
+   - WARP/proxy/peer + Xoay/Loai inline; /64 heatmap + canary + lane-reset
+   - proxy-check + gatecheck; chuyen config WARP/proxy tu trang Cai dat sang
+3. Yeu cau (diagnostics -> THEM NAV ITEM): play | trace | route | connect
+   - playground + preview ngay duoi ket qua; ledger + attempts + log filter
+   - bang routing + metadata + huong dan ket noi
+4. Mo hinh & Han muc (model-quotas): quota | free | rotation
+   - quota Go; free model + LAN KILO + filter nguon Zen/Go/Kilo/Anonymous
+5. Cau hinh & Truy cap (config): service | secrets | agents | account
+   - service+upstream+reasoning+logging gop; upstream key vs caller key tach ro
+   - agent adapter + bao mat tai khoan
+
+ANH XA (giu nguyen moi hash alias main.js:26-46, giu id DOM de JS khong viet lai):
+  overview/summary -> Suc khoe/summary ; overview/usage (#usage) -> Suc khoe/traffic
+  overview/egress (#egress) -> Egress/budget ; diagnostics/playground (#playground) -> Yeu cau/play
+  diagnostics/ledger -> Yeu cau/trace ; diagnostics/logs (#logs) -> Yeu cau/trace (mo san filter)
+  diagnostics/route -> Yeu cau/route + preview o play ; diagnostics/access (#access) -> Yeu cau/connect
+  config/service|upstream|reasoning|logging -> Cau hinh/service
+  config/keys -> Cau hinh/secrets ; config/proxies -> Egress/config ; config/account -> Cau hinh/account
+  api-keys (vo nav) -> Cau hinh/secrets ; agents (#agents) -> Cau hinh/agents
+  model-quotas/quota|free|rotation -> Mo hinh/* (giu ten tab)
+
+LOI ICH: egress thanh trang that + diagnostics len nav -> xoa ~90 dong glue trong
+main.js (openEgress/renderEgressHeader/dong bo nav-tab), 2 trang vo hinh len nav,
+sua deep-link hong (diagnostics.js:517-529 + main.js:119-121).
+
+PHAN 4 - PATTERN UI (dung lai component co san)
+------------------------------------------------
+- Status strip: .chips/.chip + .status.ok|warn|bad (components.css:233-298), them
+  #status-strip sau index.html:82.
+- Health ribbon: .metrics/.metric (pages.css:43-78), .quota-status (222-230),
+  thay 7 o bang 3 phan doan co mau.
+- Priority cards: .section + .section-head, .key-actions, .lane-banner
+  (components.css:167-192,557-561; pages.css:383-404).
+- Empty/stale state: .empty (components.css:452-456), .chip.warn; checklist de
+  dang card thu gon thay vi hidden.
+- Drill-down metric -> ledger/log: bindTabs().activate("trace") (ui.js:196-209)
+  thay .click(); dung #log-search, #requests-pager-* (index.html:448-462).
+- Filter nguon Zen/Go/Kilo/Anonymous: .filters (components.css:563-568), style
+  theo #log-level (index.html:520-526). Kilo CHUA co API -> hien nhan "chua co
+  du lieu", khong hien so gia (docs/KILO-EXPANSION:49-63).
+
+PHAN 5 - LO TRINH (rui ro tang)
+-------------------------------
+R0 HTML/CSS/i18n ~200-300 dong: nav diagnostics, doi nhan 5 nav, them strip,
+CSS ribbon/card/empty/stale, doi 7 tab config -> 4, them key i18n (giu key cu).
+R1 JS ~150-220 dong (loi lon nhat): xoa hack egress, nav diagnostics, parse hash
+co '?', refresh goi current.refresh(), dung bindTabs().activate, gom action egress
+len dau, deep-link, placeholder Kilo.
+R2 Go API ~80-150 dong: /api/models/sources (source zen|go|anonymous|kilo),
+/api/events loc request/model/status/source. /api/monitor da du cho strip -> khong
+bat buoc them /api/status.
+
+Khong lam: port Device OAuth, copy repo 0 sao, du doan so Kilo khi chua co API.

@@ -23,6 +23,11 @@ UI_TIMEOUT = int(CFG.get("ui_timeout", 60))
 HOP = {"transfer-encoding", "connection", "content-length", "keep-alive", "proxy-connection"}
 COOL = {}
 LAST_429 = {}
+# Kilo's free models share a per-provider pool: one model can hit
+# model_rate_limit_exceeded while its siblings still answer. Cool the MODEL,
+# not the whole upstream, and let the next attempt pick a sibling.
+MODEL_COOL = {}
+MODEL_COOL_SECONDS = int(CFG.get("model_cooldown_seconds", 90))
 RR = 0
 RR_ON = bool(CFG.get("round_robin", False))
 LOCK = threading.Lock()
@@ -32,6 +37,16 @@ def log(msg):
 
 def cooldown_for(up):
     return int(up.get("cooldown_seconds", DEFAULT_COOLDOWN))
+
+
+def model_cooling(model):
+    return model and MODEL_COOL.get(model, 0) > time.time()
+
+
+def cool_model(model, seconds):
+    if model:
+        with LOCK:
+            MODEL_COOL[model] = time.time() + max(1, seconds)
 
 def request_model(body):
     if not body:
@@ -278,6 +293,22 @@ class Handler(BaseHTTPRequestHandler):
         model = request_model(body)
         chat_path = urlsplit(self.path).path.endswith("/chat/completions")
         only = KILO_UPSTREAMS if (model and model in KILO_MODELS and chat_path) else None
+        if model_cooling(model):
+            # This model hit a provider-shared limit. Another free model on the
+            # same upstream may still have budget, so retry with a sibling by
+            # rewriting the request model for this round.
+            alternatives = [m for m in KILO_MODELS if m != model and not model_cooling(m)]
+            if alternatives:
+                sibling = alternatives[0]
+                try:
+                    obj = json.loads(body) if body else {}
+                    if isinstance(obj, dict):
+                        obj["model"] = sibling
+                        body = json.dumps(obj).encode()
+                        model = sibling
+                except Exception:
+                    pass
+                log(f"model was cooling; retrying sibling {model}")
         for up in ordered():
             if only is not None and up["name"] not in only:
                 continue
@@ -310,9 +341,18 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     if st == 429:
                         blob = resp.read(65536)
-                        with LOCK:
-                            LAST_429[up["name"]] = (st, hdrs, blob, time.time())
-                        self.retry_reply = (st, hdrs, blob)
+                        if up["name"] in KILO_UPSTREAMS:
+                            # Kilo shared-pool limits are per model. Keep the
+                            # upstream hot so sibling free models can still be
+                            # tried on the next round.
+                            cool_model(model, MODEL_COOL_SECONDS)
+                            with LOCK:
+                                LAST_429.pop(up["name"], None)
+                            log(f"upstream kilo model {model} -> 429, model cooldown {MODEL_COOL_SECONDS}s")
+                        else:
+                            with LOCK:
+                                LAST_429[up["name"]] = (st, hdrs, blob, time.time())
+                            self.retry_reply = (st, hdrs, blob)
                     else:
                         resp.read()
                         with LOCK:
@@ -330,7 +370,8 @@ class Handler(BaseHTTPRequestHandler):
                 if ra.isdigit() and st not in SHORT_CODES:
                     cap = int(up.get("max_cooldown_seconds", MAX_COOLDOWN))
                     cd = min(max(int(ra), 5), cap, MAX_COOLDOWN)
-                cool_down(up["name"], cd)
+                if not (st == 429 and up["name"] in KILO_UPSTREAMS):
+                    cool_down(up["name"], cd)
                 errors.append(f"{up['name']}: {st}")
                 log(f"upstream {up['name']} -> {st}, cooldown {cd}s, fallback")
                 continue

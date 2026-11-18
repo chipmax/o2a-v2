@@ -1,0 +1,64 @@
+KILO NATIVE TRONG GO + ON DINH ROUTING - 18/11
+=============================================
+Nguon: agent-reach (Exa+gh, 3 luong research) + dsh-doc skill (market plugin)
++ read code. Backend khai bao day du. Da commit 42b9b5f.
+
+1) RESEARCH
+-----------
+- Kilo: IMROVOID/OpenCode2API (source 404, chi README cache), 6Kmfi6HP (khong
+  co Kilo), pi-freeflow, rosseca/kilo-proxy, nullstacks/kilo-gateway,
+  jasonxu114514 (origin, khong co Kilo), Kilo-Org/kilocode constants,
+  fawney19/Aether PR. Ket luan: Kilo la OpenAI-compatible keyless, base
+  https://ai-gateway.kilo.ai/api/v1; kho khong nam o giao thuc ma o allowlist,
+  catalog rieng 6h, va cooldown THEO MODEL.
+- On dinh: jasonxu issue #158 (quota IP+/64+family+UTC day, IP moi double
+  allowance), anomalyco #60991, dengyie, pi-freeflow, 9router, ebouther,
+  OmniRoute, CLIProxyAPI, wbi35772, wisqqud. Code da co chassis; cac tin hieu
+  quota chua duoc dung de quyet dinh routing.
+- DSH market (skill dsh-doc): plugin la row co schema/config validate luc mount;
+  ledger la nguon chan ly, cache dai dien co version; secret tach config + scrub;
+  degrade co chu dich, fail-closed; readiness tach khoi log; hot reload co ranh
+  gioi + pin version; verification gate truoc publish. Bundle thực tế:
+  @jiesou/dsh-opencode-zen-free-provider@0.1.28 = 1-row provider plugin — reference
+  implementation cho "Kilo nhu lane".
+
+2) DA TRIEN KHAI
+----------------
+A. On dinh OpenCode (F/C/E):
+   - quotaBoard.spentFor/familyHasBudget: loc theo family, khong fast-fail khi
+     board trong; trong doAnonymousUpstream, cursor bo qua static exit da spent.
+   - doWarpAnonymousUpstream fast-fail errFreeTierQuotaSpent khi mo /64 nao con
+     budget cho family -> khong dot attempts/rotation vo ich.
+   - MarkKeyQuotaSpent: 429 ca key danh dau quotaUntil, nodeCursor.Next bo qua;
+     khong lam ngan credUntil. Test: stability_test.go.
+
+B. Kilo native (khong can router Python cho Kilo):
+   - config.KiloConfig + TierKilo: base/catalog URL, key tuy chon, allowlist,
+     refresh 6h, cooldown 90s, namespace "kilo", data_sharing_ids. Empty models
+     = disable (backward compatible). Normalize/Clone/Redact/day du.
+   - models: kilo set rieng, SetKiloModels/KiloMetadata/KiloRoute; routeLocked
+     tra KiloRoute truoc Zen/Go; modelIDs/AvailableModels gom Kilo.
+   - discovery: FetchKiloModels rieng (khong dung FetchModels/FetchCapabilities
+     cua OpenCode), loc :free|/free + pricing=0, giu seed khi refresh loi.
+   - Gateway.kiloLane: client HTTP thuong (KHONG WARP/Bun/x-opencode), cooldown
+     theo model, sibling retry, refresh catalog dinh ky; doKiloUpstream gui thang
+     {base}/chat/completions, neutral headers, optional Bearer.
+   - /v1/models: owned_by=kilo, name co " (data-sharing)" cho kilo-auto/free,
+     metadata context/max_output tu catalog.
+   - errKiloQuotaSpent -> 429, khong rơi vao 502 chung.
+
+3) TEST
+-------
+- gofmt, vet, go test ./... xanh.
+- Test unit: config Kilo, spentFor/family, cursor skip spent, key quota, catalog.
+- Live test WSL isolated :19090 voi config.example + 3 Kilo model:
+  health 200, /v1/models 14 (3 Kilo owned_by=kilo, data-sharing label dung),
+  catalog refresh "15 models", 3/3 chat 200 (TTFB 0.6-4.7s), khong panic.
+
+4) CON LAI
+----------
+- Chua deploy ban nay len VPS1/VPS2/WSL service (user yeu cau danh gia truoc).
+- Chua wire Kilo vao WebUI config tab; chua preview step; chua quota probe Kilo.
+- Chua chuyen OMP tu router :8090 sang Go :8000 (can parity test + deploy).
+- Chua lam D lane-gate classify (429 != gate) va A/B probe co control.
+- Router Python van chay song song; co the tat sau khi parity.

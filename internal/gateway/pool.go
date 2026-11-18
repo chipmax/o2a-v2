@@ -883,6 +883,11 @@ type upstreamNode struct {
 	// which a 429 or a 5xx also sets, so the two failure classes never
 	// clear each other.
 	credUntil atomic.Int64
+	// quotaUntil is the free-tier quota wall horizon from a 429's Retry-After
+	// (hours). It is a semantic superset of cooldownUntil: transport failures
+	// and proxy recovery may clear cooldownUntil, but a spent quota window does
+	// not reopen because a proxy came back or a listing succeeded.
+	quotaUntil atomic.Int64
 }
 
 // upstreamNodes is one tier's key pool. bindingsMu serializes rebinding and
@@ -1148,6 +1153,12 @@ func (c *nodeCursor) Next() *upstreamNode {
 		proxy := c.pool.Proxy(node)
 		healthy := proxy != nil && proxy.healthy.Load()
 		until := node.cooldownUntil.Load()
+		// A quota wall outlasts the short transport cooldown. Keep walled keys
+		// out of the ready/earliest buckets; when the whole pool is walled the
+		// fallback below still returns the earliest-reopening key.
+		if walled := node.quotaUntil.Load(); walled > until {
+			until = walled
+		}
 		if until <= now {
 			if healthy {
 				healthyReady = i
@@ -1182,6 +1193,15 @@ func (p *upstreamNodes) MarkSuccess(node *upstreamNode) {
 	node.failures.Store(0)
 	node.cooldownUntil.Store(0)
 	node.credUntil.Store(0)
+	node.quotaUntil.Store(0)
+}
+
+// MarkListingSuccess records that a model listing succeeded through the key.
+// A listing is not an inference: it must not reopen a live quota wall, which
+// would put a spent key back in front of the next real request.
+func (p *upstreamNodes) MarkListingSuccess(node *upstreamNode) {
+	node.failures.Store(0)
+	node.cooldownUntil.Store(0)
 }
 
 // MarkFailure cools node down after an error or a 401, 403, 429 or 5xx
@@ -1224,6 +1244,11 @@ func (p *upstreamNodes) MarkFailure(node *upstreamNode, resp *http.Response, err
 		until = time.Unix(0, cred)
 	}
 	node.cooldownUntil.Store(until.UnixNano())
+	if resp != nil && resp.StatusCode == http.StatusTooManyRequests {
+		// The free tier's Retry-After runs for hours. Remember it separately so
+		// transport recovery or a successful listing cannot reopen the wall.
+		node.quotaUntil.Store(until.UnixNano())
+	}
 }
 
 // QuarantinedUntil reports the credential quarantine horizon, zero when the

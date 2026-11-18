@@ -394,7 +394,7 @@ func (g *Gateway) refreshTier(ctx context.Context, base string, nodes *upstreamN
 		g.syncProxyResult(refreshCtx, proxy, status, err)
 		cancel()
 		if err == nil {
-			nodes.MarkSuccess(node)
+			nodes.MarkListingSuccess(node)
 			return models
 		}
 		nodes.MarkFailure(node, nil, err)

@@ -279,6 +279,7 @@ func (g *Gateway) extendQuotaTarget(target quotaProbeTarget, retryAfter time.Dur
 		target.until = time.Unix(0, cred)
 	}
 	target.node.cooldownUntil.Store(target.until.UnixNano())
+	target.node.quotaUntil.Store(target.until.UnixNano())
 }
 
 // quarantineTarget restarts a key's credential quarantine after a probe saw

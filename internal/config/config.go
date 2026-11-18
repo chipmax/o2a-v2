@@ -36,10 +36,13 @@ type Config struct {
 	GoKeys            []string                     `json:"go_keys"`
 	Anonymous         bool                         `json:"anonymous"`
 	Warp              WarpConfig                   `json:"warp"`
-	Proxies           []string                     `json:"proxies"`
-	ProxyFile         string                       `json:"proxyfile"`
-	ProxyBindings     map[string]string            `json:"proxy_bindings,omitempty"`
-	Upstream          UpstreamConfig               `json:"upstream"`
+	// Egress holds the opt-in egress controls. All fields default to false, so
+	// an existing config keeps its current behaviour exactly.
+	Egress        EgressConfig      `json:"egress,omitempty"`
+	Proxies       []string          `json:"proxies"`
+	ProxyFile     string            `json:"proxyfile"`
+	ProxyBindings map[string]string `json:"proxy_bindings,omitempty"`
+	Upstream      UpstreamConfig    `json:"upstream"`
 	// Kilo is the keyless free-gateway lane. An empty Models list disables it:
 	// existing deployments keep their exact behaviour until a model is listed.
 	Kilo        KiloConfig        `json:"kilo,omitempty"`
@@ -234,6 +237,23 @@ type KiloConfig struct {
 	MaxCooldownSeconds int      `json:"max_cooldown_seconds,omitempty"`
 	QuotaNamespace     string   `json:"quota_namespace,omitempty"`
 	DataSharingIDs     []string `json:"data_sharing_ids,omitempty"`
+}
+
+// EgressConfig controls how the gateway treats its outbound routes. Both
+// mechanisms are opt-in: IPv4 twins add a second quota bucket per dual-stack
+// host; the boot gate refuses a deployment whose only route is "direct".
+type EgressConfig struct {
+	// IPv4Twins adds a tcp4-forced copy of every direct/proxied route. SNI and
+	// Host stay the upstream hostname, so the OpenCode gate sees the same host.
+	IPv4Twins bool `json:"ipv4_twins,omitempty"`
+	// IPv4First orders the tcp4 twins (and IPv4-only routes) before dual-stack
+	// routes, because the free tier counts IPv6 /64 and IPv4 separately.
+	IPv4First bool `json:"ipv4_first,omitempty"`
+	// RequireEgress refuses to boot when no real egress is configured. It is
+	// off by default because RuntimeProxies() legitimately returns ["direct"].
+	RequireEgress bool `json:"require_egress,omitempty"`
+	// AllowDirect is the explicit escape hatch for RequireEgress.
+	AllowDirect bool `json:"allow_direct,omitempty"`
 }
 
 // PromptEnvironmentConfig replaces the host-derived fields of the injected
@@ -611,6 +631,15 @@ func Normalize(path string, cfg Config) (Config, error) {
 	cfg.ProxyFile = strings.TrimSpace(cfg.ProxyFile)
 	if err := resolveProxyFiles(path, &cfg); err != nil {
 		return Config{}, err
+	}
+	// Opt-in no-egress boot gate. Only an explicit "direct" route (the default
+	// when no proxy is configured) counts as "no egress"; WARP still provides
+	// a real exit, and AllowDirect is the documented local-dev escape hatch.
+	if cfg.Egress.RequireEgress && !cfg.Egress.AllowDirect && !cfg.Warp.Enabled {
+		routes := cfg.RuntimeProxies()
+		if len(routes) == 1 && strings.EqualFold(strings.TrimSpace(routes[0]), "direct") {
+			return Config{}, errors.New("no egress configured: add a proxy or enable warp, or set egress.allow_direct for local development")
+		}
 	}
 	if cfg.Prefer != TierZen && cfg.Prefer != TierGo {
 		return Config{}, errors.New("prefer must be \"zen\" or \"go\"")

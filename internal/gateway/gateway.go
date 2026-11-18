@@ -165,7 +165,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 	if err != nil {
 		return nil, err
 	}
-	transports, err := transportPool(cfg.RuntimeProxies(), cfg.Performance, cfg.Performance.AttemptTimeout(time.Duration(cfg.Retry.TimeoutSeconds)*time.Second), logger)
+	transports, err := transportPool(cfg.RuntimeProxies(), cfg.Performance, cfg.Egress, cfg.Performance.AttemptTimeout(time.Duration(cfg.Retry.TimeoutSeconds)*time.Second), logger)
 	if err != nil {
 		return nil, err
 	}

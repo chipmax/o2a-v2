@@ -1,0 +1,43 @@
+IPV4-FIRST TWINS + NO-EGRESS BOOT GATE (Go)
+===========================================
+Da trien khai opt-in, mac dinh tat de khong doi deploy hien tai.
+
+1) Cau hinh (config.example.json)
+---------------------------------
+"egress": {
+  "ipv4_twins": false,     // them ban sao tcp4 cho route direct
+  "ipv4_first": false,     // xep twin len truoc
+  "require_egress": false, // tu choi boot neu chi co direct va khong warp
+  "allow_direct": false    // escape hatch cho require_egress
+}
+
+2) Co che
+---------
+- transportPool: khi ipv4_twins bat va route la "direct", tao them
+  proxyTransport "direct-v4":
+  * http.Transport.Clone() + DialContext ep tcp4.
+  * BunTransport voi DialContext ep tcp4 (Proxy nil).
+  * KHONG rewrite URL host -> Host/SNI van la opencode.ai (tranh fake 429).
+- Route proxy/SOCKS khong duoc tao twin (BunOptions.DialContext se thay the
+  CONNECTproxy). Co log canh bao neu bat flag ma co proxy.
+- ipv4_first: partition on dinh, twin len dau, reassign index.
+- require_egress: Normalize() tra error neu routes==["direct"], warp tat,
+  khong allow_direct. Warp bat van hop le.
+- health: them issue "no_direct_egress_allowed" khi require_egress bat, warp
+  unavailable va chi con direct.
+
+3) File da sua
+--------------
+internal/config/config.go
+internal/gateway/pool.go
+internal/gateway/gateway.go
+internal/gateway/health.go
+config.example.json
+Test: internal/config/egress_test.go, internal/gateway/egress_twin_test.go
+
+4) Gioi han
+-----------
+- Chi direct twin duoc ho tro o ban dau; proxied twin can them ServerName
+  override vao BunOptions, lam sau neu can.
+- IPv4 twin khong giup neu A record tro toi IPv4 NAT/CDN da spent.
+- Khong ap cho WARP/usque MASQUE (cung /64 hoac NAT chung).

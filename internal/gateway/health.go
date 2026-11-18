@@ -171,6 +171,16 @@ func (g *Gateway) HealthReport() (healthResponse, int) {
 	if proxyHealthy == 0 {
 		issues = append(issues, "no_healthy_proxies")
 	}
+	// With the opt-in boot gate, a direct-only route is not an acceptable
+	// fallback once WARP is unavailable. It is an issue, but not an extra
+	// blocker when warp_unavailable already says why readiness is false.
+	if g.cfg.Egress.RequireEgress && !g.cfg.Egress.AllowDirect &&
+		(g.warp == nil || warpActive == 0) {
+		routes := g.cfg.RuntimeProxies()
+		if len(routes) == 1 && routes[0] == "direct" {
+			issues = append(issues, "no_direct_egress_allowed")
+		}
+	}
 
 	status := "ok"
 	if len(issues) > 0 {

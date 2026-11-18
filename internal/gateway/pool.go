@@ -32,9 +32,13 @@ import (
 // upstream HTTP responses (see syncProxyResult) or a passing health check;
 // checking claims the single health check allowed in flight.
 type proxyTransport struct {
-	index        int
-	name         string
-	pool         bool
+	index int
+	name  string
+	pool  bool
+	// ipv4 marks a tcp4-forced twin of another route. It exists to give a
+	// dual-stack host a second quota bucket without changing the URL host or
+	// TLS SNI (the free tier counts IPv6 /64 and IPv4 separately).
+	ipv4         bool
 	client       *http.Client
 	bun          *http.Client
 	relay        *relay.Transport
@@ -659,8 +663,16 @@ func (p *proxyTransports) healthCounts() (total, healthy int) {
 // transports without keep-alives, so every attempt opens a new connection
 // through the pool; "direct" dials the upstream without any proxy, ignoring
 // the proxy environment variables.
-func transportPool(proxies []string, cfg config.PerformanceConfig, responseHeaderTimeout time.Duration, logger *slog.Logger) (*proxyTransports, error) {
+func transportPool(proxies []string, cfg config.PerformanceConfig, egress config.EgressConfig, responseHeaderTimeout time.Duration, logger *slog.Logger) (*proxyTransports, error) {
 	p := &proxyTransports{items: make([]*proxyTransport, 0, len(proxies))}
+	// A tcp4-only dialer is safe only for a direct route: for a proxied route
+	// BunTransport's DialContext would replace the proxy CONNECT entirely.
+	tcp4 := func(ctx context.Context, _, addr string) (net.Conn, error) {
+		return (&net.Dialer{
+			Timeout:   time.Duration(cfg.ConnectTimeoutSeconds) * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext(ctx, "tcp4", addr)
+	}
 	for _, raw := range proxies {
 		clean, isPool := config.ParseProxyEntry(raw)
 		if endpoint, token, ok := relayEntry(clean); ok {
@@ -731,6 +743,50 @@ func transportPool(proxies []string, cfg config.PerformanceConfig, responseHeade
 		proxy := &proxyTransport{index: len(p.items), name: raw, pool: isPool, client: &http.Client{Transport: transport}, bun: &http.Client{Transport: bun}}
 		proxy.healthy.Store(true)
 		p.items = append(p.items, proxy)
+
+		if egress.IPv4Twins && clean == "direct" {
+			// Direct twin: force tcp4 only. The URL still carries the upstream
+			// hostname, so Host and Bun TLS SNI stay correct; forcing IPv4 via
+			// the dialer is what creates a separate quota bucket.
+			twinTransport := transport.Clone()
+			twinTransport.Proxy = nil
+			twinTransport.DialContext = tcp4
+			twinBun, err := httpx.NewBunTransport(httpx.BunOptions{
+				ConnectTimeout:        time.Duration(cfg.ConnectTimeoutSeconds) * time.Second,
+				ResponseHeaderTimeout: responseHeaderTimeout,
+				IdleConnTimeout:       transport.IdleConnTimeout,
+				MaxIdleConnsPerHost:   cfg.MaxIdleConnsPerHost,
+				DisableKeepAlives:     isPool,
+				DialContext:           tcp4,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("proxy %s ipv4 twin: %w", config.RedactURL(raw), err)
+			}
+			twin := &proxyTransport{
+				index: len(p.items), name: config.RedactURL(raw) + "-v4", ipv4: true,
+				client: &http.Client{Transport: twinTransport}, bun: &http.Client{Transport: twinBun},
+			}
+			twin.healthy.Store(true)
+			p.items = append(p.items, twin)
+		} else if egress.IPv4Twins && clean != "direct" && logger != nil {
+			logger.Warn("ipv4_twins applies only to the direct route; skipping proxied route",
+				"component", "egress", "event", "ipv4_twin_skipped", "proxy", config.RedactURL(raw))
+		}
+	}
+	if egress.IPv4First {
+		// Keep relative order inside both groups. Relays/Tor stay at the end.
+		v4, rest := make([]*proxyTransport, 0, len(p.items)), make([]*proxyTransport, 0, len(p.items))
+		for _, item := range p.items {
+			if item.ipv4 {
+				v4 = append(v4, item)
+			} else {
+				rest = append(rest, item)
+			}
+		}
+		p.items = append(v4, rest...)
+		for index, item := range p.items {
+			item.index = index
+		}
 	}
 	return p, nil
 }

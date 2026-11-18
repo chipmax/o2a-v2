@@ -62,10 +62,16 @@ type RouteDiagnostic struct {
 // methods ending in Locked expect the caller to hold it, and a read lock is
 // enough for all of them.
 type ModelCatalog struct {
-	mu        sync.RWMutex
-	zen       map[string]bool
-	goModels  map[string]bool
-	protocols map[string]wire.Protocol
+	mu       sync.RWMutex
+	zen      map[string]bool
+	goModels map[string]bool
+	// kilo is an independent allowlist, not an OpenCode tier: it has its own
+	// quota, headers and transport. KiloRoute is returned before the Zen/Go
+	// route logic runs.
+	kilo       map[string]bool
+	kiloMeta   map[string]Metadata
+	kiloShared map[string]bool
+	protocols  map[string]wire.Protocol
 	// nativeProtocols is populated from OpenCode's public model capability
 	// catalog. protocols remains the user-configured override map.
 	nativeProtocols map[config.Tier]map[string]wire.Protocol
@@ -109,7 +115,7 @@ func Catalog(prefer config.Tier, overrides map[string]string) *ModelCatalog {
 		protocols[model] = wire.Protocol(protocol)
 	}
 	return &ModelCatalog{
-		zen: map[string]bool{}, goModels: map[string]bool{}, protocols: protocols,
+		zen: map[string]bool{}, goModels: map[string]bool{}, kilo: map[string]bool{}, protocols: protocols,
 		nativeProtocols: map[config.Tier]map[string]wire.Protocol{config.TierZen: {}, config.TierGo: {}},
 		unsupported:     map[config.Tier]map[string]bool{config.TierZen: {}, config.TierGo: {}}, prefer: prefer,
 		deadIDs: map[string]bool{}, cacheSource: "none",
@@ -293,6 +299,11 @@ func (c *ModelCatalog) routeLocked(model string, hasZenKeys, hasGoKeys, hasAnony
 	}
 	if err := c.freeOnlyErrorLocked(model); err != nil {
 		return Route{}, err
+	}
+	// Kilo is an independent lane, not a Zen/Go tier. A model assigned to it
+	// must never inherit an OpenCode key, WARP exit or anonymous prompt shape.
+	if c.kilo[model] {
+		return KiloRoute(model), nil
 	}
 	keyTiers := c.keyTierOrderLocked(model, hasZenKeys, hasGoKeys)
 	// OpenCode's public credential belongs to the Zen tier. Every free model
@@ -515,11 +526,14 @@ func (c *ModelCatalog) List() []string {
 }
 
 func (c *ModelCatalog) modelIDsLocked() []string {
-	seen := make(map[string]bool, len(c.zen)+len(c.goModels))
+	seen := make(map[string]bool, len(c.zen)+len(c.goModels)+len(c.kilo))
 	for model := range c.zen {
 		seen[model] = true
 	}
 	for model := range c.goModels {
+		seen[model] = true
+	}
+	for model := range c.kilo {
 		seen[model] = true
 	}
 	for model := range c.deadIDs {
@@ -554,6 +568,10 @@ func (c *ModelCatalog) AvailableModels(hasZenKeys, hasGoKeys, hasAnonymous bool)
 	routes := make([]Route, 0, len(ids))
 	for _, model := range ids {
 		if !c.supportedLocked(model) {
+			continue
+		}
+		if c.kilo[model] {
+			routes = append(routes, KiloRoute(model))
 			continue
 		}
 		if route, err := c.routeLocked(model, hasZenKeys, hasGoKeys, hasAnonymous); err == nil {
@@ -678,6 +696,9 @@ func (c *ModelCatalog) supportedLocked(model string) bool {
 		return true
 	}
 	if c.goModels[model] && c.tierSupportedLocked(model, config.TierGo) {
+		return true
+	}
+	if c.kilo[model] {
 		return true
 	}
 	return false

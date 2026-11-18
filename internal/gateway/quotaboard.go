@@ -269,6 +269,75 @@ func (b *quotaBoard) record(egress, model string, status int, quotaHit bool, ret
 	b.maybeSaveLocked(now)
 }
 
+// familyHasBudget reports whether the board knows at least one egress with an
+// unspent bucket for family. An empty board returns true (unknown is not
+// exhausted), so a cold start never fast-fails a request.
+func (b *quotaBoard) familyHasBudget(family string, now time.Time) bool {
+	if b == nil || family == "" {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rollLocked(now)
+	known := false
+	for _, entry := range b.entries {
+		if entry.Family != family || entry.Requests == 0 {
+			continue
+		}
+		known = true
+		if !b.spentForLocked(prefixLabel(entry.Egress), family, now) {
+			return true
+		}
+	}
+	return !known
+}
+
+func (b *quotaBoard) spentForLocked(egress, family string, now time.Time) bool {
+	for _, entry := range b.entries {
+		if prefixLabel(entry.Egress) != egress || (family != "" && entry.Family != family) {
+			continue
+		}
+		spent := entry.QuotaHits > 0 || entry.LastStatus == http.StatusTooManyRequests || !entry.LastQuotaAt.IsZero()
+		if !spent {
+			continue
+		}
+		if entry.RetryAfterSecs > 0 && !entry.LastQuotaAt.IsZero() &&
+			entry.LastQuotaAt.Add(time.Duration(entry.RetryAfterSecs)*time.Second).Before(now) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// spentFor reports whether egress is known to have spent this model family's
+// bucket in the current UTC day. This is a routing signal, not an upstream
+// counter: an unknown egress is never treated as spent, so an empty board never
+// fast-fails a request.
+// modelFamily is the free tier's quota key: the first two characters of the
+// model ID (de, be, gl, …). Keeping it in one place prevents drift between the
+// board, the estimator and routing.
+func modelFamily(model string) string {
+	if len(model) <= 2 {
+		return model
+	}
+	return model[:2]
+}
+
+func (b *quotaBoard) spentFor(egress, family string, now time.Time) bool {
+	if b == nil || egress == "" {
+		return false
+	}
+	egress = prefixLabel(egress)
+	if egress == "" {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rollLocked(now)
+	return b.spentForLocked(egress, family, now)
+}
+
 // snapshot merges the counters with the pool's live exit states: an exit the
 // pool is cooling is "cooling" even when its last attempt looked fine, because
 // the pool retires an exit faster than a counter sees it.

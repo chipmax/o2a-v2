@@ -342,6 +342,10 @@ func (g *Gateway) doUpstreamTiers(ctx context.Context, route models.Route, bodie
 		resp, err, used := g.doSelectedKeyUpstream(ctx, route, bodies, ids, override, attemptOffset)
 		return resp, route, attemptOffset + used, err
 	}
+	if route.Tier == config.TierKilo {
+		resp, used, err := g.doKiloUpstream(ctx, route, bodies, ids, attemptOffset)
+		return resp, route, attemptOffset + used, err
+	}
 	blocked := false
 	if route.Anonymous {
 		resp, err, used := g.doAnonymousUpstream(ctx, route, bodies, ids, attempts)
@@ -548,6 +552,8 @@ func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, b
 	// is the last one the walk keeps.
 	quotaSpent := false
 	cursor := g.anonymous.CursorForOffset(ids.Session, attemptOffset)
+	cursor.family = modelFamily(route.ID)
+	cursor.quota = g.quota
 	limit := min(g.anonymous.Len(), g.maxAnonymousExits())
 	if g.anonymous.HasPool() && g.cfg.Retry.MaxAttempts > limit {
 		limit = g.cfg.Retry.MaxAttempts
@@ -1481,7 +1487,16 @@ func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route,
 			if resp != nil {
 				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
 			}
-			recordKeyQuota(keyID, route.ID, status, retryAfter, time.Now())
+			now := time.Now()
+			recordKeyQuota(keyID, route.ID, status, retryAfter, now)
+			// The display-only key board also has to drive routing: a key whose
+			// 429 has no Retry-After is still out until the UTC window resets.
+			if g.zenNodes != nil && route.Tier == config.TierZen {
+				g.zenNodes.MarkKeyQuotaSpent(g.zenNodes.NodeByID(keyID), retryAfter)
+			}
+			if g.goNodes != nil && route.Tier == config.TierGo {
+				g.goNodes.MarkKeyQuotaSpent(g.goNodes.NodeByID(keyID), retryAfter)
+			}
 		}
 	}
 	if g.monitor == nil {

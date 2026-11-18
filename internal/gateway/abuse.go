@@ -65,6 +65,11 @@ const freeTierBlockTTL = 15 * time.Minute
 // answer from the pool's own state instead of spending upstream calls.
 var errKeyPoolCooling = errors.New("every key in this tier is cooling down")
 
+// errKiloQuotaSpent reports that every allowed Kilo free model is cooling
+// after a provider-shared-pool 429. It is a quota verdict, not a transport
+// failure, so the caller must not rotate OpenCode exits or keys.
+var errKiloQuotaSpent = errors.New("all Kilo free models are cooling down")
+
 // errKeyPoolCredentialExhausted reports that the upstream rejected every key in
 // a tier as a credential (401/403). Forwarding that status would send the
 // caller looking for a client-side credential problem and, behind a fronting

@@ -322,9 +322,25 @@ func (g *Gateway) handleModels(w http.ResponseWriter, _ *http.Request) {
 		// Tier-scoped metadata: the advertised context window must match
 		// the tier that will serve the request (anonymous ⇒ Zen).
 		md := g.catalog.MetadataForTier(model, route.Tier)
+		if route.Tier == config.TierKilo {
+			if kiloMD, shared := g.catalog.KiloMetadata(model); kiloMD.ContextWindow > 0 || kiloMD.MaxOutput > 0 {
+				md = kiloMD
+			} else if shared {
+				md = modelcatalog.Metadata{}
+			}
+		}
 		md = g.modelLimits(model, route.Tier, md)
+		owner := "opencode"
+		displayName := model
+		if route.Tier == config.TierKilo {
+			owner = "kilo"
+			if _, shared := g.catalog.KiloMetadata(model); shared {
+				displayName = model + " (data-sharing)"
+			}
+		}
 		entry := map[string]any{
-			"id": model, "object": "model", "created": now, "owned_by": "opencode",
+			"id": model, "object": "model", "created": now, "owned_by": owner,
+			"name":            displayName,
 			"metadata":        md,
 			"native_protocol": route.Protocol,
 		}

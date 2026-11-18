@@ -12,4 +12,9 @@ const (
 	// TierGo is the keyed Go plan tier, served by upstream.go, whose default
 	// is the v2 /zen/go origin.
 	TierGo Tier = "go"
+	// TierKilo is the keyless Kilo free-gateway lane. It is an alternative
+	// upstream for an explicit model allowlist, never an OpenCode fallback and
+	// never a value of Prefer: its quota and headers belong to a different
+	// provider.
+	TierKilo Tier = "kilo"
 )

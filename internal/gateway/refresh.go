@@ -227,6 +227,21 @@ func (g *Gateway) RefreshCatalog(ctx context.Context) {
 func (g *Gateway) StartModelRefresh(ctx context.Context) {
 	go func() {
 		g.RefreshCatalog(ctx)
+		if g.kilo.enabled() {
+			g.kilo.refreshCatalog(ctx, g.catalog, g.logger)
+			go func() {
+				kiloTicker := time.NewTicker(time.Duration(g.kilo.cfg.RefreshSeconds) * time.Second)
+				defer kiloTicker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-kiloTicker.C:
+						g.kilo.refreshCatalog(ctx, g.catalog, g.logger)
+					}
+				}
+			}()
+		}
 		ticker := time.NewTicker(time.Duration(g.cfg.Models.RefreshSeconds) * time.Second)
 		defer ticker.Stop()
 		for {

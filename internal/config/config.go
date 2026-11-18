@@ -40,14 +40,17 @@ type Config struct {
 	ProxyFile         string                       `json:"proxyfile"`
 	ProxyBindings     map[string]string            `json:"proxy_bindings,omitempty"`
 	Upstream          UpstreamConfig               `json:"upstream"`
-	Retry             RetryConfig                  `json:"retry"`
-	Models            ModelsConfig                 `json:"models"`
-	Performance       PerformanceConfig            `json:"performance"`
-	Logging           LoggingConfig                `json:"logging"`
-	Storage           StorageConfig                `json:"storage,omitempty"`
-	WebUI             WebUIConfig                  `json:"webui"`
-	Prefer            Tier                         `json:"prefer"`
-	Reasoning         ReasoningConfig              `json:"reasoning"`
+	// Kilo is the keyless free-gateway lane. An empty Models list disables it:
+	// existing deployments keep their exact behaviour until a model is listed.
+	Kilo        KiloConfig        `json:"kilo,omitempty"`
+	Retry       RetryConfig       `json:"retry"`
+	Models      ModelsConfig      `json:"models"`
+	Performance PerformanceConfig `json:"performance"`
+	Logging     LoggingConfig     `json:"logging"`
+	Storage     StorageConfig     `json:"storage,omitempty"`
+	WebUI       WebUIConfig       `json:"webui"`
+	Prefer      Tier              `json:"prefer"`
+	Reasoning   ReasoningConfig   `json:"reasoning"`
 	// Peers are other o2a-compatible gateways this process falls back to when
 	// every local lane fails, so one listen address serves the whole fleet
 	// without an external router.
@@ -215,6 +218,22 @@ type UpstreamConfig struct {
 	// reads this block, so it must describe the client's world without letting
 	// arbitrary operator text break the request shape.
 	PromptEnvironment *PromptEnvironmentConfig `json:"prompt_environment,omitempty"`
+}
+
+// KiloConfig describes the optional Kilo AI Gateway free lane. It is a
+// separate provider: no OpenCode TLS fingerprint, no WARP, no Zen key, and a
+// quota namespace of its own. Only the listed models route here; every other
+// model keeps using the OpenCode lanes.
+type KiloConfig struct {
+	BaseURL            string   `json:"base_url,omitempty"`
+	CatalogURL         string   `json:"catalog_url,omitempty"`
+	Key                string   `json:"key,omitempty"`
+	Models             []string `json:"models,omitempty"`
+	RefreshSeconds     int      `json:"refresh_seconds,omitempty"`
+	CooldownSeconds    int      `json:"cooldown_seconds,omitempty"`
+	MaxCooldownSeconds int      `json:"max_cooldown_seconds,omitempty"`
+	QuotaNamespace     string   `json:"quota_namespace,omitempty"`
+	DataSharingIDs     []string `json:"data_sharing_ids,omitempty"`
 }
 
 // PromptEnvironmentConfig replaces the host-derived fields of the injected
@@ -551,6 +570,7 @@ func Load(path string) (Config, error) {
 		Listen:      "127.0.0.1:8080",
 		Warp:        WarpConfig{PoolSize: 2, Stack: string(warp.DefaultStack)},
 		Upstream:    UpstreamConfig{Zen: "https://opencode.ai/zen", Go: "https://opencode.ai/zen/go", Anonymous: "https://opencode.ai/inference"},
+		Kilo:        KiloConfig{BaseURL: "https://ai-gateway.kilo.ai/api/v1", CatalogURL: "https://ai-gateway.kilo.ai/api/v1/models", RefreshSeconds: 21600, CooldownSeconds: 90, MaxCooldownSeconds: 3600, QuotaNamespace: "kilo"},
 		Retry:       RetryConfig{MaxAttempts: 3, TimeoutSeconds: 300},
 		Models:      ModelsConfig{RefreshSeconds: 300, QuotaProbeSeconds: 600, Protocols: map[string]string{}},
 		Performance: PerformanceConfig{MaxIdleConns: 2048, MaxIdleConnsPerHost: 256, MaxConnsPerHost: 0, IdleConnTimeoutSeconds: 120, ConnectTimeoutSeconds: 5, FailureCooldownSeconds: 15},
@@ -620,6 +640,9 @@ func Normalize(path string, cfg Config) (Config, error) {
 		if err != nil || u.Host == "" || (strings.ToLower(u.Scheme) != "http" && strings.ToLower(u.Scheme) != "https") {
 			return Config{}, fmt.Errorf("%s must be an http or https URL", name)
 		}
+	}
+	if err := cfg.Kilo.Normalize(); err != nil {
+		return Config{}, err
 	}
 	if len(cfg.ServerKeys) == 0 {
 		return Config{}, errors.New("server_keys must contain at least one local key")
@@ -938,6 +961,8 @@ func Clone(cfg Config) Config {
 	cfg.ServerKeyMetadata = metadata
 	cfg.ZenKeys = append([]string(nil), cfg.ZenKeys...)
 	cfg.GoKeys = append([]string(nil), cfg.GoKeys...)
+	cfg.Kilo.Models = append([]string(nil), cfg.Kilo.Models...)
+	cfg.Kilo.DataSharingIDs = append([]string(nil), cfg.Kilo.DataSharingIDs...)
 	cfg.Proxies = append([]string(nil), cfg.Proxies...)
 	cfg.effectiveProxies = append([]string(nil), cfg.effectiveProxies...)
 	cfg.Models.DeadIDs = slices.Clone(cfg.Models.DeadIDs)

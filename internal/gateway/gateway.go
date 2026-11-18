@@ -130,6 +130,9 @@ type Gateway struct {
 	// contextLimits persists what live traffic has proven about each model's
 	// usable context. The controller shares one board across hot reloads.
 	contextLimits *models.ContextLimits
+	// kilo is the independent Kilo free-gateway lane. nil when no Kilo model
+	// is configured, so existing deployments keep their exact routing.
+	kilo *kiloLane
 	// peerFirst holds, per model family, the moment its local free-tier bucket
 	// resets after the upstream reported it spent. While it is in the future,
 	// requests for that family go to a peer first.
@@ -187,7 +190,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 	catalog.SetFreeOnly(cfg.Models.FreeOnly)
 	catalog.SetDeadModels(cfg.Models.DeadIDs)
 	contextLimits, _ := models.OpenContextLimits("")
-	return &Gateway{
+	g := &Gateway{
 		cfg:            cfg,
 		rotation:       rotationManager,
 		logger:         logger,
@@ -204,9 +207,34 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 		quota:          egressQuota,
 		affinity:       newEgressAffinity(),
 		contextLimits:  contextLimits,
+		kilo:           newKiloLane(cfg.Kilo),
 		inflight:       inflight,
 		queueWait:      time.Duration(cfg.Performance.QueueWaitSeconds) * time.Second,
-	}, nil
+	}
+	g.seedKilo()
+	return g, nil
+}
+
+// seedKilo installs the configured Kilo allowlist before the first request,
+// so a freshly started gateway can route those models even before the catalog
+// refresh completes. The live refresh replaces the seed if it succeeds.
+func (g *Gateway) seedKilo() {
+	if g == nil || !g.kilo.enabled() {
+		return
+	}
+	g.catalog.SetKiloModels(g.kilo.cfg.Models)
+	seed := make([]models.KiloModel, 0, len(g.kilo.cfg.Models))
+	for _, id := range g.kilo.cfg.Models {
+		shared := false
+		for _, flagged := range g.kilo.cfg.DataSharingIDs {
+			if flagged == id {
+				shared = true
+				break
+			}
+		}
+		seed = append(seed, models.KiloModel{ID: id, DataSharing: shared})
+	}
+	g.catalog.SetKiloMetadata(seed)
 }
 
 // anonymousBackoffFromConfig converts the configured hours into the breaker's
@@ -561,6 +589,10 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				wire.WriteError(w, external, http.StatusTooManyRequests, freeTierQuotaMessage, "free_tier_quota_exhausted", ids.Request)
 				return
 			}
+			if errors.Is(err, errKiloQuotaSpent) {
+				wire.WriteError(w, external, http.StatusTooManyRequests, "all Kilo free models are cooling down after a provider-shared-pool limit", "kilo_quota_spent", ids.Request)
+				return
+			}
 			// The anonymous lane's circuit breaker is open. Report the pause
 			// distinctly so the operator does not look for a credential or a
 			// model problem in the upstream error.
@@ -905,6 +937,13 @@ func (g *Gateway) prepareRouteBodies(from wire.Protocol, route models.Route, inp
 	tiers := make([]config.Tier, 0, len(route.KeyTiers)+1)
 	seen := make(map[config.Tier]bool, len(route.KeyTiers)+1)
 	addTier := func(tier config.Tier) {
+		if tier == config.TierKilo || seen[tier] {
+			if tier == config.TierKilo {
+				seen[tier] = true
+				tiers = append(tiers, tier)
+			}
+			return
+		}
 		if tier != config.TierZen && tier != config.TierGo || seen[tier] {
 			return
 		}
@@ -924,6 +963,8 @@ func (g *Gateway) prepareRouteBodies(from wire.Protocol, route models.Route, inp
 		baseURL := g.cfg.Upstream.Zen
 		if tier == config.TierGo {
 			baseURL = g.cfg.Upstream.Go
+		} else if tier == config.TierKilo && g.kilo != nil {
+			baseURL = g.kilo.cfg.BaseURL
 		}
 		upstreamPayload, err := wire.PrepareRequest(from, protocol, input, baseURL)
 		if err != nil {

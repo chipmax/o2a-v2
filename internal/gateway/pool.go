@@ -245,6 +245,10 @@ type anonymousCursor struct {
 	offset int
 	used   []bool
 	single bool
+	// family and quota let an exit with a spent bucket be skipped before a
+	// request burns another 429 on it. Empty family keeps the old behaviour.
+	family string
+	quota  *quotaBoard
 }
 
 // anonymousPool builds one anonymous node per proxy transport, or an empty
@@ -472,7 +476,20 @@ func (c *anonymousCursor) Next() *anonymousNode {
 	}
 	now := time.Now().UnixNano()
 	isBlocked := func(node *anonymousNode) bool {
-		return node.proxy != nil && node.proxy.blockedUntil.Load() > now
+		if node.proxy != nil && node.proxy.blockedUntil.Load() > now {
+			return true
+		}
+		if c.family != "" && c.quota != nil && node.proxy != nil {
+			// A static exit whose bucket for this model family is already
+			// spent must not receive a leg: the answer is a known 429. Pool
+			// transports draw a fresh egress each attempt, so their shared
+			// label is not a safe quota key.
+			label := node.proxy.name
+			if !strings.Contains(label, "#pool") && c.quota.spentFor(label, c.family, time.Now()) {
+				return true
+			}
+		}
+		return false
 	}
 	for c.offset < n {
 		idx := (c.start + c.offset) % n
@@ -1001,6 +1018,26 @@ func (p *upstreamNodes) RestoreProxy(recoveredProxy int) int {
 		moved++
 	}
 	return moved
+}
+
+// MarkKeyQuotaSpent records that an upstream rejected this credential with a
+// 429. It sets only quotaUntil: unlike a 401/403 credential quarantine, a
+// quota wall opens at the upstream window, and unlike a transport cooldown a
+// recovered proxy or a successful listing must not clear it.
+func (p *upstreamNodes) MarkKeyQuotaSpent(node *upstreamNode, retryAfter time.Duration) {
+	if p == nil || node == nil {
+		return
+	}
+	now := time.Now()
+	delay := quotaResetAfter(now)
+	if retryAfter > 0 {
+		delay = min(retryAfter, maxAnonymousQuotaCooldown)
+	}
+	until := now.Add(delay).UnixNano()
+	if cred := node.credUntil.Load(); cred > until {
+		until = cred
+	}
+	node.quotaUntil.Store(until)
 }
 
 func (p *upstreamNodes) Len() int { return len(p.nodes) }

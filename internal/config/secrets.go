@@ -62,10 +62,13 @@ func SecretRedactor() *Redactor {
 // Longer secrets are replaced first, so a secret that contains a shorter one
 // is scrubbed whole.
 func (r *Redactor) Replace(cfg Config) {
-	values := make([]string, 0, len(cfg.ServerKeys)+len(cfg.ZenKeys)+len(cfg.GoKeys)+2)
+	values := make([]string, 0, len(cfg.ServerKeys)+len(cfg.ZenKeys)+len(cfg.GoKeys)+3)
 	values = append(values, cfg.ServerKeys...)
 	values = append(values, cfg.ZenKeys...)
 	values = append(values, cfg.GoKeys...)
+	if cfg.Kilo.Key != "" {
+		values = append(values, cfg.Kilo.Key)
+	}
 	if cfg.WebUI.Password != "" {
 		values = append(values, cfg.WebUI.Password)
 	}

@@ -307,6 +307,15 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 		return nil, errAnonymousLanePaused, 0
 	}
 	defer g.anonymous.ReleaseProbe()
+	// If every exit observed today has already spent this model family's
+	// bucket, walking them again only burns latency and attempt budget. The
+	// caller already forwards a quota verdict to peers/key tiers from this
+	// sentinel, so fail before the first lease is drawn.
+	now := time.Now()
+	if !g.quota.familyHasBudget(modelFamily(route.ID), now) {
+		g.markLocalQuotaSpent(route.ID, now, now.Add(quotaResetAfter(now)))
+		return nil, errFreeTierQuotaSpent, 0
+	}
 	rawBody := bodies[config.TierZen]
 	if len(rawBody) == 0 {
 		return nil, errors.New("no prepared Zen request body"), 0

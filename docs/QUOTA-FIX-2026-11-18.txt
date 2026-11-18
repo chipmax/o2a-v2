@@ -1,0 +1,47 @@
+SUA CAPACITY THAT BAO / KEY QUOTA - 18/11 DEM
+=============================================
+Nguon: log OMP Windows + log gateway/router VPS1,VPS2. Khong dung internet.
+
+1) NGUYEN NHAN OMP VAN LIMIT DU IP XANH
+---------------------------------------
+- OMP log 22:49: provider error, 429 Free usage limit reached, retry-after ~9h.
+- VPS2 router log 15:49:52Z: upstream vps2-o2a -> 429. Gateway log cung thoi diem:
+  key_id=CE0nZ, channel=key, legs toan CE0nZ:429 -> KEY ZEN DA CAN, khong phai IP.
+- VPS1 gateway log: key_id=anonymous, channel=anonymous, legs anon:429@direct ->
+  OMP di thang IP public VPS1 (direct), da spent; WARP /64 xanh khong duoc dung.
+
+2) P27 - KEY QUOTA SEPARATE (da lam)
+------------------------------------
+- KeyQuotaEntry + credQuota board trong quotaboard.go (reset theo UTC day, chi luu
+  key id da redact). Ghi nhan trong recordUpstreamAttempt khi 429 & !anonymous.
+- EgressQuotaSnapshot.Keys + CapacityEstimate.KeyID/KeyExhausted/KeyRetryAfter.
+- UI status strip them chip do "Key: key da cạn <id>" khi key_exhausted.
+
+3) P28 - CAPACITY THEO MODEL (da lam)
+-------------------------------------
+- CapacityEstimateFor(model): family = 2 ky tu dau (de/be/...), loc Exits + Keys
+  theo family. API /api/monitor?model=deepseek-v4.1-flash-free tra family=de.
+- capacity khong con la "so IP xanh" chung chung: neu hoi model de ma key de can
+  thi key_exhausted=true du IP van xanh.
+
+4) P29 - DIRECT/PROXY VAO QUOTA BOARD (da lam)
+-----------------------------------------------
+- recordUpstreamAttempt: bo qua WARP (da ghi o warp.go), ghi cac egress con lai
+ 包括 direct va proxy vao quotaBoard. Day la ly do VPS1 anon:429@direct khong
+  bao giro hien trong board truoc day.
+
+5) TEST / DEPLOY
+----------------
+- gofmt, vet, test all, build xanh. Test unit key quota + family.
+- WSL: md5 1338848d..., health 200, capacity model=deepseek tra family de,
+  key_exhausted false (khong con key can), 3/3 chat 200.
+- VPS1: md5 1338848d..., health 200, models 200, 3/3 chat 200.
+- VPS2: md5 1338848d..., health 200, models 200, 3/3 chat 200; request qua
+  router cung duong OMP -> 200; capacity family de usable 12/41, key khong can.
+- Backup .bak-20261118-fix tren ca 3 may. GitHub main=feat/v3 (commit tiep).
+
+6) LU Y
+-------
+- Key quota board la in-memory, reset khi restart (nhu cac board khac). 
+- VPS2 router CHUA co model-scoped Kilo cooldown (user dang lam viec); go
+  gateway da dong bo. Khi nao duoc phep thi deploy router.py commit cb306ba.

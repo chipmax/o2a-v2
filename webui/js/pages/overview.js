@@ -214,10 +214,22 @@ function renderStatusStrip(monitor) {
     ["status.capacity", capacityText, observed && usable / observed < 0.2 ? "bad" : observed && usable / observed < 0.5 ? "warn" : "ok"],
     ["status.lane", gated ? t("Đang khóa", "status.lane.gated") : t("Mở", "status.lane.ok"), gated ? "warn" : "ok"],
   ];
+  if (capacity?.key_exhausted) {
+    chips.push([
+      "status.key",
+      `${t("Key cạn", "status.key.exhausted")} ${capacity.key_id || ""}`,
+      "bad",
+    ]);
+  }
   strip.replaceChildren(...chips.map(([key, value, state]) => {
     const chip = document.createElement("span");
     chip.className = `chip status ${state}`;
-    chip.append(document.createTextNode(`${t(key === "status.ready" ? "Sẵn sàng" : key === "status.quota" ? "Tỷ lệ 429" : key === "status.capacity" ? "IP khả dụng" : "Lane miễn phí", key)}: `));
+    const labels = {
+      "status.ready": "Sẵn sàng", "status.quota": "Tỷ lệ 429",
+      "status.capacity": "IP khả dụng", "status.lane": "Lane miễn phí",
+      "status.key": "Key",
+    };
+    chip.append(document.createTextNode(`${t(labels[key] || key, key)}: `));
     const strong = document.createElement("strong");
     strong.textContent = value;
     chip.append(strong);

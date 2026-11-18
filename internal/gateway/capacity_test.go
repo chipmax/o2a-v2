@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -44,5 +45,29 @@ func TestCapacityEstimateCountsBucketsNotExits(t *testing.T) {
 	}
 	if requests != 3 || hits != 1 {
 		t.Fatalf("counters = requests %d hits %d, want 3 / 1", requests, hits)
+	}
+}
+
+// TestKeyQuotaTrackedSeparately pins P27: an exhausted Zen key is visible even
+// when its egress buckets are green, because OMP was limited by the key tier.
+func TestKeyQuotaTrackedSeparately(t *testing.T) {
+	now := time.Now().UTC()
+	recordKeyQuota("CE0nZ", "deepseek-v4.1-flash-free", http.StatusTooManyRequests, 9*time.Hour, now)
+	keys := keyQuotaSnapshot()
+	if len(keys) == 0 || keys[0].KeyID != "CE0nZ" || keys[0].QuotaHits == 0 {
+		t.Fatalf("key quota not recorded: %+v", keys)
+	}
+	if keys[0].Family != "de" || keys[0].RetryAfter.Before(now.Add(8*time.Hour)) {
+		t.Fatalf("key quota family/retry wrong: %+v", keys[0])
+	}
+
+	controller := &RuntimeController{}
+	_ = controller // quota snapshot is read through EgressQuota; key state is global
+	board := &quotaBoard{}
+	board.entries = make(map[string]*EgressQuotaEntry)
+	board.record("warp:2a09:bac1:6500:8::/64", "de", 200, false, 0, now)
+	snapshot := board.snapshot(nil, now)
+	if len(snapshot.Keys) == 0 || snapshot.Keys[0].KeyID != "CE0nZ" {
+		t.Fatalf("snapshot missing key quota: %+v", snapshot.Keys)
 	}
 }

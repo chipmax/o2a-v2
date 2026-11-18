@@ -403,7 +403,7 @@ func (a *Server) handleCheckProxies(w http.ResponseWriter, r *http.Request) {
 
 // handleMonitor answers with the build version, the metrics snapshot and the
 // current resource counts.
-func (a *Server) handleMonitor(w http.ResponseWriter, _ *http.Request) {
+func (a *Server) handleMonitor(w http.ResponseWriter, r *http.Request) {
 	metrics := a.monitor.Snapshot()
 	payload := map[string]any{
 		"version": buildinfo.Version, "metrics": metrics, "usage": metrics.Usage, "upstream": metrics.Upstream, "resources": a.manager.Resources(),
@@ -411,7 +411,7 @@ func (a *Server) handleMonitor(w http.ResponseWriter, _ *http.Request) {
 	// The overview reads the pool here: /healthz lives on the API listener and
 	// a browser on the admin origin cannot call it.
 	payload["health"] = a.manager.Readiness()
-	capacity := a.manager.CapacityEstimate()
+	capacity := a.manager.CapacityEstimateFor(r.URL.Query().Get("model"))
 	payload["capacity"] = capacity
 	a.warnLowQuota(capacity)
 	if warp, ok := a.manager.WarpSnapshot(); ok {

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"net/http"
 	"os"
 	"sort"
 	"sync"
@@ -31,11 +32,26 @@ type EgressQuotaEntry struct {
 	Projected      int       `json:"projected,omitempty"`
 }
 
+// KeyQuotaEntry is one upstream credential as the gateway has observed it.
+// A key can be exhausted while every egress /64 is still green: the free tier
+// counts key and egress separately, so the dashboard has to show both.
+type KeyQuotaEntry struct {
+	KeyID       string    `json:"key_id"`
+	Family      string    `json:"family,omitempty"`
+	Requests    int       `json:"requests"`
+	QuotaHits   int       `json:"quota_hits"`
+	LastStatus  int       `json:"last_status,omitempty"`
+	LastSeen    time.Time `json:"last_seen,omitempty"`
+	LastQuotaAt time.Time `json:"last_quota_at,omitempty"`
+	RetryAfter  time.Time `json:"retry_after,omitempty"`
+}
+
 // EgressQuotaSnapshot is what the WebUI budget page renders.
 type EgressQuotaSnapshot struct {
 	ResetAt  time.Time          `json:"reset_at"`
 	Families []string           `json:"families"`
 	Exits    []EgressQuotaEntry `json:"exits"`
+	Keys     []KeyQuotaEntry    `json:"keys,omitempty"`
 	Cooling  int                `json:"cooling"`
 	Active   int                `json:"active"`
 	Observed int                `json:"observed"`
@@ -44,6 +60,63 @@ type EgressQuotaSnapshot struct {
 	LaneGated    bool      `json:"lane_gated,omitempty"`
 	LaneUntil    time.Time `json:"lane_until,omitempty"`
 	LaneRefusals int       `json:"lane_refusals,omitempty"`
+}
+
+// keyQuota tracks credential quota independently from the /64 board. Only the
+// redacted key id is kept; values never leave the process.
+var credQuota = struct {
+	mu      sync.Mutex
+	day     string
+	entries map[string]*KeyQuotaEntry
+}{entries: make(map[string]*KeyQuotaEntry)}
+
+func recordKeyQuota(keyID, model string, status int, retryAfter time.Duration, now time.Time) {
+	if keyID == "" || keyID == "anonymous" {
+		return
+	}
+	family := model
+	if len(family) > 2 {
+		family = family[:2]
+	}
+	day := utcDay(now)
+	credQuota.mu.Lock()
+	defer credQuota.mu.Unlock()
+	if credQuota.day != day {
+		credQuota.entries = make(map[string]*KeyQuotaEntry)
+		credQuota.day = day
+	}
+	key := keyID + "|" + family
+	entry, ok := credQuota.entries[key]
+	if !ok {
+		entry = &KeyQuotaEntry{KeyID: keyID, Family: family}
+		credQuota.entries[key] = entry
+	}
+	entry.Requests++
+	if status == http.StatusTooManyRequests {
+		entry.QuotaHits++
+		entry.LastQuotaAt = now.UTC()
+		if retryAfter > 0 {
+			entry.RetryAfter = now.UTC().Add(retryAfter)
+		}
+	}
+	entry.LastStatus = status
+	entry.LastSeen = now.UTC()
+}
+
+func keyQuotaSnapshot() []KeyQuotaEntry {
+	credQuota.mu.Lock()
+	defer credQuota.mu.Unlock()
+	out := make([]KeyQuotaEntry, 0, len(credQuota.entries))
+	for _, entry := range credQuota.entries {
+		out = append(out, *entry)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].QuotaHits != out[j].QuotaHits {
+			return out[i].QuotaHits > out[j].QuotaHits
+		}
+		return out[i].KeyID < out[j].KeyID
+	})
+	return out
 }
 
 // quotaBoard remembers, per egress and model family, how often the free tier
@@ -270,6 +343,7 @@ func (b *quotaBoard) snapshot(states []warp.ExitState, now time.Time) EgressQuot
 		snapshot.Families = append(snapshot.Families, family)
 	}
 	sort.Strings(snapshot.Families)
+	snapshot.Keys = keyQuotaSnapshot()
 	snapshot.Cooling = len(cooling)
 	snapshot.Active = len(active)
 	snapshot.Observed = len(snapshot.Exits)

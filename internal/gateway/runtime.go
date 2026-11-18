@@ -810,14 +810,26 @@ func (m *RuntimeController) EgressInsights(days int) EgressInsights {
 // /64 buckets and classifies them by the gateway's own quota hits. It is a
 // planning aid, not a measurement of OpenCode's hidden counters.
 type CapacityEstimate struct {
+	// Model and Family show which quota family this estimate was computed for.
+	// The free tier counts IP + model-family + UTC day, so a generic "IP green"
+	// number is misleading for a specific model.
+	Model  string `json:"model,omitempty"`
+	Family string `json:"family,omitempty"`
 	// IPsObserved is distinct egress prefixes seen today, across WARP, proxies
 	// and direct. IPsUsable excludes prefixes already cooled or quota-walled.
 	IPsObserved int `json:"ips_observed"`
 	IPsUsable   int `json:"ips_usable"`
 	IPsSpent    int `json:"ips_spent"`
+	Active      int `json:"active"`
+	Cooling     int `json:"cooling"`
 	// RequestsToday is the sum of inference attempts recorded on those buckets.
 	RequestsToday int `json:"requests_today"`
 	QuotaHits     int `json:"quota_hits"`
+	// Key quota is tracked separately: OMP on VPS2 was limited by an exhausted
+	// Zen key while every /64 still looked green.
+	KeyID         string    `json:"key_id,omitempty"`
+	KeyExhausted  bool      `json:"key_exhausted"`
+	KeyRetryAfter time.Time `json:"key_retry_after,omitempty"`
 	// ResetAt is the next UTC window where the upstream counters refill.
 	ResetAt time.Time `json:"reset_at"`
 	Note    string    `json:"note"`
@@ -825,12 +837,22 @@ type CapacityEstimate struct {
 
 // CapacityEstimate derives a rough "used / remaining" view from the quota
 // board. No upstream counter is queried: a /64 with a quota hit is treated as
-// spent for the current UTC day, one without a hit as available.
-func (m *RuntimeController) CapacityEstimate() CapacityEstimate {
+// spent for the current UTC day, one without a hit as available. When model is
+// given, only that model family is counted and key-tier exhaustion is reported.
+func (m *RuntimeController) CapacityEstimateFor(model string) CapacityEstimate {
 	quota := m.EgressQuota()
+	family := model
+	if len(family) > 2 {
+		family = family[:2]
+	}
 	seen := make(map[string]bool)
 	spent := make(map[string]bool)
 	for _, entry := range quota.Exits {
+		// With a model filter, ignore other families; an unlabelled cooling
+		// exit stays in as conservative spent.
+		if family != "" && entry.Family != "" && entry.Family != family {
+			continue
+		}
 		key := prefixLabel(entry.Egress)
 		if key == "" {
 			continue
@@ -841,20 +863,44 @@ func (m *RuntimeController) CapacityEstimate() CapacityEstimate {
 		}
 	}
 	estimate := CapacityEstimate{
+		Model: model, Family: family,
 		IPsObserved: len(seen),
 		IPsSpent:    len(spent),
+		Active:      quota.Active,
+		Cooling:     quota.Cooling,
 		ResetAt:     quota.ResetAt,
-		Note:        "rough: based on distinct observed /64 and local quota hits, not upstream counters",
+		Note:        "rough: distinct observed egress buckets + local quota hits; not upstream counters",
 	}
 	estimate.IPsUsable = estimate.IPsObserved - estimate.IPsSpent
 	if estimate.IPsUsable < 0 {
 		estimate.IPsUsable = 0
 	}
 	for _, entry := range quota.Exits {
+		if family != "" && entry.Family != "" && entry.Family != family {
+			continue
+		}
 		estimate.RequestsToday += entry.Requests
 		estimate.QuotaHits += entry.QuotaHits
 	}
+	for _, key := range quota.Keys {
+		if family != "" && key.Family != "" && key.Family != family {
+			continue
+		}
+		if key.QuotaHits > 0 {
+			estimate.KeyExhausted = true
+			estimate.KeyID = key.KeyID
+			if key.RetryAfter.After(estimate.KeyRetryAfter) {
+				estimate.KeyRetryAfter = key.RetryAfter
+			}
+			break
+		}
+	}
 	return estimate
+}
+
+// CapacityEstimate is the unfiltered view used by the overview strip.
+func (m *RuntimeController) CapacityEstimate() CapacityEstimate {
+	return m.CapacityEstimateFor("")
 }
 
 // DebugModels returns a routing diagnostic for every catalog model, with no

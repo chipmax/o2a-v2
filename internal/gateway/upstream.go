@@ -1460,6 +1460,29 @@ func (g *Gateway) recordUpstreamAttempt(ctx context.Context, route models.Route,
 			egress = prefixLabel(proxy.name)
 		}
 		usageHistory.RecordAttempt(route.ID, string(route.Tier)+"/"+channel, egress, status, success, time.Now())
+
+		// WARP attempts are recorded with their /64 in warp.go. Direct and
+		// proxy attempts (and every key-tier attempt, which has no WARP lease)
+		// must also reach the quota board or a spent direct IP stays invisible.
+		isWarp := proxy != nil && strings.HasPrefix(proxy.name, "warp:")
+		if !isWarp && g.quota != nil {
+			boardEgress := egress
+			if boardEgress == "" {
+				boardEgress = "direct"
+			}
+			var retryAfter time.Duration
+			if status == http.StatusTooManyRequests && resp != nil {
+				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			}
+			g.quota.record(boardEgress, route.ID, status, status == http.StatusTooManyRequests, retryAfter, time.Now())
+		}
+		if status == http.StatusTooManyRequests && !anonymous && keyID != "" {
+			var retryAfter time.Duration
+			if resp != nil {
+				retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"))
+			}
+			recordKeyQuota(keyID, route.ID, status, retryAfter, time.Now())
+		}
 	}
 	if g.monitor == nil {
 		return

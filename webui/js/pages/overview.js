@@ -182,11 +182,47 @@ function renderSummary(monitor) {
   const total = metrics.last_hour.total || 0;
   const quota = Number(metrics.statuses?.["429"] || 0);
   $("#m-429").textContent = total ? `${((quota / total) * 100).toFixed(1)}%` : "—";
+  renderStatusStrip(monitor);
   renderReadiness(monitor.health);
   renderCapacity(monitor.capacity);
   renderLane(monitor.warp || monitor.resources?.warp);
   renderResources(monitor.resources);
   renderBreakdowns(metrics);
+}
+
+// renderStatusStrip keeps the four numbers that decide "is the free lane
+// usable right now" visible on every page, so an operator never has to open a
+// tab before seeing a 429 wall or a gated lane.
+function renderStatusStrip(monitor) {
+  const strip = $("#status-strip");
+  if (!strip) return;
+  const health = monitor.health;
+  const capacity = monitor.capacity;
+  const warp = monitor.warp || monitor.resources?.warp;
+  const metrics = monitor.metrics || {};
+  const total = metrics.last_hour?.total || 0;
+  const quota = Number(metrics.statuses?.["429"] || 0);
+  const quotaText = total ? `${((quota / total) * 100).toFixed(1)}%` : t("—", "status.unknown");
+  const ready = !!health?.ready;
+  const observed = Number(capacity?.ips_observed || 0);
+  const usable = Number(capacity?.ips_usable || 0);
+  const capacityText = observed ? `${usable}/${observed}` : t("—", "status.unknown");
+  const gated = !!warp?.lane_gated || !!warp?.lane_until && new Date(warp.lane_until) > new Date();
+  const chips = [
+    ["status.ready", ready ? t("Sẵn sàng", "status.ready") : t("Suy giảm", "status.degraded"), ready ? "ok" : "bad"],
+    ["status.quota", quotaText, quota > 0 ? "warn" : "ok"],
+    ["status.capacity", capacityText, observed && usable / observed < 0.2 ? "bad" : observed && usable / observed < 0.5 ? "warn" : "ok"],
+    ["status.lane", gated ? t("Đang khóa", "status.lane.gated") : t("Mở", "status.lane.ok"), gated ? "warn" : "ok"],
+  ];
+  strip.replaceChildren(...chips.map(([key, value, state]) => {
+    const chip = document.createElement("span");
+    chip.className = `chip status ${state}`;
+    chip.append(document.createTextNode(`${t(key === "status.ready" ? "Sẵn sàng" : key === "status.quota" ? "Tỷ lệ 429" : key === "status.capacity" ? "IP khả dụng" : "Lane miễn phí", key)}: `));
+    const strong = document.createElement("strong");
+    strong.textContent = value;
+    chip.append(strong);
+    return chip;
+  }));
 }
 
 // renderCapacity shows the rough egress-budget estimate. It is a planning aid,
@@ -384,6 +420,7 @@ function render() {
   renderChecklist();
   const monitor = store.get("monitor");
   if (!monitor) return;
+  renderStatusStrip(monitor);
   renderSummary(monitor);
   renderUsage(monitor);
 }
@@ -394,6 +431,7 @@ export default {
   id: "overview",
   title: "Tổng quan",
   sub: "Chỉ số vận hành, token, tài nguyên và ngân sách egress.",
+  renderStatusStrip,
   init() {
     bindTabs($("#page-overview"), (id) => {
       activeTab = id;

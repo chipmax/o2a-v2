@@ -116,7 +116,8 @@ async function enterConsole(session) {
   clearInterval(monitorTimer);
   monitorTimer = setInterval(refreshMonitor, 3000);
   logstream.connect();
-  const hash = location.hash.slice(1).replace(/^\/+/, "");
+  const rawHash = location.hash.slice(1).replace(/^\/+/, "");
+  const hash = rawHash.split("?")[0]; // deep links may carry ?request=...
   const id = HASH_ALIASES[hash] || hash;
   openPage(byId.has(id) ? id : "overview");
   const tab = HASH_TABS[hash];
@@ -163,7 +164,8 @@ $$("#page-overview [data-tab]").forEach((tab) => {
 });
 
 $("#refresh-now").addEventListener("click", async () => {
-  await Promise.all([refreshMonitor(), loadConfig(), loadDebugModels()]);
+  const [monitor] = await Promise.all([refreshMonitor(), loadConfig(), loadDebugModels()]);
+  overview.renderStatusStrip?.(monitor);
   await current?.refresh?.();
   toast(i18n.t("Đã làm mới trạng thái", "toast.refreshed"));
 });

@@ -63,6 +63,22 @@
   color: var(--text-2);
 }
 
+/* Persistent status strip: the four numbers an operator checks first. */
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border-1);
+  border-radius: var(--r-md);
+}
+.status-strip:empty { display: none; }
+.status-strip .chip { cursor: default; }
+.status-strip .chip.action { cursor: pointer; }
+
 .metric-value {
   margin-top: var(--sp-1);
   font-size: var(--fs-3xl);

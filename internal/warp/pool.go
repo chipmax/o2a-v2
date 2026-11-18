@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1165,6 +1166,14 @@ func (p *Pool) penalizeAfter(bad *exit, reason string, cooldown, delay time.Dura
 		p.mu.Unlock()
 		return
 	}
+	// Quota penalties are terminal for this device: a spent /64 does not get
+	// better when a replacement registration fails. Transport failures keep
+	// the existing restore-on-empty behaviour.
+	bad.mu.Lock()
+	bad.quotaPenalty = strings.Contains(strings.ToLower(reason), "429") ||
+		strings.Contains(strings.ToLower(reason), "quota") ||
+		strings.Contains(strings.ToLower(reason), "spent")
+	bad.mu.Unlock()
 	if key := bad.egressKey(); key != "" {
 		until := time.Now().Add(cooldown)
 		p.cooling[key] = until
@@ -1223,7 +1232,10 @@ func (p *Pool) replace(old *exit, reason string) {
 		return
 	}
 	if err != nil {
-		restored := len(p.active) == 0
+		old.mu.Lock()
+		quotaRetired := old.quotaPenalty
+		old.mu.Unlock()
+		restored := len(p.active) == 0 && !quotaRetired
 		if restored {
 			old.clearPenalty()
 			if key := old.egressKey(); key != "" {

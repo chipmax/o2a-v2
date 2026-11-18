@@ -85,7 +85,12 @@ type exit struct {
 	retired   bool
 	closed    bool
 	penalized bool
-	closeOnce sync.Once
+	// quotaPenalty marks an exit retired because the upstream reported a spent
+	// quota (429/quota document). A transport failure can be retried on the same
+	// device; a spent /64 cannot, so replace must not restore it when a fresh
+	// registration fails.
+	quotaPenalty bool
+	closeOnce    sync.Once
 
 	// startedAt is when the tunnel was admitted, so an exit can be retired on
 	// age instead of waiting for the upstream to refuse it.

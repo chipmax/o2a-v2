@@ -1,0 +1,104 @@
+IPV4-FIRST, NO-EGRESS GATE + NGUON EGRESS DA DANG - 19/11
+=========================================================
+Nguon: agent-reach → Exa (15+ queries) + GitHub gh (20+ api/search)
++ doc noi bo RESEARCH-2026-11-10.vi.md. Khong sua code.
+
+1) IPV4-FIRST TWINS CO TAC DUNG GI
+----------------------------------
+Repo Imarkytanky/opencode-unlimited-models (main.go:25-41) xac nhan:
+- Zen tinh quota theo IPv6 /64. Xoay nhieu dia chi trong CUNG /64 -> van 1
+  bucket, van 429. Dia chi IPv4 cua chinh may la bucket RIENG, thuong con sach.
+- '-ipv4-twins' tao ban sao cho moi egress, ep di IPv4:
+  * direct twin: DialContext(ctx,"tcp4",addr).
+  * proxied twin: CONNECT toi A record (lookup IPv4 cache 5p, stale beats none).
+  * URL host duoc doi thanh IP literal nhung req.Host van la hostname va SNI duoc
+    bom rieng qua egressDialer.serverName (tlsdial.go:107-111) -> Zen van thay
+    opencode.ai, cert/SNI dung.
+- '-ipv4-first' sap xep: [direct-v4, ovh-v4, oracle-v4, oracle2, direct,
+  ovh, oracle, tor] — IPv4 len dau, Tor cuoi.
+- 429 -> markLimited(pool, cooldown), thong backend ke; neu tat ca cooldown van
+  thu theo priority de tra loi that cua upstream (fail-open, main.go:188-191).
+
+ ap dung cho o2a-v2:
+- NEN: opt-in 'ipv4_twins/ipv4_first' cho direct / HTTP-proxy tren VPS1 OCI &
+  VPS2 OVH (co IPv4 public rieng -> bucket moi). Lam direct-tcp4 twin TRUOC.
+- KHONG NEN: ap cho WARP (IPv4 egress la NAT chung Cloudflare, da co
+  RequireIPv6Egress loai) va usque MASQUE (cung /48, xoay trong /64 vo ich).
+- RUI RO Ky THUAT: BunTransport o2a lay SNI tu u.Hostname() (internal/httpx/
+  bun.go:138-141). KHONG duoc rewrite URL host nhu repo kia, neu khong SNI
+  thanh IP literal -> fake 429. Cach an toan: chi wrapper tcp4 dial, giu URL.
+- Luu y: A record co the tro toi IPv4 NAT/CDN da spent; cooldown cache 5p.
+
+2) NO-EGRESS BOOT GATE CO TAC DUNG GI
+-------------------------------------
+Repo zen-unlimited-linux/src/gateway/egress-gate.ts:
+- evaluateEgressGate(upstreams, argv):
+  * co upstream -> allow;
+  * rong + '--no-egress-direct' -> allow + warning "Local dev only";
+  * rong + khong flag -> REFUSE (stderr + exit 1).
+- checkServeGate chi goi o serve-boot, khong goi o doctor/status/logs.
+- Muc dich: tranh silent direct fallback. Neu config egress hong ma van direct,
+  request mang IP that cua host -> Zen gan 429 vao IP chinh, mat rotation, va
+  ban khong biet den luc bi block. Gate bien thanh fail-fast co thong diep.
+
+ ap dung cho o2a-v2:
+- KHONG hard-gate mac dinh: RuntimeProxies() tra ['direct'] khi khong co proxy
+  (internal/config/config.go:931-939) -> se refuse moi deploy mac dinh.
+- NEN: co flag opt-in 'require_egress' + override 'allow_direct':
+  * Normalize() error neu RequireEgress && !AllowDirect && proxies==['direct']
+    && !Warp.Enabled;
+  * health issue 'no_direct_egress_allowed' khi flag bat (internal/gateway/
+    health.go:164-183);
+  * giu nguyen WARP pause -> direct fallback (warp.go:44-61, upstream.go:530).
+- Khong chuyen readiness thanh 503 khi flag tat.
+
+3) TOR: CO THAT "CHANG HANG" VA NGOAI LE
+----------------------------------------
+- Ket luan chung: DUNG. Tor exit la public list, bi burn theo thiet ke.
+  Bang chung: xtekky/gpt4free#2909 mo ta Tor "known public IPs ... on many
+  providers' blacklists", 403 va low IP-based rate limits. Noi bo o2a do ngay
+  10/11: 84 exit Tor -> 84x429, 0x200.
+- Ngoai le dang chu y: benjaminkincses/lingling chay 5 lane Tor (us/nl/de/at/se),
+  phan biet 2 loai 429: 'free limit' (den 00:00 UTC) va 'rate limit' (~25p),
+  gate 403 cooldown ngan 300s, va chon theo so relay cua tung quoc gia
+  (NL 588, DE 415, US 1166; HK 7, TR 8). Nó cho thay Tor KHONG vo dung tuyet
+  doi neu pool lon + phan loai 429 + lane pinning — nhung van cham (~7s), shared,
+  va khong nen uu tien trong o2a.
+
+4) NGUON EGRESS DA DANG — BANG XEP HANG
+---------------------------------------
+| # | Nguon | Dedicated? | Bucket moi? | Danh gia |
+|---|-------|-----------|-------------|----------|
+| 1 | OCI secondary IPv6 /128 + reserved IPv4 (VPS1) | D | CO | Lam ngay; Always Free; up to 32 IPv6/VNIC |
+| 2 | Peer/fleet VPS1<->VPS2<->WSL | D | CO | Da co peerFirst; uu tien, it chi phi nhat |
+| 3 | HE 6in4 routed /48 -> nhieu /64 | D (IPv6) | CO | Free, 5 tunnel/account; range 2001:470::/32 de bi flag |
+| 4 | Mullvad SOCKS5 per-server + multihop | S on dinh | CO (moi server) | ~5 EUR/thang; exit VPN co the da burn |
+| 5 | direct-tcp4 twin tren OCI/OVH | D | CO | Opt-in; bucket IPv4 rieng; xem muc 1 |
+| 6 | Kilo lane rieng (da native) | D neu gan IP sach | CO (khac Zen) | Keyless, 200 req/h/IP; tach quota |
+| 7 | Mobile 4G/5G CGNAT proxy (Proxies.sx/PyProxy...) | S/D | CO | Tra theo GB; ToS/cost cao; lane cuoi |
+| 8 | fly.io static egress pair | D | CO | $3.6/IP/thang; khong pin machine chac chan |
+| 9 | sing-box/Xray/Hysteria2/TUIC/AnyTLS tu host | D | CO | OSS, effort cao; chon khi can chong DPI |
+| 10 | AmneziaWG 3.1 | D/S | KHONG | Chi giau traffic, khong tao bucket |
+| 11 | Cloudflare Workers / Vercel / Netlify edge | S | KHONG | CF edge IP/shared cloud da burn; chi lam relay |
+| 12 | Cloudflare WARP / usque / warp-minimal | S | KHONG | Da co; giu lam fallback, dung mong them bucket |
+| 13 | 6rd/6to4/Teredo | S | KHONG | RFC 7526 deprecate; loai |
+
+MYTH: cf-resolve-override / DoH AAAA rotation doi IP endpoint VAO Cloudflare,
+khong doi IP exit ma upstream thay. Public proxy list "song" nhung da het quota.
+
+5) DE XUAT TRIEN KHAI (chua lam)
+--------------------------------
+- Themm EgressConfig (ipv4_twins/ipv4_first/require_egress/allow_direct) vao
+  internal/config/config.go, default false.
+- direct-tcp4 twin trong internal/gateway/pool.go (wrap DialContext, KHONG doi
+  URL/SNI); reorder cursor neu ipv4_first.
+- opt-in require_egress gate o Normalize + health issue o health.go.
+- Egress registry moi internal/egress/registry.go: probe IP that (api.ipify +
+  cdn-cgi/trace), dedupe theo IP, gan source=warp|socks|oci|he|peer.
+- Gan egress sach rieng cho Kilo lane; store bucket theo IP+family; telemetry
+  egess_429_ratio_15m / retry_after_hours.
+- HE 6in4 factory + OCI bucket factory dang script/systemd timer, chi khi can
+  them bucket outside peer fleet.
+
+Khong lam: hard-gate mac dinh, rewrite URL host trong BunTransport, them Tor
+vao hot path, tin public proxy list la bucket moi.

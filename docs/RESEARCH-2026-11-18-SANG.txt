@@ -1,0 +1,85 @@
+RESEARCH SANG 18/11 - LICH SU PHIEN + UPDATE REPO + DE XUAT
+===========================================================
+Nguon: agent-reach (GitHub gh + Exa). Quet 08:xx-09:xx UTC+7.
+Da bat require_ipv6_egress tren ca 3: VPS1, VPS2, WSL; health 200; VPS2 3/3 200 ~1s.
+
+1) LICH SU PHIEN / REPO DA doc TRUOC
+------------------------------------
+30 de xuat (docs/DE-XUAT-V2-30.md, CHON-30-DE-XUAT.md) da trien khai phan lon:
+  keepalive, idle watchdog, credential quarantine, quota precheck, geo-block,
+  inflight gate, pprof, memory limit, route preview, egress insights,
+  context auto-learning, usage history. Con treo: P1 plugin DSH, WARP probe giu
+  tunnel, CI workflow (gh thieu scope workflow).
+
+2) REPO CU CO UPDATE MOI (sau lan quet 17/11 22h)
+-------------------------------------------------
+jasonxu114514/opencode2api  : 17/11 19:01 "refactor: harden gateway and document
+  Go/Zen OAuth" (khong co release moi; van v1.4.8). Khong co tinh nang can port.
+dengyie/opencode2api        : 17/11 18:53 -> 22:19, 5 commit (.8.4 -> .8.7):
+  - .8.4 (24e7f4ab): re-capture bun ClientHello tu opencode 1.18.35, BO
+    X25519MLKEM768; model listing (/v1/models) cung di qua bun transport.
+  - .8.5/.8.6 (21ed/0a66): TetherPool auto-rebind exit loi (force_rebalance)
+    + writer lock / nil-logger guard / region-pin escalation.
+  - .8.7 (bd864267): nodeCursor coi quota wall la hard cooldown
+    (quotaUntil > cooldownUntil); test all-walled pool van tra listing.
+trefeon/pi-freeflow         : 17/11 19:09 -> 19:21 release 1.47.0:
+  - "recover rejected sessions": khi gate tu choi ses_* thi drop value va tang
+    generation, mint id moi van canonical; 429 quota KHONG drop session.
+  - Zen relay: failover + CONNECT refusal codes.
+cheaper-inference/OmniRoute  : 18/11 00:53 queue cutover; khong lien quan truc tiep.
+Cac repo khac (12errh, RobbsLuo, olivezane, ebouther, alztrk, atlas, warp-relay-pool)
+khong co update co gia tri moi.
+
+3) REPO MOI
+-----------
+windy-0-0/opencode-free-lane-tls-gate (0★, 13/11): measurement root-cause TLS
+  ClientHello/JA3 gate + fallback patch, co terms-of-use caveat. Gia tri bang
+  chung voi exa #5329 / OmniRoute #19128: Bun that (khong phai mo phong) moi duoc
+  200; pin cipher list khong du.
+
+4) DE XUAT CU THE (uu tien danh; chua trien khai)
+-------------------------------------------------
+P8 (cao, nho): bo X25519MLKEM768 khoi ClientHello.
+  Hien tai internal/httpx/bun_dial.go:29,59,76 duoc capture tu Bun 1.4.3 co
+  X25519MLKEM768; upstream .8.4 da cap nhat sang Bun embedded cua opencode
+  1.18.35 / standalone 1.3.14: khong co MLKEM, hello 251B thay vi 1473B.
+  Day la outlier cau truc duy nhat trong fingerprint. Sua 2 dòng curves/keyshares
+  + comment; co test capture_hello (upstream co san 57 dong). Test: 5 request
+  thong qua :8000/:8090/:18080 sau deploy.
+
+P9 (cao, nho): model listing dung bun transport.
+  internal/gateway/refresh.go:311,357,393 van goi FetchModels voi node.proxy.client
+  (Go hello) trong khi inference dung proxy.bun (Bun hello). Upstream .8.4 doi
+  ca 3 calls sang node.proxy.bun/owned.bun/owned.bun tranh viec upstream gan
+  /v1/models va /inference cung 1 client khong chinh thuc. Repo minh da co field
+  proxy.bun (pool.go:39) nen chi can doi 3 dong.
+
+P10 (trung binh): quota wall = hard cooldown trong nodeCursor.
+  upstreamNode hien co cooldownUntil/credUntil nhung KHONG co quotaUntil
+  (grep khong thay). nodeCursor.Next (pool.go:1131) chi xet cooldownUntil;
+  mot key bi wall 429 Retry-After hang gio van duoc chon lai sau cooldown ngan.
+  Theo .8.7: them quotaUntil atomic.Int64, set tu retryAfter, va trong Next:
+    if walled := node.quotaUntil.Load(); walled > until { until = walled }
+  van giu fallback "fully walled -> earliest reopening" de precheck khong break.
+
+P11 (trung binh): rejected-session recovery (tu pi-freeflow 1.47.0).
+  internal/identity/request.go co scopedSessionID giu ses_* on dinh. Khi upstream
+  tra 403 FreeTier ro rang do session bi reject, drop cache va mint generation moi.
+  Quan trong: 429 quota KHONG drop session (documented trong pi-freeflow).
+  Can test: session on dinh qua nhieu turn, chuyen doi khi co 403 gate.
+
+P12 (thap): TetherPool auto-rebind - khong co nhu cau (minh dung WARP + Proton,
+  khong dung Tether).
+
+5) KHONG LAM
+-------------
+- Khong port Go/Zen OAuth (user da loai tu dau).
+- Khong thay uTLS bang Bun sidecar: minh da co Bun hello trong process, chi can
+  cap nhat capture.
+- Khong copy TetherPool / CI workflow (khong pham vi).
+
+6) TRANG THAI HIEN TAI
+----------------------
+VPS1, VPS2: o2a-v2 md5 573b2bb9, require_ipv6_egress=true.
+WSL: o2a-v2 cung md5, stack dual, require_ipv6_egress=true, health 200.
+GitHub: main=feat/v3=99c040d (se push file nay thanh commit tiep theo).

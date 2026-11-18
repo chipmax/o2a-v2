@@ -1,4 +1,4 @@
-import json, os, sys, http.client, time, threading
+import json, os, sys, http.client, time, threading, urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -16,6 +16,8 @@ SOFT_MARKERS = ("not available", "not found", "not registered", "unknown model",
 KILO_MODELS = set(CFG.get("kilo_models") or [])
 KILO_UPSTREAMS = set(CFG.get("kilo_upstreams") or [])
 KILO_CATALOG = CFG.get("kilo_catalog") or []
+KILO_CATALOG_URL = CFG.get("kilo_catalog_url", "https://ai-gateway.kilo.ai/api/v1/models")
+KILO_REFRESH_SECONDS = int(CFG.get("kilo_catalog_refresh_seconds", 21600))
 UI_BASE = CFG.get("ui_base", "http://127.0.0.1:8092")
 UI_TIMEOUT = int(CFG.get("ui_timeout", 60))
 HOP = {"transfer-encoding", "connection", "content-length", "keep-alive", "proxy-connection"}
@@ -67,6 +69,60 @@ def is_soft_model_error(st, body):
 def cool_down(name, seconds):
     with LOCK:
         COOL[name] = time.time() + max(1, seconds)
+
+
+def refresh_kilo_catalog():
+    """Refresh the free Kilo catalog from the upstream endpoint.
+
+    The configured list is only a seed: Kilo retires and adds :free models often.
+    A failed refresh keeps the seed so a transient network error never empties
+    the routing table. Only pricing==0 models become routable here.
+    """
+    global KILO_MODELS, KILO_CATALOG
+    if not KILO_UPSTREAMS:
+        return
+    try:
+        with urllib.request.urlopen(KILO_CATALOG_URL, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        data = payload.get("data") or []
+        models, catalog = [], []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            mid = str(item.get("id") or "")
+            pricing = item.get("pricing") or {}
+            free = all(str(pricing.get(field, "")) in ("0", "0.0", "") for field in ("prompt", "completion"))
+            if not mid or not free or not (mid.endswith(":free") or mid.endswith("/free")):
+                continue
+            top = item.get("top_provider") or {}
+            # P21: Kilo's own docs warn that kilo-auto may route to providers
+            # that log prompts. Make that visible in /v1/models.
+            display = item.get("name") or mid
+            if mid == "kilo-auto/free" and "data-sharing" not in display.lower():
+                display = display + " (data-sharing)"
+            entry = {
+                "id": mid,
+                "name": display,
+                "context_length": int(top.get("context_length") or 200000),
+                "max_completion_tokens": int(top.get("max_completion_tokens") or 32768),
+            }
+            models.append(mid)
+            catalog.append(entry)
+        if not models:
+            log("kilo catalog refresh returned no free models; keeping seed")
+            return
+        with LOCK:
+            KILO_MODELS = set(models)
+            KILO_CATALOG = catalog
+        log(f"kilo catalog refreshed: {len(models)} free models from {KILO_CATALOG_URL}")
+    except Exception as exc:
+        log(f"kilo catalog refresh failed: {exc}; keeping seed")
+
+
+def catalog_refresh_loop():
+    while True:
+        time.sleep(max(60, KILO_REFRESH_SECONDS))
+        refresh_kilo_catalog()
 
 
 def merge_kilo_models(blob):
@@ -380,6 +436,8 @@ class Server(ThreadingHTTPServer):
     request_queue_size = 128
 
 if __name__ == "__main__":
+    refresh_kilo_catalog()
+    threading.Thread(target=catalog_refresh_loop, daemon=True).start()
     srv = Server(("0.0.0.0", int(CFG.get("listen_port", 8090))), Handler)
     log(f"o2a-router listening on :{CFG.get('listen_port', 8090)} upstreams={[u['name'] for u in UPSTREAMS]} cooldowns={[(u['name'], cooldown_for(u)) for u in UPSTREAMS]} kilo={sorted(KILO_MODELS)} ui={UI_BASE}")
     srv.serve_forever()

@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -1563,6 +1564,34 @@ func setV1Headers(header http.Header, protocol wire.Protocol, body []byte, ids i
 	}
 }
 
+// traceRootID is the process-wide trace root the official CLI keeps across
+// requests. Only span and parent ids change per call; a changing root is one of
+// the traces that ties a gateway to a non-official client.
+var traceRootID = randomTraceID()
+
+func randomTraceID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		panic("crypto/rand failed while minting trace root")
+	}
+	return hex.EncodeToString(value[:])
+}
+
+// traceContextHeaders returns the b3 and traceparent values of one v2 request:
+// root stays stable for the process, span and parent are fresh per request.
+func traceContextHeaders() (string, string) {
+	var span, parent [8]byte
+	if _, err := rand.Read(span[:]); err != nil {
+		panic("crypto/rand failed while minting trace span")
+	}
+	if _, err := rand.Read(parent[:]); err != nil {
+		panic("crypto/rand failed while minting trace parent")
+	}
+	spanID, parentID := hex.EncodeToString(span[:]), hex.EncodeToString(parent[:])
+	return traceRootID + "-" + spanID + "-1-" + parentID,
+		"00-" + traceRootID + "-" + spanID + "-01"
+}
+
 // setV2Headers renders the OpenCode 2.x CLI header set the v2 gates
 // fingerprint: the "opencode/<channel>/<version>/cli" User-Agent, the
 // client's child session as x-opencode-session-id, the conversation affinity
@@ -1591,6 +1620,9 @@ func setV2Headers(header http.Header, protocol wire.Protocol, ids identity.Reque
 	header.Set("x-opencode-session-id", childSession)
 	header.Set("User-Agent", httpx.V2UserAgent())
 	header.Set("x-opencode-project", projectID(ids.Project))
+	b3, traceparent := traceContextHeaders()
+	header.Set("b3", b3)
+	header.Set("traceparent", traceparent)
 	if protocol == wire.Anthropic {
 		header.Set("anthropic-beta", "interleaved-thinking-2025-05-14")
 	}

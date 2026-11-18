@@ -1,0 +1,74 @@
+NGUON GOC O2A-ROUTER + CO CAN ROUTER KHI TICH HOP KILO VAO GO?
+==============================================================
+Nguon: agent-reach (Exa + gh code search) + lich sử git + backup tren VPS2.
+
+1) ROUTER TU DAU
+----------------
+- KHONG phai copy tu repo upstream: gh search code cac chuoi dac trung
+  ("o2a-router listening on", "merge_kilo_models", "kilo_catalog strip_v1")
+  deu khong tim thay ket qua; Exa cung khong tra ve repo nao chua router.py nay.
+- La doan Python tu viet trong qua trinh trien khai o day:
+  * Vật the som nhat: /opt/o2a-router/router.py.bak.preopt, 2026-11-06 08:05
+    (7898 byte), backup tiep 08:07; tuc router da chay tren VPS2 truoc khi vao git.
+  * Cau hinh som nhat co 4 upstream: vps2-zen (:8787), vps2-zen6 (:8788),
+    vps2-o2a (:8080), vps1-o2a (10.0.0.184:8080) - muc dich luc do la failover
+    nhieu gateway/local zen-gate, khong phai Kilo.
+  * Vao git ngay 2026-11-10 11:58 +0700, commit 3368a42 (chipmax):
+    "feat(router): Kilo keyless lane, TLS upstreams, models merge" - them
+    router.py + config.example.json + README.vi.md (463 dong). Day la luc
+    router tro thanh front door + Kilo tier nhu hien nay.
+  * Cac commit sau: d6bc879 (11 free model), e52924d/cb306ba (model-scoped
+    cooldown), deu la sua doi tai day, khong phai nguon goc.
+- Ket luan: "router" la san pham cua chinh project nay (tu viet), khong phai
+  goi ben thu ba hay code copy tu upstream.
+
+2) ROUTER DANG LAM GI (tom tat)
+-------------------------------
+- Nhan mot key cua agent, chon upstream theo tier (round-robin), cooldown/failover.
+- Tier 1 = o2a-v2 :8000; tier 2 = Kilo ai-gateway (:free).
+- Model trong kilo_models -> chi goi Kilo; model khac -> chi goi gateway.
+- Merge Kilo catalog vao /v1/models, refresh catalog 6h, model-scoped cooldown.
+- Proxy WebUI (ui_base) de OMP khong can biet :8092.
+
+3) TICH HOP KILO VAO GO O2A-V2 - CO CAN ROUTER NUA KHONG?
+---------------------------------------------------------
+Cau tra loi ngan: KHONG can cho rieng Kilo, NHUNG chi khi Go da lam du cac
+chuc nang ma router dang lam. Hien tai Go CHUA lam du.
+
+Go hien tai (config.go:198-211) chi co 3 upstream co dinh:
+  Upstream.Zen, Upstream.Go, Upstream.Anonymous.
+Khong co truong Kilo, khong co danh sach model -> upstream tuy y, khong co
+catalog merge tu nhieu nguon, khong co cooldown theo model (moi co theo key).
+
+De bo router hoan toan can bo sung trong Go:
+  A. cau hinh: them upstream Kilo (base, key tuy chon, strip_v1, danh sach
+     model id, catalog), tach namespace quota Kilo khoi OpenCode (P20).
+  B. routing: neu model thuoc Kilo -> goi Kilo truoc/chi goi Kilo; khong ap
+     WARP/Bun header cua OpenCode len Kilo.
+  C. catalog: fetch + merge Kilo /v1/models vao catalog cua gateway; loc
+     pricing=0; refresh dinh ky; giu ten "Auto Free (data-sharing)".
+  D. cooldown/chi so: port model-scoped cooldown (commit cb306ba) vao Go de
+     khong can router.py; ghi vao capacity/key quota (da co P27-P29).
+  E. failover: neu muon gom luon chuc nang nhieu gateway (VPS1/VPS2) thi can
+     them peer/front-door tren Go - hien peers.go co co che peer nhung khong
+     phai thay the router config.
+  F. nang cap client: OMP/Hermes doi base URL tu :8090 sang :8000 sau khi test.
+
+Loi ich: bo-mot-process, het phai deploy router.py rieng, thong nhat quota/UI,
+khong con hop trung gian, het lo key cua router.
+Rui ro: Kilo va OpenCode co header/TLS/quota khac nhau; neu merge sai co the lam
+429 lan sang free lane; can test ky tung model va stream SSE.
+
+4) DE XUAT
+-----------
+- Ngắn han: GIỮ router (da chay on, OMP tro :8090), trien khai xong P24/P26
+  va deploy model-scoped cooldown len VPS2 khi duoc phep.
+- Trung han: lam A-D trong Go, test song song :8000 vs :8090, roi doi OMP sang
+  :8000; khi do router chi con la reverse-proxy thuan tuy (hoac tat).
+- Khong nen: xoa router ngay khi chua co A-D; cung khong nen tin rang chi can
+  them base URL Kilo vao UpstreamConfig la xong - routing/catalog/cooldown
+  moi la phan quan trong.
+
+5) TRANG THAI
+-------------
+- Khong sua code trong dot nay. GitHub main=feat/v3 (commit tiep).

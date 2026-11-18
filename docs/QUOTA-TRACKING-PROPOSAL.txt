@@ -1,0 +1,51 @@
+DE XUAT THEO DOI LUONG DA DUNG / CON LAI - 18/11
+==================================================
+Nguon: agent-reach (Exa + gh). Cac repo tham khao:
+  SupingZhou/opencode-free-usage-monitor  - TUI sidebar: count/limit/countdown, KV persistent
+  PVLPM/opencode-quota-gui               - native panel, quota cards, reset countdown, low-quota notify
+  xhang1108/opencode-usage               - Chrome extension, Console Usage API, multi-vendor
+  ranjithrajv/opencode-usage-quota-tracker - local /quota command
+  OmniRoute / freellmapi / ryuhq          - quota-first routing, reset-aware selection
+
+1) KH THI KHONG?
+----------------
+CO, NHUNG CHI LA UOC TINH. OpenCode khong cong bo counter free-tier cho gateway
+ben thu ba; ta chi co the dem cac bucket /64 ma minh quan sat duoc. P16 da trien
+khai CapacityEstimate trong /api/monitor:
+  ips_observed / ips_usable / ips_spent / requests_today / quota_hits / reset_at.
+Ket qua thuc do VPS2 luc 12:0x: 20 /64 observed, 13 usable, 7 spent, 361 request,
+10 quota hits, reset 00:00 UTC. Day la "planning aid", khong phai so cua upstream.
+
+2) CAI GI CO THE CHINH XAC HON
+------------------------------
+- reset_at: chinh xac (upstream Retry-After ~= midnight UTC).
+- quota_hits / state: chinh xac theoObservations cua minh.
+- so request con lai: KHONG the biet (khong co API). Co the uoc bang
+  rate cua chinh minh: requests_today / so bucket con song, va projection da co
+  san (EgressQuotaEntry.Projected / RatePerMinute).
+- IP "con khai thac duoc": dem cac /64 chua co quota hit + dang active; trust
+  thap hon Retry-After cua upstream.
+
+3) DE XUAT BO SUNG (uu tien)
+----------------------------
+A. Hien thi capacity trong WebUI overview: them card "IP kha dung" lay tu
+   /api/monitor.capacity, mau xanh/vang/do theo ty le spent/observed. Nho, 0 rui ro.
+B. Quota-first routing (OmniRoute/ryuhq): khi chon key/relay, uu tien bucket
+   co quota_hits thap nhat va reset_at gan nhat. Da co quotaBoard + P10 quotaUntil
+   lam nen; chi can them sort. Trung binh.
+C. Low-quota notify (PVLPM): khi ips_usable/ips_observed < 20% hoac time-to-reset
+   < 1h, log warn + event /api/events. Nho.
+D. Estimate "requests remaining" = median(requests of healthy buckets) -
+   requests today cua bucket hien tai; gan tag "rough estimate". Co the sai,
+   nhung huong dung de canh bao "sap can". Trung binh.
+E. Khong lam: scrape Console Usage API (can session cua user, vi pham privacy/
+   terms), "token = quota" (sai - token khong phai quota), hardcode 200 req/ngay
+   (source mau thuan, co reset rolling vs midnight).
+
+4) TRANG THAI TRIEN KHAI DOT NAY
+--------------------------------
+P10 quota wall, P13 trace root, P11 session recovery, P14 quota penalty,
+P16 capacity estimate: da gate + test rieng tren VPS2 + deploy ca 3 may.
+P17 relay failover: khong can code (peer.go da co cooling/failover tuong duong).
+Binary md5 c23b1412623b656a6af072098ad5584d; backup .bak-20261118-* tren moi may.
+GitHub: main=feat/v3 = f5441b4 (sau khi commit file nay se tang them 1).

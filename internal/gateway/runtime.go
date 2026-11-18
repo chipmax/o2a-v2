@@ -805,6 +805,58 @@ func (m *RuntimeController) EgressInsights(days int) EgressInsights {
 	return EgressInsights{Quota: quota, Usage: usageHistory.Snapshot(days, time.Now()), Days: days}
 }
 
+// CapacityEstimate is an intentionally rough read of the free-tier budget: the
+// upstream never publishes a per-IP allowance, so this counts distinct observed
+// /64 buckets and classifies them by the gateway's own quota hits. It is a
+// planning aid, not a measurement of OpenCode's hidden counters.
+type CapacityEstimate struct {
+	// IPsObserved is distinct egress prefixes seen today, across WARP, proxies
+	// and direct. IPsUsable excludes prefixes already cooled or quota-walled.
+	IPsObserved int `json:"ips_observed"`
+	IPsUsable   int `json:"ips_usable"`
+	IPsSpent    int `json:"ips_spent"`
+	// RequestsToday is the sum of inference attempts recorded on those buckets.
+	RequestsToday int `json:"requests_today"`
+	QuotaHits     int `json:"quota_hits"`
+	// ResetAt is the next UTC window where the upstream counters refill.
+	ResetAt time.Time `json:"reset_at"`
+	Note    string    `json:"note"`
+}
+
+// CapacityEstimate derives a rough "used / remaining" view from the quota
+// board. No upstream counter is queried: a /64 with a quota hit is treated as
+// spent for the current UTC day, one without a hit as available.
+func (m *RuntimeController) CapacityEstimate() CapacityEstimate {
+	quota := m.EgressQuota()
+	seen := make(map[string]bool)
+	spent := make(map[string]bool)
+	for _, entry := range quota.Exits {
+		key := prefixLabel(entry.Egress)
+		if key == "" {
+			continue
+		}
+		seen[key] = true
+		if entry.State == "quota" || entry.State == "cooling" || entry.QuotaHits > 0 || entry.LastQuotaAt.After(time.Time{}) {
+			spent[key] = true
+		}
+	}
+	estimate := CapacityEstimate{
+		IPsObserved: len(seen),
+		IPsSpent:    len(spent),
+		ResetAt:     quota.ResetAt,
+		Note:        "rough: based on distinct observed /64 and local quota hits, not upstream counters",
+	}
+	estimate.IPsUsable = estimate.IPsObserved - estimate.IPsSpent
+	if estimate.IPsUsable < 0 {
+		estimate.IPsUsable = 0
+	}
+	for _, entry := range quota.Exits {
+		estimate.RequestsToday += entry.Requests
+		estimate.QuotaHits += entry.QuotaHits
+	}
+	return estimate
+}
+
 // DebugModels returns a routing diagnostic for every catalog model, with no
 // requested protocol, plus the catalog's metadata snapshot.
 func (m *RuntimeController) DebugModels() ([]modelcatalog.RouteDiagnostic, modelcatalog.MetadataSnapshot) {

@@ -408,6 +408,7 @@ func (a *Server) handleMonitor(w http.ResponseWriter, _ *http.Request) {
 	// The overview reads the pool here: /healthz lives on the API listener and
 	// a browser on the admin origin cannot call it.
 	payload["health"] = a.manager.Readiness()
+	payload["capacity"] = a.manager.CapacityEstimate()
 	if warp, ok := a.manager.WarpSnapshot(); ok {
 		payload["warp"] = warp
 	}

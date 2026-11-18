@@ -1,0 +1,70 @@
+HOAN THANH GOAL: KILO NATIVE + ON DINH OPENCODE
+================================================
+Goal: tham khảo repo khác để tích hợp Kilo vào o2a v2 chạy ổn định + tối ưu OpenCode.
+Trang thai: DAT. Cac bang chứng duoi day la du lieu thuc, khong phai suy doan.
+
+1) RESEARCH (agent-reach Exa + gh; skill dsh-doc cho DSH market)
+---------------------------------------------------------------
+- 8 nguon Kilo: Kilo-Org/kilocode constants (base chuan), pi-freeflow,
+  rosseca/kilo-proxy, nullstacks/kilo-gateway, IMROVOID (source 404), 6Kmfi6HP,
+  jasonxu origin, Aether PR. Ket luan: khong can goi moi; can allowlist + catalog
+  rieng + cooldown theo model.
+- 11 nguon on dinh: jasonxu issue #158 la ground truth (quota IP+/64+family+
+  UTC day, IP moi double allowance), anomalyco, dengyie, pi-freeflow, 9router,
+  ebouther, OmniRoute, CLIProxyAPI, wbi35772, wisqqud.
+- DSH market: 7 tai lieu + list_bundles/list_plugins (read-only). Ap dung 8
+  nguyen tac: lane=row co schema, ledger nguon chan ly, secret scrub, degrade co
+  chu dich, readiness tach log, verification gate. Reference thuc te:
+  @jiesou/dsh-opencode-zen-free-provider@0.1.28 (1-row provider plugin).
+
+2) CODE (commits)
+-----------------
+42b9b5f Kilo native + stability F/C/E
+239de2c report KILO-NATIVE
+487a9a1 WebUI: Kilo config fields + preview step
+4eaf462 warp lane-gate: 429 quota != gate, decay stale streak
+
+Tong ~19 file, 960+ dong them, khong sua cau trucZen/Go.
+
+3) TICH HOP KILO NATIVE
+-----------------------
+- config.KiloConfig + TierKilo; empty models = disable (backward compatible),
+  Normalize/Clone/Redact. allowlist 11 free model.
+- catalog Kilo rieng, FetchKiloModels rieng (loc :free|/free + pricing = 0),
+  refresh 6h, giu seed khi loi; /v1/models co owned_by=kilo + nhan data-sharing.
+- doKiloUpstream: HTTP client thuong, KHONG WARP/Bun/x-opencode; cooldown theo
+  model, sibling retry; errKiloQuotaSpent -> 429.
+- WebUI tab Upstream co 5 field Kilo; preview hien step "kilo" lyric.
+
+4) ON DINH OPENCODE
+-------------------
+- F: familyHasBudget fast-fail trong doWarpAnonymousUpstream (0 attempt khi moi
+  bucket family da spent).
+- C: anonymousCursor bo qua static exit da spent cho family do.
+- E: MarkKeyQuotaSpent bei 429 -> quotaUntil, nodeCursor.Next bo qua; khong
+  lam ngan credUntil.
+- D: laneGate chi gate refusal (403 shape/abuse) duoc phep dong lane; quota 429
+  khong dong; stale streak decay sau until + base.
+- Unit tests: config Kilo, spentFor/family, cursor skip spent, key quota,
+  gate classifier/decay. gofmt/vet/go test ./... xanh.
+
+5) DEPLOY + EVIDENCE
+--------------------
+Binary md5 d0d74bb33bdcbd0621bd11b799daf810 tren ca 3 may; backup
+.bak-20261118-final / .bak-kilo-20261118 / .bak-20261118-v3.
+
+WSL: health 200, 22 model (11 Kilo), UI marker c-kilo-models=2, /api/config tra
+11 model; chat kilo-auto/free 200 (2.5s), deepseek 200 (10.6s).
+VPS1: health 200, 22 model (11 Kilo); chat kilo-auto/free 200 (0.82s).
+VPS2: health 200, 22 model (11 Kilo); chat kilo-auto/free 200 (0.82s).
+Parity VPS2 :8000 (Go native) vs :8090 (router Python): 26/26 model giong nhau,
+6/6 chat 200, stream 4 SSE events. Go native nhanh hon hoac tuong duong.
+426/429 OpenCode model la bucket spent theo ngay, khong phai loi gateway.
+
+6) CON LAI (khong chan goal, de dang lam sau neu can)
+------------------------------------------------------
+- OMP van tro router :8090; co the doi sang :8000 bat ky luc nao sau parity da
+  chung minh (khong bat buoc phai tat router ngay - no van la failover).
+- A/B (fresh-preferred egress + admission probe co control) de round sau, can
+  flag rieng vi doi hanh vi chon exit va tieu quota probe.
+- Kilo quota probe dinh ky (hien co cooldown 90s + sibling retry).

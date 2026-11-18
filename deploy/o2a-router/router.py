@@ -370,10 +370,14 @@ class Handler(BaseHTTPRequestHandler):
                 if ra.isdigit() and st not in SHORT_CODES:
                     cap = int(up.get("max_cooldown_seconds", MAX_COOLDOWN))
                     cd = min(max(int(ra), 5), cap, MAX_COOLDOWN)
-                if not (st == 429 and up["name"] in KILO_UPSTREAMS):
+                kilo_model_scoped = st == 429 and up["name"] in KILO_UPSTREAMS
+                if not kilo_model_scoped:
                     cool_down(up["name"], cd)
                 errors.append(f"{up['name']}: {st}")
-                log(f"upstream {up['name']} -> {st}, cooldown {cd}s, fallback")
+                if kilo_model_scoped:
+                    log(f"upstream {up['name']} -> {st}, model {model} cooled (upstream kept hot)")
+                else:
+                    log(f"upstream {up['name']} -> {st}, cooldown {cd}s, fallback")
                 continue
             with LOCK:
                 COOL.pop(up["name"], None)

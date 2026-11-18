@@ -1,0 +1,63 @@
+DE XUAT TOI UU TIEP THEO - 18/11 TOI
+====================================
+Nguon: agent-reach (Exa 1 truy van) + do truc tiep WSL. Trang thai: da bat lai
+require_ipv6_egress=True tren WSL (backup config.json.bak-flagon-20261118),
+health 200, 3/3 chat 200, 0 panic. Khong sua code trong dot nay.
+
+1) SO LIEU HIEN TAI (WSL 18:1x)
+-------------------------------
+capacity: 9 IP observed, 2 usable, 7 spent, 86 request, 10 quota hits,
+reset 2026-11-19T00:00Z. Proxy mat truoc: 3 IP duy nhat trong 8 cong
+(104.28.222.75 / .74 / 104.28.254.73) -> that ra chi 3 bucket, khong phai 8.
+
+2) NHAN DINH QUAN TRONG TU NGHIEN CUU
+-------------------------------------
+- Quota theo IP / (prefix model 2 ky tu) / UTC day. Reset 00:00 UTC.
+- IP moi co DOUBLE allowance trong thoi gian dau (lifetimeCount < 7*dailyLimit).
+  -> Phat hien then chot: tai su dung IP cu khong bang IP moi; hay xoay ra
+     dia chi chua tung xuat hien hon la giu IP da spent.
+- 429 duoc check TRUOC provider (khong ton quota), nhung 200 moi duoc track.
+- Khong co endpoint cong bo "con bao nhieu" - uoc tinh la gioi han cua ta.
+- So lieu thuc te dao dong 168-939 request/ngay (khong co constant 200).
+  -> Khong hardcode 200 vao estimator; da lam dung projection/capacity rough.
+- Reset semantics co the rolling 24h o mot so thoi diem -> canh bao bang
+  Retry-After cua upstream, khong chi dong ho 00:00 UTC.
+
+3) DE XUAT (xep hang)
+---------------------
+P22 (CAO, nho): Egress marker + "fresh-preferred" selection.
+  Khi bucket bi danh dau spent (quota hit hoac Retry-After), uu tien exit co
+  egress CHUA tung thay (first_seen moi / chua co entry trong quotaBoard)
+  thay vi xoay trong cung colo. Da co quotaBoard + warm stateP1/P14; chi can
+  them sort key "novelty" vao section selection.
+
+P23 (CAO, trung binh): Admission probe nhe cho exit moi truoc khi dua vao ring.
+  Gui 1 request toi thieu (stream, tool read) qua exit; 200 moi admit. Hien da
+  co admit() trong warp/exit.go nhung su dung LaneProbe, co the mo rong voi
+  tai lieu cua ebouther/opencode-unlimited-proxy: 8 probe co control (1 baseline
+  phai 200 + 5 shape phai bi tu choi). Tranh admit nham exit da spent.
+
+P24 (TRUNG BINH, nho): Cap nhat WebUI capacity de hien "3 IP thuc / 8 proxy"
+  thay vi dem cong. Hien P16 dem distinct prefixLabel -> dang hien 9 observed,
+  nhung 8 cổng usque chi 3 IP. Nen hien them "proxy IPs: 3 / 8" de khong hieu
+  nham rang 8 proxy = 8 bucket.
+
+P25 (TRUNG BINH, nho): Gioi han idle burn.
+  quotas bi tieu boi cac phien chat dai (log co in=150k tokens, moi turn 429
+  van tinh vao bucket). Them de suggestions: cac client nen dung prompt cache
+  (da co trong log cached=146k) va stream ngan. Khong fix code duoc, chi doc.
+
+P26 (THAP, chi canh bao): Retry-After > reset luc mat thong tin ngach
+  (_packet co 429 Retry-After hours) -> tin hieu nay la that; uu tien hon dong ho.
+
+4) KHONG LAM
+------------
+- Khong tao them WARP device khi bucket da spent (cung colo /48, same 429).
+- Khong bo 8 proxy usque (dang la 3 IP that con quota, giu request 200).
+- Khong hardcode 200 request/ngay; khong scrape Console (can session user).
+
+5) TRANG THAI
+-------------
+- WSL: require_ipv6_egress=True, health 200, chat 200.
+- VPS1/VPS2: khong doi.
+- GitHub main=feat/v3 = d6bc879 (se cong them commit bao cao nay).

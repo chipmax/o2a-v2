@@ -1,0 +1,27 @@
+P8+P9 TRIEN KHAI 18/11 09:xx
+==============================
+P8: bo X25519MLKEM768 khoi bunClientHello (curves + key shares), cap nhat comment
+    theo ban embedded bun/opencode 1.18.35 (dengyie v1.8.4).
+    Test bun_dial_test.go: pin 3 curves [X25519,P256,P384] + 1 key share X25519,
+    khong co MLKEM. go test toan bo xanh.
+P9: /v1/models (anonymous proxy, anonymous WARP, keyed tier) deu dung bun client
+    thay vi client thuong, tranh Go hello canh Bun hello (refresh.go:311,357,393).
+    Da co san field proxy.bun / owned.bun trong repo.
+
+Gates: gofmt sach, go vet xanh, go test -count=1 ./... xanh, build OK.
+Binary md5 884b5873e479eaea4e97ffc19d6d0d16, deploy ca 3:
+  VPS2 /opt/o2a-v2/opencode2api        backup .bak-20261118-p8p9
+  VPS1 /opt/opencode2api/opencode2api  backup .bak-20261118-p8p9
+  WSL  /opt/o2a/opencode2api_v2        backup .bak-20261118-p8p9
+
+Verify sau deploy:
+  VPS2: health 200 ready (45/12), /v1/models 200 11546B, chat 5/5 200 TTFB 1.1-1.6s,
+        stream 200 5 SSE data, 0 refresh_failed/panic.
+  VPS1: health 200 ready (88/12), /v1/models 200 11547B, chat 5/5 200 TTFB 0.57-0.89s,
+        0 errors.
+  WSL:  health 200 ready (53/12 dual), /v1/models 200 11547B, chat 5/5 200
+        TTFB 1.37-10.8s (lan 2 dang ky WARP), 0 errors.
+  Ca 3 van giu require_ipv6_egress=true, egress_ipv6>=1.
+
+Keo theo: P10 (quota wall trong nodeCursor), P11 (rejected-session recovery)
+van de xuat, chua lam.

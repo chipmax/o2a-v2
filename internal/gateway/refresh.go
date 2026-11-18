@@ -308,7 +308,7 @@ func (g *Gateway) refreshAnonymousTier(ctx context.Context, base string) []strin
 		// List models on the configured v2 /inference origin; the v1 fallback
 		// is retired (see anonymousUpstreams).
 		for _, upstream := range g.anonymousUpstreams() {
-			models, status, err = modelcatalog.FetchModels(refreshCtx, node.proxy.client, upstream, anonymousZenKey)
+			models, status, err = modelcatalog.FetchModels(refreshCtx, node.proxy.bun, upstream, anonymousZenKey)
 			if err == nil || isProxyFailure(err) {
 				break
 			}
@@ -354,7 +354,7 @@ func (g *Gateway) refreshAnonymousWARP(ctx context.Context, base string) []strin
 		var listed []string
 		var status int
 		for _, upstream := range g.anonymousUpstreams() {
-			listed, status, err = modelcatalog.FetchModels(refreshCtx, owned.regular, upstream, anonymousZenKey)
+			listed, status, err = modelcatalog.FetchModels(refreshCtx, owned.bun, upstream, anonymousZenKey)
 			if err == nil || isProxyFailure(err) {
 				break
 			}
@@ -390,7 +390,7 @@ func (g *Gateway) refreshTier(ctx context.Context, base string, nodes *upstreamN
 			cancel()
 			return nil
 		}
-		models, status, err := modelcatalog.FetchModels(refreshCtx, proxy.client, base, node.key)
+		models, status, err := modelcatalog.FetchModels(refreshCtx, proxy.bun, base, node.key)
 		g.syncProxyResult(refreshCtx, proxy, status, err)
 		cancel()
 		if err == nil {

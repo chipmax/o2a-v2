@@ -1,0 +1,70 @@
+NGHIEN CUU BO SUNG MODEL KILO - 18/11
+=====================================
+Nguon: agent-reach (Exa 1 truy van + gh search 3 truy van) va do truc tiep
+bang curl tu WSL. Khong sua code trong dot nay.
+
+1) HIEN TRANG TRONG REPO
+------------------------
+Router Python deploy/o2a-router/config.example.json:
+  tier 2 = Kilo, base https://api.kilo.ai/api/openrouter (endpoint cu),
+  6 model hardcode: cohere/north-mini-code, dots-studio/dots-3-note-preview,
+  nvidia/nemotron-3-ultra-550b-a55b, liquid/lfm-3-1.7b,
+  thinkingmachines/inkling-2-small, kilo-auto/free.
+Tai lieu chinh thuc Kilo (https://kilo.ai/docs/gateway/models-and-providers):
+  endpoint MOI = https://ai-gateway.kilo.ai/api/v1/models (khong can auth),
+  anonymous free = 200 request/gio/IP (KHAC voi OpenCode: 200 request/NGAY/ IP).
+  kilo-auto/free chon model dong theo session; khuyen cao khong gui du lieu nhay cam.
+
+2) DO TRUC TIEP (17:0x)
+-----------------------
+- GET ai-gateway.kilo.ai/api/v1/models: 470 model, trong do 11 free (pricing 0).
+- GET api.kilo.ai/api/openrouter/models (endpoint cu): van 200, van dung duoc.
+- POST thu 11 free model: 11/11 tra 200 (TTFB 0.6-4.7s). Danh sach DAY DU:
+    kilo-auto/free                                      (256k)  <-- dang co
+    baidu/ernie-5.5-flash-preview:free                  (1M)    (moi)
+    liquid/lfm-3-1.7b:free                              (262k)  <-- dang co
+    particle-ai/particle-1:free                         (1M)    (moi)
+    nvidia/nemotron-3.5-super-vl:free                   (1M)    (moi)
+    dots-studio/dots-3-note-preview:free                (512k)  <-- dang co
+    nvidia/nemotron-3.5-lightning:free                  (1M)    (moi)
+    cohere/north-mini-code:free                         (256k)  <-- dang co
+    nvidia/nemotron-3-ultra-550b-a55b:free              (1M)    <-- dang co
+    nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free  (256k)  (moi)
+    openrouter/free                                     (?)     (moi, resolves dong)
+  Phat hien: model "thinkingmachines/inkling-2-small:free" dang hardcode KHONG
+  con trong danh sach free hien thai (co the da bi retire) -> can bo hoac verify.
+  kilo-auto/free tra ve model that "stealth/glyph-cluster" (dynamic routing).
+
+3) REPO THAM KHAO
+-----------------
+- rosseca/kilo-proxy (6★, push 18/11): local proxy + desktop, sign in tai khoan
+  Kilo, chon org/model, tao profile rieng cho Codex/Claude/OpenCode; co headless,
+  activity history CSV, quota/billing. Khong ma nguon mo (chi release binary).
+- nullstacks/kilo-gateway (4★), aqiu817/dsh-llm-kilo-gateway (1★),
+  Xyanxhu/kilo-zen2dsh (7★) deu cu (10/2026), khong co update moi.
+  Khong co repo nao cong bo "auto refresh free catalog" dang hoat dong.
+
+4) DE XUAT (xep hang)
+---------------------
+P18 (CAO, nho): cap nhat kilo_models + kilo_catalog trong
+  deploy/o2a-router/config.json (Va config.example.json) len 11 model that,
+  bo "thinkingmachines/inkling-2-small:free" (khong con free), doi base sang
+  https://ai-gateway.kilo.ai/api/v1 (gio nguyen api.kilo.ai/api/openrouter van
+  chay, nen co the giu cu + muon doi sau). Router can reload de ap dung.
+P19 (CAO, trung binh): dynamic Kilo catalog - router GET /models moi 6h, loc
+  pricing.prompt==0 && completion==0, cap nhat cache; danh sach hardcode chi lam
+  seed. Tranh tinh trang nhu hien nay (model retire van nam trong config).
+P20 (TRUNG BINH, quan trong): KHONG dem Kilo vao cung bucket quota voi OpenCode.
+  Kilo gioi han 200 request/gio/IP (khong phai 200/ngay), va Retry-After khac;
+  can cooldown/accounting rieng. Router hien co cooldown_seconds 30 cho tier 2 -
+  nen tang len 60-120 va khong ap dung quotaResetAfter() cua OpenCode.
+P21 (THAP): kilo-auto/free co the route toi provider log prompt (tai lieu canh
+  bao) -> giu nhung gan nhan "auto (data-sharing)" trong UI, khuyen dung cac
+  model :free cu the cho request nhay cam.
+Khong lam: sign-in Kilode/ BYOK (khong co tai khoan, va user da loai OAuth).
+
+5) KET LUAN
+-----------
+Co the bo sung ngay 5 model Moi (ernie, particle, nemotron-3.5-super-vl,
+nemotron-3.5-lightning, nemotron-nano-omni, openrouter/free), tong 11 free,
+tat ca da test 200. Nen lam P18 + P20 (router thuong dung), P19 lam sau neu on dinh.

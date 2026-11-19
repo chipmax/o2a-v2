@@ -136,6 +136,17 @@ async function runAction(row, action) {
 function actionCell(row) {
   const cell = el("td", { class: "actions-cell" });
   if (!row.prefix) return cell;
+  // An orphan /64 has no exit in the pool any more: Rotate/Retire address a
+  // live exit and would match nothing, so show why instead of a dead button.
+  if (row.kind === "orphan") {
+    cell.append(
+      el("span", {
+        class: "metric-note",
+        text: t("đã ra khỏi pool", "egress.sources.orphanNote"),
+      }),
+    );
+    return cell;
+  }
   const rotate = el("button", {
     class: "btn btn-sm",
     type: "button",

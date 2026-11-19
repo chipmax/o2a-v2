@@ -70,7 +70,13 @@ function setActiveNav(id) {
 
 function openEgress() {
   openPage("overview");
-  document.querySelector('#page-overview [data-tab="egress"]')?.click();
+  const tab = document.querySelector('#page-overview [data-tab="egress"]');
+  tab?.click();
+  // The tab click drives overview's bindTabs handler, but if the tab was
+  // already active the click is still needed to re-render after a page swap.
+  // Make the egress page explicit so the nav item always lands on its content
+  // (the egress panel lives inside the overview page, not a separate page).
+  egress.show();
   history.replaceState(null, "", "#egress");
   setActiveNav("egress");
   renderEgressHeader();

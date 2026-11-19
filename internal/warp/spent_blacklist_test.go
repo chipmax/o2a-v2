@@ -15,12 +15,8 @@ func TestNextUTCReset(t *testing.T) {
 }
 
 func TestBurnedPauseBlocksNewRegistrations(t *testing.T) {
-	p := &Pool{
-		spentLifetime:     map[string]time.Time{},
-		cooling:           map[string]time.Time{},
-		reserved:          map[string]bool{},
-		burnedPausedUntil: time.Now().Add(time.Hour),
-	}
+	p := &Pool{burn: newBurnState()}
+	p.burn.burnedPausedUntil = time.Now().Add(time.Hour)
 	if until := p.BurnedPaused(time.Now()); until.IsZero() {
 		t.Fatal("burned pause must be visible")
 	}
@@ -31,22 +27,23 @@ func TestBurnedPauseBlocksNewRegistrations(t *testing.T) {
 
 func TestSpentLifetimeSurvivesCoolingExpiry(t *testing.T) {
 	p := &Pool{
-		spentLifetime: map[string]time.Time{
-			"2a09:bac5::/64": time.Now().Add(8 * time.Hour),
-		},
+		burn:     newBurnState(),
 		cooling:  map[string]time.Time{},
 		reserved: map[string]bool{},
 	}
 	now := time.Now()
 	key := "2a09:bac5::/64"
+	p.burn.spentLifetime[key] = now.Add(8 * time.Hour)
 	// Simulate the usable check from createExit after cooling expired.
-	usable := !p.reserved[key] && !p.cooling[key].After(now) && !p.spentLifetime[key].After(now)
+	spent := p.burn.spentLifetime[key].After(now)
+	usable := !p.reserved[key] && !p.cooling[key].After(now) && !spent
 	if usable {
 		t.Fatal("spent /64 became usable after short cooling expired")
 	}
 	// After the lifetime entry expires (at UTC reset) it becomes usable again.
 	after := now.Add(9 * time.Hour)
-	usable = !p.reserved[key] && !p.cooling[key].After(after) && !p.spentLifetime[key].After(after)
+	spent = p.burn.spentLifetime[key].After(after)
+	usable = !p.reserved[key] && !p.cooling[key].After(after) && !spent
 	if !usable {
 		t.Fatal("spent /64 was not reusable after its lifetime entry expired")
 	}

@@ -310,18 +310,24 @@ type Pool struct {
 	// laneGate paces registrations once the free lane starts refusing every
 	// freshly minted egress.
 	laneGate *laneGate
-	// spentLifetime holds /64 blocks the upstream proved exhausted. Unlike the
-	// short cooling map (which keeps a just-rotated block from being picked a
-	// second time), these are never handed to a new registration for the rest
-	// of the UTC day. The free tier resets at 00:00 UTC, so a lifetime ban is
-	// bounded by that window rather than permanent.
-	spentLifetime map[string]time.Time
-	// consecutiveBurned counts fresh exits that were refused by the free lane
-	// back to back. Two confirmed new public /64s that still hit the wall mean
-	// the allowance is not following the address; registering more only churns
-	// Cloudflare devices, so the pool parks until the UTC reset.
+	// burn holds the lifetime blacklist and the burned-streak pause. It has its
+	// own type so the createExit closure can record verdicts before newPool has
+	// assigned the Pool pointer (the first exit is built during construction).
+	burn *burnState
+}
+
+// burnState tracks egress blocks the upstream proved exhausted. It is separate
+// from Pool because the very first exit is created inside newPool, before the
+// Pool value is available to the factory closure.
+type burnState struct {
+	mu                sync.Mutex
+	spentLifetime     map[string]time.Time
 	consecutiveBurned int
 	burnedPausedUntil time.Time
+}
+
+func newBurnState() *burnState {
+	return &burnState{spentLifetime: make(map[string]time.Time)}
 }
 
 type Lease struct {
@@ -494,10 +500,10 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			}
 		}
 	}
-	// Declared before the factory so the closure below can record burn verdicts
-	// on the pool once newPool assigns it.
-	var pool *Pool
-	pool, err = newPool(ctx, slogLogger{log: log}, store, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
+	// The burn state exists before the first exit is built so the factory
+	// closure can record verdicts during newPool's synchronous first exit.
+	burn := newBurnState()
+	pool, err := newPool(ctx, slogLogger{log: log}, store, burn, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
 		if err := throttleRegistration(ctx); err != nil {
 			return nil, err
 		}
@@ -566,8 +572,12 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			// Two confirmed new public /64s that still hit the free wall mean the
 			// allowance is not following the address. Park new registrations until
 			// the UTC reset instead of churning Cloudflare devices every rotation.
-			if until := pool.BurnedPaused(time.Now()); !until.IsZero() {
-				return nil, &laneGatedError{until: until, refusals: pool.consecutiveBurned}
+			burn.mu.Lock()
+			pausedUntil := burn.burnedPausedUntil
+			burnCount := burn.consecutiveBurned
+			burn.mu.Unlock()
+			if pausedUntil.After(time.Now()) {
+				return nil, &laneGatedError{until: pausedUntil, refusals: burnCount}
 			}
 		}
 		var reg registration
@@ -622,18 +632,18 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 				// changed. A device that keeps its old public block after a hop
 				// must not advance the streak or it would park the pool early.
 				key := fresh.egressKey()
-				if key == "" || !pool.spentLifetime[key].After(time.Now()) {
-					pool.mu.Lock()
+				burn.mu.Lock()
+				if key == "" || !burn.spentLifetime[key].After(time.Now()) {
 					if key != "" {
-						pool.spentLifetime[key] = nextUTCReset(time.Now())
+						burn.spentLifetime[key] = nextUTCReset(time.Now())
 					}
-					pool.consecutiveBurned++
-					if pool.consecutiveBurned >= 2 {
-						pool.burnedPausedUntil = nextUTCReset(time.Now())
-						slogLogger{log: log}.Warnf("OpenCode WARP: %d fresh /64s were refused; parking registrations until UTC reset", pool.consecutiveBurned)
+					burn.consecutiveBurned++
+					if burn.consecutiveBurned >= 2 {
+						burn.burnedPausedUntil = nextUTCReset(time.Now())
+						slogLogger{log: log}.Warnf("OpenCode WARP: %d fresh /64s were refused; parking registrations until UTC reset", burn.consecutiveBurned)
 					}
-					pool.mu.Unlock()
 				}
+				burn.mu.Unlock()
 				slogLogger{log: log}.Warnf("WARP exit %s admitted unverified: %v", fresh.id, err)
 			} else {
 				fresh.close()
@@ -644,9 +654,9 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			// A fresh exit that passed the free-lane probe proves quota follows
 			// the new address; clear the burn streak so one bad block does not
 			// poison later rotations.
-			pool.mu.Lock()
-			pool.consecutiveBurned = 0
-			pool.mu.Unlock()
+			burn.mu.Lock()
+			burn.consecutiveBurned = 0
+			burn.mu.Unlock()
 		}
 		if ipv6Required(opts, fresh) {
 			fresh.close()
@@ -660,6 +670,7 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 	if err != nil {
 		return nil, err
 	}
+	pool.burn = burn
 	pool.stack = normalized
 	return pool, nil
 }
@@ -706,7 +717,10 @@ func randomSource(prefix netip.Prefix) (netip.Addr, error) {
 	return netip.AddrFrom16(address), nil
 }
 
-func newPool(ctx context.Context, log logger, store *registrationStore, size, preload int, maxAge, rotateCooldown time.Duration, gate *laneGate, create func(context.Context) (*exit, error)) (*Pool, error) {
+func newPool(ctx context.Context, log logger, store *registrationStore, burn *burnState, size, preload int, maxAge, rotateCooldown time.Duration, gate *laneGate, create func(context.Context) (*exit, error)) (*Pool, error) {
+	if burn == nil {
+		burn = newBurnState()
+	}
 	if size <= 0 {
 		size = DefaultPoolSize
 	}
@@ -744,7 +758,7 @@ func newPool(ctx context.Context, log logger, store *registrationStore, size, pr
 		newExit:        create,
 		reserved:       make(map[string]bool),
 		cooling:        make(map[string]time.Time),
-		spentLifetime:  make(map[string]time.Time),
+		burn:           burn,
 		changed:        make(chan struct{}),
 	}
 	// A previous process may have drained an egress for quota. Seed the cooling
@@ -758,7 +772,7 @@ func newPool(ctx context.Context, log logger, store *registrationStore, size, pr
 			if until.After(reset) {
 				until = reset
 			}
-			p.spentLifetime[key] = until
+			burn.spentLifetime[key] = until
 			p.cooling[key] = until
 		}
 	}
@@ -1149,10 +1163,12 @@ func (p *Pool) ReportQuotaSpent(lease *Lease, cooldown time.Duration) {
 	key := lease.exit.egressKey()
 	until := nextUTCReset(time.Now())
 	if key != "" {
-		p.mu.Lock()
-		if current := p.spentLifetime[key]; !current.After(until) {
-			p.spentLifetime[key] = until
+		p.burn.mu.Lock()
+		if current := p.burn.spentLifetime[key]; !current.After(until) {
+			p.burn.spentLifetime[key] = until
 		}
+		p.burn.mu.Unlock()
+		p.mu.Lock()
 		if current := p.cooling[key]; !current.After(until) {
 			p.cooling[key] = until
 		}
@@ -1168,10 +1184,10 @@ func (p *Pool) BurnedPaused(now time.Time) (until time.Time) {
 	if p == nil {
 		return time.Time{}
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.burnedPausedUntil.After(now) {
-		return p.burnedPausedUntil
+	p.burn.mu.Lock()
+	defer p.burn.mu.Unlock()
+	if p.burn.burnedPausedUntil.After(now) {
+		return p.burn.burnedPausedUntil
 	}
 	return time.Time{}
 }
@@ -1672,14 +1688,17 @@ func (p *Pool) createExit(ctx context.Context) (*exit, error) {
 				delete(p.cooling, subnet)
 			}
 		}
-		for subnet, until := range p.spentLifetime {
+		p.burn.mu.Lock()
+		for subnet, until := range p.burn.spentLifetime {
 			if !until.After(now) {
-				delete(p.spentLifetime, subnet)
+				delete(p.burn.spentLifetime, subnet)
 			}
 		}
+		spent := p.burn.spentLifetime[key].After(now)
+		p.burn.mu.Unlock()
 		// A block the upstream proved spent stays out until 00:00 UTC even if
 		// the short cooling entry expired. This is the lifetime blacklist.
-		usable := key != "" && !p.reserved[key] && !p.cooling[key].After(now) && !p.spentLifetime[key].After(now)
+		usable := key != "" && !p.reserved[key] && !p.cooling[key].After(now) && !spent
 		if usable {
 			p.reserved[key] = true
 		}

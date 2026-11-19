@@ -134,6 +134,11 @@ type WarpConfig struct {
 	// per session and retires an edge that cuts live streams twice. This adds a
 	// second quota axis (egress /64 × CF edge). Opt-in and off by default.
 	RotateEdge bool `json:"rotate_edge,omitempty"`
+	// ControlProbeOn429 sends one minimal request on the same WARP exit when a
+	// free-tier 429 carries a long Retry-After. If that control request succeeds
+	// the refusal was request-specific (bad shape), so the gateway stops instead
+	// of rotating a healthy /64. Opt-in: off by default keeps existing behaviour.
+	ControlProbeOn429 bool `json:"control_probe_on_429,omitempty"`
 	// EdgePinTTL is how long a resolved AAAA set is cached before refresh.
 	EdgePinTTL int `json:"edge_pin_ttl_seconds,omitempty"`
 }

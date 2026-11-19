@@ -284,6 +284,46 @@ const (
 // A spent egress refills only when the counter resets at the next UTC midnight,
 // so a spent exit must stay out of rotation until then instead of being retried
 // (or re-registered onto) every cooldown period.
+// refusalKind distinguishes why the free tier refused a request. A 429 with a
+// long Retry-After is not always a spent /64: a request the gateway shaped
+// wrongly also gets FreeUsageLimitError while a tiny control request on the
+// same egress still answers 200. Rotating on that refusal burns a healthy
+// block and hides the real (shape) problem.
+type refusalKind int
+
+const (
+	refusalUnknown    refusalKind = iota
+	refusalBurst                  // short Retry-After: back off, keep the same exit
+	refusalSpentBlock             // long Retry-After and control also refused: rotate
+	refusalShape                  // long Retry-After but control accepted: do not rotate
+)
+
+// classify429 combines the upstream Retry-After with a minimal control probe
+// on the same egress. controlStatus is 0 when no probe was run.
+func classify429(retryAfter time.Duration, controlStatus int) refusalKind {
+	if controlStatus/100 == 2 {
+		return refusalShape
+	}
+	if retryAfter <= 0 {
+		return refusalUnknown
+	}
+	// A few minutes or less is a short throttle. The daily quota wall sends a
+	// Retry-After that counts down to 00:00 UTC (hours), so anything beyond a
+	// small window is a candidate for a spent-block verdict.
+	if retryAfter <= 10*time.Minute {
+		return refusalBurst
+	}
+	if controlStatus == http.StatusTooManyRequests {
+		return refusalSpentBlock
+	}
+	if controlStatus == 0 {
+		// No probe available: the safe verdict is "spent" so existing rotation
+		// behaviour is preserved when the probe is disabled.
+		return refusalSpentBlock
+	}
+	return refusalUnknown
+}
+
 func quotaResetAfter(now time.Time) time.Duration {
 	utc := now.UTC()
 	next := time.Date(utc.Year(), utc.Month(), utc.Day()+1, 0, 0, 0, 0, time.UTC)

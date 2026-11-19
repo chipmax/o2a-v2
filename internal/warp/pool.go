@@ -19,6 +19,13 @@ import (
 
 const DefaultPoolSize = 2
 
+// burnPauseWindow bounds how long the pool stops minting new devices after
+// several fresh exits were refused. A long pause (until UTC reset) makes the
+// gateway unavailable for hours: retired exits leave the ring and no
+// replacement is allowed, so readiness fails. A short window keeps retrying
+// periodically without hammering Cloudflare's registration API.
+const burnPauseWindow = 5 * time.Minute
+
 // nextUTCReset is the next 00:00 UTC boundary. The free tier's per-/64 quota
 // refills then, so a lifetime blacklist only has to hold a spent block until
 // that moment rather than forever.
@@ -575,6 +582,11 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			burn.mu.Lock()
 			pausedUntil := burn.burnedPausedUntil
 			burnCount := burn.consecutiveBurned
+			if !pausedUntil.After(time.Now()) && burnCount > 0 {
+				// A pause window ended: give the next registration a clean slate
+				// instead of re-pausing immediately on the first refusal.
+				burn.consecutiveBurned = 0
+			}
 			burn.mu.Unlock()
 			if pausedUntil.After(time.Now()) {
 				return nil, &laneGatedError{until: pausedUntil, refusals: burnCount}
@@ -639,8 +651,8 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 					}
 					burn.consecutiveBurned++
 					if burn.consecutiveBurned >= 2 {
-						burn.burnedPausedUntil = nextUTCReset(time.Now())
-						slogLogger{log: log}.Warnf("OpenCode WARP: %d fresh /64s were refused; parking registrations until UTC reset", burn.consecutiveBurned)
+						burn.burnedPausedUntil = time.Now().Add(burnPauseWindow)
+						slogLogger{log: log}.Warnf("OpenCode WARP: %d fresh /64s were refused; pausing registrations for %s", burn.consecutiveBurned, burnPauseWindow)
 					}
 				}
 				burn.mu.Unlock()

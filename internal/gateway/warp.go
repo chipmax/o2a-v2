@@ -422,6 +422,22 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 				break
 			}
 			if status == http.StatusTooManyRequests {
+				// A long Retry-After can also mean the request shape was wrong:
+				// the upstream returns the same FreeUsageLimitError while a tiny
+				// control request on this egress still answers 200. Confirming
+				// that before rotating saves a healthy /64.
+				if g.cfg.Warp.ControlProbeOn429 {
+					retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"))
+					if classify429(retryAfter, 0) != refusalBurst {
+						probeStatus := g.controlProbeOn429(ctx, egress, route, baseURL, ids)
+						if classify429(retryAfter, probeStatus) == refusalShape {
+							halted = true
+							lastErr = errDeterministicClientRejection
+							g.logger.Warn("429 was request-specific; not rotating the egress", "component", "upstream", "event", "free_tier_shape_refusal", "request_id", ids.Request, "attempt", attempts, "proxy", egress, "control_status", probeStatus)
+							break
+						}
+					}
+				}
 				triedEgresses[strings.TrimPrefix(egress, "warp:")] = true
 				if !g.awaitFreshEgress(ctx, triedEgresses) {
 					g.pauseWARP()

@@ -10,7 +10,8 @@
     "stack": "ipv6",
     "source_ipv6": "",
     "preload": 0,
-    "require_ipv6_egress": false
+    "require_ipv6_egress": false,
+    "rotate_keys": false
   },
   "proxies": ["direct"],
   "proxyfile": "",

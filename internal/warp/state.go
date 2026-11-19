@@ -199,6 +199,22 @@ func (s *registrationStore) pop() (registration, bool) {
 	return reg, true
 }
 
+// anyKnown returns one saved registration usable as a key-rotation anchor.
+// Unlike pop() it ignores the startup probe window: rotating a device's key is
+// an API call, not a tunnel probe, so an old saved registration is still a valid
+// anchor. The caller rotates it before building an exit from the result.
+func (s *registrationStore) anyKnown() (registration, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, saved := range s.known {
+		if saved.Token == "" || saved.PrivateKey == "" || saved.AddressV6 == "" {
+			continue
+		}
+		return saved.registration(), true
+	}
+	return registration{}, false
+}
+
 // remember records a registration that produced a working exit so the next
 // start can reuse it. It is a no-op without a path.
 func (s *registrationStore) remember(reg registration) {

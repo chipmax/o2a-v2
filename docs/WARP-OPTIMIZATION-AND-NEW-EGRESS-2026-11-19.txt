@@ -1,0 +1,117 @@
+================================================================================
+WARP OPTIMIZATION + 4 NEW EGRESS SOURCES (2026-11-19)
+================================================================================
+
+TONG QUAN
+---------
+Tai lieu nay ghi lai (1) 4 ky thuat toi uu WARP da apply vao code va (2) 4 nguon
+egress MOI da test that (chat=200 qua o2a isolated). Khong credential nao duoc
+ghi vao repo; chi co cau truc va cach dung.
+
+PHAN 1 - TOI UU WARP (da implement)
+-----------------------------------
+Bien doi so sanh voi cac repo "opencode unlimited" dung warp-cli:
+
+1. rotate-keys thay vi registration delete/new
+   - warp-cli: `warp-cli registration delete` roi `registration new` = xoa SIM
+     roi xin SIM moi -> mat ~45s, ECONNRESET, đứt stream dang chay.
+   - o2a (truoc): POST /reg tao device moi + DELETE device cu khi retire.
+   - o2a (sau): them `warp.rotate_keys` (opt-in, mac dinh false). Khi bat,
+     registrar.rotateKeys() PATCH /reg/{id} voi public key moi, GIU NGUYEN
+     device ID/token -> khong flap adapter, khong ton them device slot.
+     Fallback ve register() binh thuong neu Cloudflare tu choi rotate.
+   - Code: internal/warp/registrar.go (rotateKeys, registrationFromDevice),
+     internal/warp/state.go (anyKnown), internal/warp/pool.go (createExit),
+     internal/config/config.go (WarpConfig.RotateKeys),
+     internal/gateway/runtime.go (wire Options).
+
+2. early-exit guard (khong retire luc đang co request)
+   - sweepAaged() (rotation do tuoi MaxAge) bay gio skip khi p.inflight > 0.
+   - Rotation do quota van chay ngay (mat capacity can thay the ngay), chi
+     rotation "tinh nguyen" doi luc yen. Tranh tear down adapter dang truyen.
+   - Code: internal/warp/pool.go sweepAged().
+
+3. client-side lockout cleanup (CHI DOC, khong code)
+   - OpenCode Desktop ghi key `free-limit`/`go-upsell` vao
+     %APPDATA%\ai.opencode.desktop\drafts.sqlite (bang state) khi dinh limit.
+   - Sau khi doi IP, neu khong xoa key nay, app van hien banner do va khoa o
+     nhap du quota moi da san sang.
+   - Repo `ShadowySphinX/Opencode-Unlimited-Limit-Bypass` (v2.4.2) lam viec
+     nay, giuyen bang `document`/`session_v2` (lich su chat).
+   - o2a la server-side gateway -> KHONG the va KHONG nen sua SQLite cua client.
+     Day la manh ghep phia client; ghi chu de nguoi dung tu quyet dinh.
+
+4. app-only + SSH whitelist (NGUYEN TAC AN TOAN)
+   - Chay WARP full-system (TUN) tren VPS = moi traffic, ke ca SSH, di qua
+     tunnel -> co the tu khoa may (bai hoc tu su co VPS2 ngay 19/11).
+   - Nguyen tac: chi app can egress (OpenCode) di qua tunnel, port rieng, SSH
+     luon di duong thuong. o2a da co freebind_linux.go / source-based routing.
+   - Test SurfShark ngay 19/11 dung ip rule `from 10.14.0.2 table 501` (KHONG
+     doi default route) -> SSH VPS1 nguyen ven. Ap dung cho moi egress moi.
+
+PHAN 2 - 4 NGUON EGRESS MOI (da test that)
+-------------------------------------------
+Tat ca deu loai tru: WARP/usque/Proton/HE/Kilo/peer fleet/route64.
+Tat ca deu chat=200 qua o2a isolated voi deepseek-v4.1-flash-free (va cac model
+khac duoc ghi ro). Goi truc tiep opencode.ai/inference tu cac IP nay tra 429:
+quan trong la di QUA GATEWAY o2a (gate shape), khong phai curl truc tiep.
+
+1. WEBHARE FREE
+   - 10 proxy, 1GB/thang, HTTP + SOCKS5, khong can the.
+   - Rotating endpoint: http://<user>-rotate:<pass>@p.webshare.io:80/
+     hoac socks5h://<user>-rotate:<pass>@p.webshare.io:1080
+   - Da test: 4 request -> 4 IP khac nhau; chat 200 cho deepseek, beam,
+     mimo, longcat, iceman; stream 6 SSE events.
+   - Xoay: moi request mot IP (Khong can API goi rieng).
+
+2. AXIOAPI
+   - API that: POST /api/v1/proxy/sessions (2 credit) -> host/port/user/pass;
+     POST /api/v1/proxy/sessions/{id}/rotate (1 credit) doi IP; DELETE free.
+   - 1000 credit ban dau; 1 credit = $0.001; chi TINH THEO LOI GOI API,
+     KHONG tinh theo token/traffic di qua proxy. Session song 24h.
+   - Da test: egress 46.250.226.163 -> rotate -> 62.146.239.251;
+     chat 200 cho deepseek, beam, mimo.
+   - Xoay: REST rotate, hop nhat cho "rotate on 429".
+
+3. SURFSHARK (da mua)
+   - WireGuard, dang ky public key qua /v1/account/users/public-keys (201),
+     tunnel SG endpoint 149.88.106.175:51820, egress 149.88.106.176 (SIN).
+   - Da test (policy routing source IP, KHONG doi default route):
+     chat 200 cho deepseek, beam, mimo.
+   - Xoay: doi server/key; khong co REST rotate nhu AxioAPI.
+
+4. LANTERN (getlantern/lantern 10.0.5, MIT)
+   - lanternd fetch config -> 5-6 server (shadowsocks/hysteria2/vless).
+   - Da test 11 IP / 11 lan fetch, 11/11 chat 200.
+   - Xoay: re-fetch config; nhuoc diem exit toan Oracle/Linode (da check RDAP).
+
+CACH DUNG VOI O2A (khong sua code)
+----------------------------------
+Chi can them vao mang `proxies` cua config.json (value that se duoc nguoi dung
+dien, KHONG commit vao repo):
+
+  "proxies": [
+    "socks5h://<webshare-user>-rotate:<pass>@p.webshare.io:1080",
+    "https://<axio-user>:<pass>@<host>:<port>",
+    "socks5h://127.0.0.1:<sidecar-port>"
+  ],
+  "warp": { "enabled": true, "rotate_keys": true, ... }
+
+Sidecar SurfShark/Lantern: sing-box SOCKS inbound + policy routing theo source
+IP (ip rule from <tunnel-ip> table <n>), KHONG them route default vao main.
+Kiem tra sau khi bat: `ip route show table main | head -2` phai giu nguyen.
+
+CHUA TEST / LOAI
+----------------
+- Lunaire Dusk free: SOCKS grant nhung TLS reset (code=000) tu VPS1 -> loai.
+- GitHub Actions: 429. Public proxy list: 0/30. Hiddify Psiphon: SIGSEGV.
+- GhostTunnel NL: 2 tunnel deu 429. IP4Market: khong lay duoc config.
+- OCI IAM: instance principal chi co `os ns get`.
+
+GHI CHU CHI PHI
+---------------
+- AxioAPI tinh theo LOI GOI (rotate 1 credit), khong theo token.
+- Webshare free 1GB/thang; datacenter 100 proxy $2.99/thang kem 250GB;
+  "unlimited" thuc te 10TB roi throttle 99% (theo Reddit r/proxies).
+- IPsterr: $0.59/GB datacenter, API rotate per-GB, chua test.
+================================================================================

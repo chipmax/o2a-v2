@@ -382,6 +382,11 @@ type Options struct {
 	// Cloudflare devices faster than its rate limit. Refused exits are replaced
 	// at once, because the pool just lost capacity.
 	RotateCooldown time.Duration
+	// RotateKeys retires an exit by rotating its Cloudflare device key in place
+	// rather than deleting the device. This avoids the 45 s adapter flapping and
+	// ECONNRESET caused by the destructive delete/new cycle. Off by default so
+	// existing deployments keep their exact behaviour.
+	RotateKeys bool
 }
 
 // LaneProbe is the admission request for a new exit: a minimal free-lane
@@ -536,7 +541,27 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 				return nil, &laneGatedError{until: until, refusals: refusals}
 			}
 		}
-		reg, err := r.register(ctx)
+		var reg registration
+		var err error
+		rotated := false
+		// With RotateKeys enabled, reuse an existing device and give it a fresh
+		// WireGuard key instead of minting a new one. This is the non-destructive
+		// counterpart to warp-cli's `tunnel rotate-keys`: the device ID stays,
+		// so Cloudflare does not flap the adapter for ~45 s and in-flight
+		// streams are not reset. Fall back to a normal registration if no anchor
+		// exists or Cloudflare refuses the rotation.
+		if opts.RotateKeys {
+			if anchor, ok := store.anyKnown(); ok {
+				reg, err = r.rotateKeys(ctx, anchor)
+				rotated = err == nil
+				if err != nil && log != nil {
+					log.Warn("WARP key rotation failed; registering a fresh device", "component", "warp", "event", "rotate_keys_failed", "id", anchor.ID, "error", err)
+				}
+			}
+		}
+		if !rotated {
+			reg, err = r.register(ctx)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -792,6 +817,16 @@ func (p *Pool) sweepAged() {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
+		return
+	}
+	// Early-exit guard: an age-based retirement is voluntary, so never tear
+	// down an adapter while a request is in flight. Doing so is what produces
+	// the 45 s flapping / ECONNRESET reported by warp-cli based rotators. A
+	// quota-driven replacement still runs immediately; only the idle sweep
+	// waits for a quiet moment.
+	if p.inflight > 0 {
+		p.mu.Unlock()
+		p.after(p.ageSweep, p.sweepAged)
 		return
 	}
 	now := time.Now()

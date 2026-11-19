@@ -185,50 +185,12 @@ func (r *registrar) register(ctx context.Context) (registration, error) {
 		return registration{}, errors.New("read WARP device: WARP is not enabled")
 	}
 	addresses := current.Result.Config.Interface.Addresses
-	var peerPublicKey, endpoint string
-	var endpoints []string
-	if len(current.Result.Config.Peers) != 0 {
-		peer := current.Result.Config.Peers[0]
-		peerPublicKey = peer.PublicKey
-		bases := []string{peer.Endpoint.V4, peer.Endpoint.V6, peer.Endpoint.Host}
-		ports := []int{2408}
-		for _, port := range peer.Endpoint.Ports {
-			if port <= 0 || port > 65535 {
-				continue
-			}
-			if port != 2408 {
-				ports = append(ports, port)
-			}
-		}
-		for _, port := range ports {
-			for _, base := range bases {
-				endpoints = append(endpoints, replaceEndpointPort(base, port))
-			}
-		}
-		endpoints = append(endpoints, bases...)
-	}
-	endpoints = append(endpoints, fallbackEndpoints...)
-	endpoints = uniqueEndpoints(endpoints)
-	if peerPublicKey == "" {
-		peerPublicKey = defaultPeer
-	}
-	if len(endpoints) != 0 {
-		endpoint = endpoints[0]
-	}
 	if addresses.V4 == "" && addresses.V6 == "" {
 		return registration{}, errors.New("read WARP device: config omitted both IP addresses")
 	}
-	return registration{
-		ID:            created.Result.ID,
-		Token:         created.Result.Token,
-		PrivateKey:    privateKey,
-		PublicKey:     publicKey,
-		AddressV4:     addresses.V4,
-		AddressV6:     addresses.V6,
-		PeerPublicKey: peerPublicKey,
-		Endpoint:      endpoint,
-		Endpoints:     endpoints,
-	}, nil
+	reg := registrationFromDevice(created.Result.ID, created.Result.Token, publicKey, current.Result)
+	reg.PrivateKey = privateKey
+	return reg, nil
 }
 
 func replaceEndpointPort(endpoint string, port int) string {
@@ -258,6 +220,93 @@ func uniqueEndpoints(endpoints []string) []string {
 		result = append(result, endpoint)
 	}
 	return result
+}
+
+// rotateKeys gives an existing Cloudflare device a fresh WireGuard keypair
+// without deleting and re-creating it. Keeping the device ID and token avoids
+// the destructive `registration delete` / `registration new` cycle that makes
+// the official warp-cli flapper for ~45 s and can drop in-flight streams: the
+// device stays registered, only its key material changes. Cloudflare returns
+// the refreshed interface addresses and peer endpoint in the PATCH response, so
+// the caller can rebuild the tunnel from the same registration identity.
+//
+// This is best effort. A device that Cloudflare refuses to rotate is simply
+// deleted by the caller's fallback, which restores the classic behaviour.
+func (r *registrar) rotateKeys(ctx context.Context, old registration) (registration, error) {
+	if old.ID == "" || old.Token == "" {
+		return registration{}, errors.New("rotate keys: missing id or token")
+	}
+	privateKey, publicKey, err := wireGuardKeypair()
+	if err != nil {
+		return registration{}, err
+	}
+	payload, err := json.Marshal(map[string]string{"key": publicKey})
+	if err != nil {
+		return registration{}, err
+	}
+	var patched deviceEnvelope
+	if err := r.doJSON(ctx, http.MethodPatch, "/reg/"+old.ID, payload, old.Token, &patched); err != nil {
+		return registration{}, fmt.Errorf("rotate WARP device keys: %w", err)
+	}
+	reg := registrationFromDevice(old.ID, old.Token, publicKey, patched.Result)
+	// Cloudflare's PATCH answer may not repeat every interface field. Keep the
+	// previous addresses when the response omitted them, otherwise the rebuilt
+	// tunnel has no address to bind.
+	if reg.AddressV4 == "" {
+		reg.AddressV4 = old.AddressV4
+	}
+	if reg.AddressV6 == "" {
+		reg.AddressV6 = old.AddressV6
+	}
+	reg.PrivateKey = privateKey
+	return reg, nil
+}
+
+// registrationFromDevice builds a registration from a Cloudflare device
+// response. When the response omitted interface details the existing ones are
+// kept by the caller, so this helper only fills what is present.
+func registrationFromDevice(id, token, publicKey string, device deviceResult) registration {
+	addresses := device.Config.Interface.Addresses
+	var peerPublicKey, endpoint string
+	var endpoints []string
+	if len(device.Config.Peers) != 0 {
+		peer := device.Config.Peers[0]
+		peerPublicKey = peer.PublicKey
+		bases := []string{peer.Endpoint.V4, peer.Endpoint.V6, peer.Endpoint.Host}
+		ports := []int{2408}
+		for _, port := range peer.Endpoint.Ports {
+			if port <= 0 || port > 65535 {
+				continue
+			}
+			if port != 2408 {
+				ports = append(ports, port)
+			}
+		}
+		for _, port := range ports {
+			for _, base := range bases {
+				endpoints = append(endpoints, replaceEndpointPort(base, port))
+			}
+		}
+		endpoints = append(endpoints, bases...)
+	}
+	endpoints = append(endpoints, fallbackEndpoints...)
+	endpoints = uniqueEndpoints(endpoints)
+	if peerPublicKey == "" {
+		peerPublicKey = defaultPeer
+	}
+	if len(endpoints) != 0 {
+		endpoint = endpoints[0]
+	}
+	return registration{
+		ID:            id,
+		Token:         token,
+		PublicKey:     publicKey,
+		AddressV4:     addresses.V4,
+		AddressV6:     addresses.V6,
+		PeerPublicKey: peerPublicKey,
+		Endpoint:      endpoint,
+		Endpoints:     endpoints,
+	}
 }
 
 // unregister deletes a registration on Cloudflare's side. A rotated exit that

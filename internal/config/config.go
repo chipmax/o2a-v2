@@ -124,6 +124,12 @@ type WarpConfig struct {
 	// the tunnel handshakes over IPv4 but traffic to AAAA destinations still
 	// leaves from the device's own /64. On a native `ipv6` stack it is a no-op.
 	RequireIPv6Egress bool `json:"require_ipv6_egress,omitempty"`
+	// RotateKeys retires an exit by rotating its Cloudflare device key in place
+	// instead of deleting and re-registering the device. Keeping the device ID
+	// avoids the destructive `registration delete`/`new` cycle that causes
+	// ~45 s of adapter flapping and ECONNRESET in warp-cli based rotators.
+	// Opt-in: the default keeps the existing delete-and-register behaviour.
+	RotateKeys bool `json:"rotate_keys,omitempty"`
 }
 
 // Normalize fills the defaults and canonicalizes the stack name.

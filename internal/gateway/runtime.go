@@ -331,6 +331,7 @@ func (m *RuntimeController) selectWARP(cfg config.Config) (*warp.Pool, string, b
 		LaneProbe:         probe,
 		MaxAge:            time.Duration(cfg.Warp.RotateAfterMinutes) * time.Minute,
 		RotateCooldown:    time.Duration(cfg.Warp.RotateCooldownSeconds) * time.Second,
+		RotateKeys:        cfg.Warp.RotateKeys,
 	})
 	if err != nil {
 		return nil, "", false, fmt.Errorf("initialize WARP egress: %w", err)

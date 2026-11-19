@@ -193,6 +193,8 @@ const DICTIONARY = {
   "egress.sources.title": "Egress sources & /64 budget",
   "egress.sources.caption":
     "Every WARP exit, proxy and peer with its /64 bucket; open a row for the model families. Prefixes that left the pool stay until the 00:00 UTC reset.",
+  "egress.sources.legend":
+    "Legend: WARP = internal tunnel exit · Outside pool = retired /64 kept for today's counters only · Ready = usable now · Cooling = resting after a 429, retry later · Unavailable = exhausted or unreachable.",
   "egress.sources.orphan": "Outside pool",
   "egress.sources.orphanNote": "no longer in the pool, kept until 00:00 UTC",
   "egress.sources.expand": "Show model families",
@@ -962,6 +964,8 @@ const DICTIONARY = {
   "egress.sources.title": "Nguồn ra & ngân sách /64",
   "egress.sources.caption":
     "Mỗi exit WARP, proxy và peer kèm bucket /64 của nó; mở một dòng để xem từng họ model. /64 đã ra khỏi pool vẫn được giữ tới khi reset 00:00 UTC.",
+  "egress.sources.legend":
+    "Chú thích: WARP = exit tunnel nội bộ · Ngoài pool = /64 đã retire, chỉ giữ số liệu tới 00:00 UTC · Sẵn sàng = dùng được ngay · Đang nghỉ = cooling sau 429, thử lại sau · Không dùng được = đã cạn hoặc không kết nối được.",
   "egress.sources.orphan": "Ngoài pool",
   "egress.sources.orphanNote": "không còn trong pool, giữ tới 00:00 UTC",
   "egress.sources.expand": "Xem từng họ model",

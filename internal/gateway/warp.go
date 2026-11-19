@@ -98,6 +98,11 @@ type warpLease struct {
 func (g *Gateway) newWarpLease(lease *warp.Lease, useBun bool) (*warpLease, error) {
 	perf := g.cfg.Performance
 	dial := func(ctx context.Context, _, address string) (net.Conn, error) {
+		if g.edgePin != nil {
+			if pinned, err := g.edgePin.rewrite(ctx, address); err == nil {
+				address = pinned
+			}
+		}
 		return lease.DialContext(ctx, lease.DialNetwork(), address)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()

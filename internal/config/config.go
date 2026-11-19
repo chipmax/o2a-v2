@@ -130,6 +130,12 @@ type WarpConfig struct {
 	// ~45 s of adapter flapping and ECONNRESET in warp-cli based rotators.
 	// Opt-in: the default keeps the existing delete-and-register behaviour.
 	RotateKeys bool `json:"rotate_keys,omitempty"`
+	// RotateEdge pins opencode.ai to one of its live Cloudflare AAAA addresses
+	// per session and retires an edge that cuts live streams twice. This adds a
+	// second quota axis (egress /64 × CF edge). Opt-in and off by default.
+	RotateEdge bool `json:"rotate_edge,omitempty"`
+	// EdgePinTTL is how long a resolved AAAA set is cached before refresh.
+	EdgePinTTL int `json:"edge_pin_ttl_seconds,omitempty"`
 }
 
 // Normalize fills the defaults and canonicalizes the stack name.
@@ -168,6 +174,9 @@ func (w *WarpConfig) Normalize() error {
 	}
 	if w.RotateCooldownSeconds < 30 || w.RotateCooldownSeconds > 3600 {
 		return errors.New("warp.rotate_cooldown_seconds must be between 30 and 3600")
+	}
+	if w.EdgePinTTL < 0 || w.EdgePinTTL > 86400 {
+		return errors.New("warp.edge_pin_ttl_seconds must be between 0 and 86400")
 	}
 	if w.Preload < 0 || w.Preload > 32 {
 		return errors.New("warp.preload must be between 0 and 32 (0 = half of pool_size)")

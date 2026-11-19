@@ -127,6 +127,10 @@ type Gateway struct {
 	// affinity pins a session to one egress /64 so prompt caching survives
 	// rotation; see affinity.go.
 	affinity *egressAffinity
+	// edgePin pins opencode.ai to one of its live Cloudflare edge addresses so
+	// a session spreads across the (egress /64, edge) quota axes. nil disables
+	// the feature; see edgepin.go.
+	edgePin *edgePin
 	// contextLimits persists what live traffic has proven about each model's
 	// usable context. The controller shares one board across hot reloads.
 	contextLimits *models.ContextLimits
@@ -206,6 +210,7 @@ func New(cfg config.Config, logger *slog.Logger, monitor *telemetry.Metrics, war
 		peers:          newPeerPool(cfg.Peers),
 		quota:          egressQuota,
 		affinity:       newEgressAffinity(),
+		edgePin:        newEdgePinConfig(cfg.Warp, cfg.Upstream.Anonymous),
 		contextLimits:  contextLimits,
 		kilo:           newKiloLane(cfg.Kilo),
 		inflight:       inflight,
@@ -707,7 +712,19 @@ func (g *Gateway) handleInference(external wire.Protocol) http.HandlerFunc {
 				}
 			}
 			if err != nil && !errors.Is(err, context.Canceled) {
-				g.logger.Warn("downstream stream ended with an error", "component", "stream", "event", "stream_failed", "request_id", ids.Request, "model", model, "tier", upstreamRoute.Tier, "error", err)
+				// A stream cut after headers were already sent to the client is a
+				// mid-stream reset, not a connection that never came up. If the
+				// same pinned edge does it twice inside the retirement window,
+				// retire it for new connections; the current stream is left alone.
+				reset := !keepalive.IdleTripped() && !wire.ClientCanceled(r.Context(), err)
+				event := "stream_failed"
+				if reset {
+					event = "stream_reset"
+					if g.edgePin != nil && g.edgePin.ReportStreamReset(g.edgePin.Preferred(), time.Now()) {
+						g.logger.Warn("pinned CF edge retired after repeated stream cuts", "component", "upstream", "event", "edge_retired", "request_id", ids.Request)
+					}
+				}
+				g.logger.Warn("downstream stream ended with an error", "component", "stream", "event", event, "request_id", ids.Request, "model", model, "tier", upstreamRoute.Tier, "error", err)
 			}
 			return
 		}

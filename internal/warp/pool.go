@@ -19,6 +19,14 @@ import (
 
 const DefaultPoolSize = 2
 
+// nextUTCReset is the next 00:00 UTC boundary. The free tier's per-/64 quota
+// refills then, so a lifetime blacklist only has to hold a spent block until
+// that moment rather than forever.
+func nextUTCReset(now time.Time) time.Time {
+	utc := now.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day()+1, 0, 0, 0, 0, time.UTC)
+}
+
 // egressCooldown keeps a public /64 (or IPv4 /32) that the upstream has
 // rejected out of the pool for this long. The free tier scopes its quota to
 // that block, so a new tunnel inside it would only repeat the same answer.
@@ -302,6 +310,18 @@ type Pool struct {
 	// laneGate paces registrations once the free lane starts refusing every
 	// freshly minted egress.
 	laneGate *laneGate
+	// spentLifetime holds /64 blocks the upstream proved exhausted. Unlike the
+	// short cooling map (which keeps a just-rotated block from being picked a
+	// second time), these are never handed to a new registration for the rest
+	// of the UTC day. The free tier resets at 00:00 UTC, so a lifetime ban is
+	// bounded by that window rather than permanent.
+	spentLifetime map[string]time.Time
+	// consecutiveBurned counts fresh exits that were refused by the free lane
+	// back to back. Two confirmed new public /64s that still hit the wall mean
+	// the allowance is not following the address; registering more only churns
+	// Cloudflare devices, so the pool parks until the UTC reset.
+	consecutiveBurned int
+	burnedPausedUntil time.Time
 }
 
 type Lease struct {
@@ -474,7 +494,10 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			}
 		}
 	}
-	pool, err := newPool(ctx, slogLogger{log: log}, store, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
+	// Declared before the factory so the closure below can record burn verdicts
+	// on the pool once newPool assigns it.
+	var pool *Pool
+	pool, err = newPool(ctx, slogLogger{log: log}, store, size, opts.Preload, opts.MaxAge, opts.RotateCooldown, gate, func(ctx context.Context) (*exit, error) {
 		if err := throttleRegistration(ctx); err != nil {
 			return nil, err
 		}
@@ -540,6 +563,12 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			if until, refusals, gated := gate.state(time.Now()); gated {
 				return nil, &laneGatedError{until: until, refusals: refusals}
 			}
+			// Two confirmed new public /64s that still hit the free wall mean the
+			// allowance is not following the address. Park new registrations until
+			// the UTC reset instead of churning Cloudflare devices every rotation.
+			if until := pool.BurnedPaused(time.Now()); !until.IsZero() {
+				return nil, &laneGatedError{until: until, refusals: pool.consecutiveBurned}
+			}
 		}
 		var reg registration
 		var err error
@@ -586,11 +615,25 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 		if err := fresh.admit(ctx, opts.LaneProbe); err != nil {
 			if errors.Is(err, errLaneBurnt) {
 				keep = false
-				// The tunnel works but the free lane refused the probe. That is
-				// only a hint: an exit the probe refused has served real traffic
-				// minutes later, so a probe verdict must not park the lane. The
-				// exit is marked spent so its device is deleted when it goes.
+				// The tunnel works but the free lane refused the probe. The exit
+				// is marked spent so its device is deleted when it goes.
 				fresh.markBurned()
+				// Honest rotation: only count a burn when the PUBLIC /64 really
+				// changed. A device that keeps its old public block after a hop
+				// must not advance the streak or it would park the pool early.
+				key := fresh.egressKey()
+				if key == "" || !pool.spentLifetime[key].After(time.Now()) {
+					pool.mu.Lock()
+					if key != "" {
+						pool.spentLifetime[key] = nextUTCReset(time.Now())
+					}
+					pool.consecutiveBurned++
+					if pool.consecutiveBurned >= 2 {
+						pool.burnedPausedUntil = nextUTCReset(time.Now())
+						slogLogger{log: log}.Warnf("OpenCode WARP: %d fresh /64s were refused; parking registrations until UTC reset", pool.consecutiveBurned)
+					}
+					pool.mu.Unlock()
+				}
 				slogLogger{log: log}.Warnf("WARP exit %s admitted unverified: %v", fresh.id, err)
 			} else {
 				fresh.close()
@@ -598,6 +641,12 @@ func NewWithOptions(ctx context.Context, log *slog.Logger, opts Options) (*Pool,
 			}
 		} else {
 			gate.admitted()
+			// A fresh exit that passed the free-lane probe proves quota follows
+			// the new address; clear the burn streak so one bad block does not
+			// poison later rotations.
+			pool.mu.Lock()
+			pool.consecutiveBurned = 0
+			pool.mu.Unlock()
 		}
 		if ipv6Required(opts, fresh) {
 			fresh.close()
@@ -695,12 +744,21 @@ func newPool(ctx context.Context, log logger, store *registrationStore, size, pr
 		newExit:        create,
 		reserved:       make(map[string]bool),
 		cooling:        make(map[string]time.Time),
+		spentLifetime:  make(map[string]time.Time),
 		changed:        make(chan struct{}),
 	}
 	// A previous process may have drained an egress for quota. Seed the cooling
 	// map so a fresh device does not immediately land on that same /64.
 	if store != nil {
-		for key, until := range store.DrainedKeys(time.Now(), egressCooldown) {
+		// Quota-drained blocks stay in the lifetime blacklist until the next
+		// 00:00 UTC reset; short cooling entries keep their normal TTL.
+		reset := nextUTCReset(time.Now())
+		for key, drainedAt := range store.DrainedKeys(time.Now(), 48*time.Hour) {
+			until := drainedAt.Add(egressCooldown)
+			if until.After(reset) {
+				until = reset
+			}
+			p.spentLifetime[key] = until
 			p.cooling[key] = until
 		}
 	}
@@ -1085,7 +1143,37 @@ func (p *Pool) ReportQuotaSpent(lease *Lease, cooldown time.Duration) {
 	if cooldown <= 0 {
 		cooldown = egressCooldown
 	}
+	// The /64 proved spent is blacklisted until the next UTC reset. Even if the
+	// caller asked for a short cooldown, a quota verdict is terminal for this
+	// block for the rest of the counting window.
+	key := lease.exit.egressKey()
+	until := nextUTCReset(time.Now())
+	if key != "" {
+		p.mu.Lock()
+		if current := p.spentLifetime[key]; !current.After(until) {
+			p.spentLifetime[key] = until
+		}
+		if current := p.cooling[key]; !current.After(until) {
+			p.cooling[key] = until
+		}
+		p.mu.Unlock()
+	}
 	p.penalizeFor(lease.exit, "free tier quota document", cooldown)
+}
+
+// BurnedPaused reports whether the pool has parked new registrations because
+// fresh public /64s kept hitting the quota wall. The caller can surface this in
+// health output instead of silently churning Cloudflare devices.
+func (p *Pool) BurnedPaused(now time.Time) (until time.Time) {
+	if p == nil {
+		return time.Time{}
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.burnedPausedUntil.After(now) {
+		return p.burnedPausedUntil
+	}
+	return time.Time{}
 }
 
 // HasUntriedActive reports whether an active, unpenalized exit sits on an
@@ -1584,7 +1672,14 @@ func (p *Pool) createExit(ctx context.Context) (*exit, error) {
 				delete(p.cooling, subnet)
 			}
 		}
-		usable := key != "" && !p.reserved[key] && !p.cooling[key].After(now)
+		for subnet, until := range p.spentLifetime {
+			if !until.After(now) {
+				delete(p.spentLifetime, subnet)
+			}
+		}
+		// A block the upstream proved spent stays out until 00:00 UTC even if
+		// the short cooling entry expired. This is the lifetime blacklist.
+		usable := key != "" && !p.reserved[key] && !p.cooling[key].After(now) && !p.spentLifetime[key].After(now)
 		if usable {
 			p.reserved[key] = true
 		}

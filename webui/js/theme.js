@@ -1,11 +1,12 @@
-// Theme handling: an auto/light/dark cycle persisted per browser. The inline
-// head script applies the stored choice before first paint; this module owns
-// the topbar toggle and keeps "auto" tracking the system preference.
+// Theme handling: a light/dark choice persisted per browser. The inline head
+// script applies it before first paint; this module owns the toggle button and
+// the settings radio cards. There is no "auto" mode by design: an operator
+// always sees the same console regardless of the host's appearance setting.
 import { t, onChange } from "./i18n.js";
 
 const STORAGE_KEY = "opencode2api.ui.theme";
-const MODES = ["auto", "light", "dark"];
-const media = window.matchMedia("(prefers-color-scheme: dark)");
+const MODES = ["light", "dark"];
+const ICONS = { light: "☀", dark: "☾" };
 
 const stored = () => {
   try {
@@ -15,39 +16,51 @@ const stored = () => {
   }
 };
 
-let mode = MODES.includes(stored()) ? stored() : "auto";
+let mode = MODES.includes(stored()) ? stored() : "light";
 
-const isDark = () => mode === "dark" || (mode === "auto" && media.matches);
+function label(next = mode) {
+  return next === "dark" ? t("Tối", "theme.dark") : t("Sáng", "theme.light");
+}
 
-function label() {
-  if (mode === "light") return t("Sáng", "theme.light");
-  if (mode === "dark") return t("Tối", "theme.dark");
-  return t("Theo hệ thống", "theme.auto");
+function persisted(next) {
+  mode = MODES.includes(next) ? next : "light";
+  try {
+    localStorage.setItem(STORAGE_KEY, mode);
+  } catch (_) {}
+  apply();
+}
+
+export function setMode(next) {
+  persisted(next);
 }
 
 function apply() {
-  document.documentElement.setAttribute("data-theme", isDark() ? "dark" : "light");
+  document.documentElement.setAttribute("data-theme", mode);
   const button = document.getElementById("theme-toggle");
   if (button) {
-    button.textContent = label();
-    button.title = t("Đổi chủ đề", "theme.toggle");
+    button.textContent = ICONS[mode] + " " + label();
+    button.title = t("Đổi giao diện", "theme.toggle");
+    button.setAttribute("aria-label", t("Đổi giao diện", "theme.toggle"));
   }
+  document.querySelectorAll("[data-theme-option]").forEach((option) => {
+    const active = option.dataset.themeOption === mode;
+    option.classList.toggle("active", active);
+    const input = option.querySelector("input");
+    if (input) input.checked = active;
+  });
 }
 
-// init binds the toggle and re-renders the label after language switches.
-// Cycles auto → light → dark so system-dark users keep their look until they
-// make an explicit choice.
 export function init() {
   const button = document.getElementById("theme-toggle");
   if (button)
     button.addEventListener("click", () => {
-      mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
-      try {
-        localStorage.setItem(STORAGE_KEY, mode);
-      } catch (_) {}
-      apply();
+      persisted(mode === "light" ? "dark" : "light");
     });
-  media.addEventListener("change", apply);
+  document.querySelectorAll("[data-theme-option] input").forEach((input) => {
+    input.addEventListener("change", () => {
+      if (input.checked) persisted(input.value);
+    });
+  });
   onChange(apply);
   apply();
 }

@@ -13,8 +13,11 @@ let loading = false;
 let visible = false;
 let filter = "all";
 let search = "";
+let issuesOnly = false;
+let showOrphans = false;
 let snapshot = null;
 let insights = null;
+let surfsharkState = null;
 const expanded = new Set();
 
 function stateLabel(state) {
@@ -292,6 +295,7 @@ function orphanRows(quota, used) {
 }
 
 function proxyRows(proxies) {
+  const managed = new Map((surfsharkState?.ports || []).map((port, index) => [port, index + 1]));
   return (proxies || []).map((proxy) => {
     const state = proxy.blocked_until
       ? "blocked"
@@ -311,9 +315,16 @@ function proxyRows(proxies) {
       const reason = String(proxy.last_error);
       binding.push(reason.length > 70 ? `${reason.slice(0, 70)}…` : reason);
     }
+    const port = String(proxy.address || "").match(/:(\d+)$/)?.[1];
+    const managedIndex = port ? managed.get(Number(port)) : undefined;
+    const label = managedIndex
+      ? `${t("Surfshark", "egress.sources.surfshark")} · ${managedIndex}`
+      : proxy.pool
+        ? `${t("Pool", "egress.sources.poolName")} #${(proxy.index ?? 0) + 1}`
+        : `${t("Proxy", "egress.sources.proxy")} #${(proxy.index ?? 0) + 1}`;
     return sourceRow(
       "proxy",
-      `${t("Proxy", "egress.sources.proxy")} #${(proxy.index ?? 0) + 1}`,
+      label,
       proxy.address || "—",
       binding.join(" · "),
       state,
@@ -453,7 +464,7 @@ function renderSources() {
     ...warpList,
     ...proxyRows(proxies),
     ...peerRows(peers),
-    ...orphanRows(quota, used),
+    ...(showOrphans ? orphanRows(quota, used) : []),
   ].sort((a, b) => (STATE_ORDER[a.state] ?? 99) - (STATE_ORDER[b.state] ?? 99));
 
   $("#egress-m-warp").textContent = warp?.enabled
@@ -479,26 +490,28 @@ function renderSources() {
         )
       : t("Sẵn sàng / dự phòng / đang nghỉ", "egress.metrics.warp.note");
   }
+  const proxyHealthy = proxies.filter((proxy) => proxy.healthy).length;
   const proxyNote = $("#egress-m-proxies-note");
   if (proxyNote) {
-    const healthy = proxies.filter((proxy) => proxy.healthy).length;
     proxyNote.textContent = proxies.length
-      ? t("{0} khoẻ · {1} lỗi", "egress.metrics.proxies.detail", healthy, proxies.length - healthy)
+      ? t("{0} khoẻ · {1} lỗi", "egress.metrics.proxies.detail", proxyHealthy, proxies.length - proxyHealthy)
       : t("Đang dùng được / tổng cấu hình", "egress.metrics.proxies.note");
   }
+  const bar = $("#egress-proxy-bar");
+  const barValue = $("#egress-proxy-bar-value");
+  const barFill = $("#egress-proxy-bar-fill");
+  if (bar && barValue && barFill) {
+    const ratio = proxies.length ? proxyHealthy / proxies.length : 0;
+    barValue.textContent = proxies.length ? `${proxyHealthy}/${proxies.length}` : "—";
+    barFill.style.width = `${Math.round(ratio * 100)}%`;
+    const tone = !proxies.length ? "info" : ratio < 0.2 ? "bad" : ratio < 0.5 ? "warn" : "ok";
+    bar.className = `status-bar tone-${tone}`;
+  }
 
-  const needle = search.trim().toLowerCase();
-  const matches = (row) =>
-    !needle ||
-    [row.name, row.address, row.note, row.prefix].some((value) =>
-      String(value || "").toLowerCase().includes(needle),
-    );
   const isIssue = (row) =>
     ["blocked", "unavailable", "cooling", "checking"].includes(row.state) ||
     (row.quota?.quotaHits || 0) > 0;
-  const visibleRows = rows.filter(
-    (row) => matches(row) && (filter !== "issues" || isIssue(row)),
-  );
+  const visibleRows = issuesOnly ? rows.filter(isIssue) : rows;
   const issues = rows.filter(isIssue).length;
   $("#egress-sources-meta").textContent = rows.length
     ? t("{0} nguồn · {1} cần chú ý", "egress.sources.meta", rows.length, issues)
@@ -519,14 +532,16 @@ function renderSources() {
       for (const family of row.quota?.families || []) body.append(familyRow(row, family));
     }
   }
+  const resetAt = parseStamp(snapshot?.reset_at);
+  const resetMinutes = resetAt ? Math.max(0, Math.ceil((resetAt.getTime() - Date.now()) / 60000)) : 0;
   $("#egress-summary").textContent = snapshot
     ? t(
-        "Đang giữ {0} mục · {1} exit sẵn sàng · {2} /64 đang nghỉ · reset lúc {3}",
-        "egress.summary",
+        "{0} mục · {1} sẵn sàng · {2} /64 nghỉ · reset 00:00 UTC (còn ~{3} phút)",
+        "egress.summaryCompact",
         snapshot.observed,
         snapshot.active,
         snapshot.cooling,
-        localTime(snapshot.reset_at),
+        resetMinutes,
       )
     : t("Pool chưa phát request nào trong phiên này.", "egress.emptySummary");
   renderLaneBanner();
@@ -631,19 +646,210 @@ async function checkProxies() {
   }
 }
 
+const COUNTRIES = [
+  ["US", "Hoa Kỳ"], ["GB", "Anh"], ["CA", "Canada"], ["AU", "Úc"], ["NZ", "New Zealand"],
+  ["DE", "Đức"], ["FR", "Pháp"], ["NL", "Hà Lan"], ["IT", "Ý"], ["ES", "Tây Ban Nha"],
+  ["CH", "Thuỵ Sĩ"], ["AT", "Áo"], ["BE", "Bỉ"], ["DK", "Đan Mạch"], ["FI", "Phần Lan"],
+  ["NO", "Na Uy"], ["SE", "Thuỵ Điển"], ["PL", "Ba Lan"], ["CZ", "Cộng hoà Séc"], ["PT", "Bồ Đào Nha"],
+  ["SG", "Singapore"], ["JP", "Nhật Bản"], ["HK", "Hồng Kông"], ["KR", "Hàn Quốc"], ["IN", "Ấn Độ"],
+  ["TW", "Đài Loan"], ["TH", "Thái Lan"], ["MY", "Malaysia"], ["ID", "Indonesia"], ["VN", "Việt Nam"],
+  ["BR", "Brazil"], ["AR", "Argentina"], ["MX", "Mexico"], ["ZA", "Nam Phi"], ["TR", "Thổ Nhĩ Kỳ"],
+  ["AL", "Albania"], ["IE", "Ireland"], ["IS", "Iceland"], ["RO", "Romania"], ["HU", "Hungary"],
+];
+const selectedCountries = new Set();
+
+function renderCountryMenu() {
+  const menu = $("#ss-country-menu");
+  if (!menu) return;
+  menu.replaceChildren();
+  for (const [code, name] of COUNTRIES) {
+    const label = el("label", { class: "country-option" }, [
+      el("input", {
+        type: "checkbox",
+        value: code,
+        checked: selectedCountries.has(code),
+        onchange: (event) => {
+          if (event.target.checked) selectedCountries.add(code);
+          else selectedCountries.delete(code);
+          updateCountrySummary();
+        },
+      }),
+      el("span", { class: "country-code", text: code }),
+      el("span", { text: name }),
+    ]);
+    menu.append(label);
+  }
+}
+
+function updateCountrySummary() {
+  const summary = $("#ss-country-summary");
+  const trigger = $("#ss-country-trigger");
+  if (!summary) return;
+  if (!selectedCountries.size) summary.textContent = t("Mọi quốc gia", "surfshark.anyCountry");
+  else if (selectedCountries.size <= 3) summary.textContent = [...selectedCountries].join(", ");
+  else summary.textContent = t("{0} quốc gia", "surfshark.countryCount", selectedCountries.size);
+  trigger?.setAttribute("aria-expanded", "false");
+}
+
+function toggleCountryMenu(force) {
+  const menu = $("#ss-country-menu");
+  const trigger = $("#ss-country-trigger");
+  if (!menu || !trigger) return;
+  const open = force ?? menu.classList.contains("hidden");
+  menu.classList.toggle("hidden", !open);
+  trigger.setAttribute("aria-expanded", String(open));
+}
+
+function bindCountryMenu() {
+  $("#ss-country-trigger")?.addEventListener("click", () => toggleCountryMenu());
+  document.addEventListener("click", (event) => {
+    const host = $("#ss-country-select");
+    if (host && !host.contains(event.target)) toggleCountryMenu(false);
+  });
+  renderCountryMenu();
+  updateCountrySummary();
+}
+
+// Surfshark provisioning: the form sends credentials to the admin API once,
+// then the gateway owns the tunnels and registers them as local SOCKS proxies.
+function renderSurfsharkState(state) {
+  const node = $("#surfshark-state");
+  const value = $("#surfshark-state-value");
+  if (!node || !value) return;
+  const running = !!state?.running;
+  const unavailable = state?.available === false;
+  const tone = unavailable ? "info" : running ? "ok" : state?.last_error ? "bad" : "info";
+  const icon = unavailable ? "–" : running ? "✓" : state?.last_error ? "!" : "–";
+  node.classList.remove("tone-ok", "tone-warn", "tone-bad", "tone-info");
+  node.classList.add("tone-" + tone);
+  const iconNode = node.querySelector(".status-chip-icon");
+  if (iconNode) iconNode.textContent = icon;
+  value.textContent = unavailable
+    ? t("Không hỗ trợ", "surfshark.unavailable")
+    : running
+      ? t("{0} tunnel", "surfshark.running", state.tunnels || 0)
+      : state?.last_error
+        ? t("Lỗi", "surfshark.error")
+        : t("Chưa tạo tunnel tại đây", "surfshark.idle");
+}
+
+async function loadSurfsharkStatus() {
+  try {
+    const state = await api("/api/surfshark/status");
+    surfsharkState = state;
+    renderSurfsharkState(state);
+    if (visible) renderSources();
+  } catch {
+    renderSurfsharkState(null);
+  }
+}
+
+async function submitSurfshark(event) {
+  event.preventDefault();
+  const button = $("#surfshark-setup");
+  const result = $("#surfshark-result");
+  if (button) button.disabled = true;
+  if (result) result.textContent = t("Đang đăng nhập Surfshark và tạo tunnel…", "surfshark.working");
+  try {
+    const payload = {
+      username: ($("#ss-user")?.value || "").trim(),
+      password: $("#ss-pass")?.value || "",
+      count: Number($("#ss-count")?.value || 0),
+      countries: [...selectedCountries],
+      private_key: ($("#ss-key")?.value || "").trim(),
+      base_port: Number($("#ss-port")?.value || 0),
+    };
+    const state = await api("/api/surfshark/setup", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      timeoutMs: 120000,
+    });
+    if ($("#ss-pass")) $("#ss-pass").value = "";
+    if ($("#ss-key")) $("#ss-key").value = "";
+    surfsharkState = state;
+    renderSurfsharkState(state);
+    if (result)
+      result.textContent = t(
+        "Đã tạo {0} tunnel — {1}",
+        "surfshark.done",
+        state.tunnels || 0,
+        (state.ports || []).join(", "),
+      );
+    toast(t("Đã thiết lập Surfshark xong.", "surfshark.toastDone"));
+    await refreshMonitor();
+    await load();
+  } catch (error) {
+    if (result) result.textContent = t("Không thiết lập được: {0}", "surfshark.failed", error.message);
+    toast(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// rotateNow lets the operator change the current WARP /64 on demand, instead
+// of waiting for the next 429. It reuses the existing action endpoint with the
+// first prefix currently in the live exit list.
+async function rotateNow() {
+  const button = $("#egress-rotate");
+  if (button) button.disabled = true;
+  const resources = store.get("monitor")?.resources || {};
+  const warp = resources.warp || {};
+  // penalizePrefix matches the exact egress_key (/64), so prefer that over the
+  // full egress address.
+  const prefix =
+    (warp.exits || []).map((exit) => exit.egress_key).filter(Boolean)[0] ||
+    (warp.egress || []).map(prefix64).filter(Boolean)[0] ||
+    "";
+  if (!prefix) {
+    toast(t("Không có exit WARP để xoay.", "egress.rotateNoExit"), true);
+    if (button) button.disabled = false;
+    return;
+  }
+  try {
+    const result = await api("/api/egress/action", {
+      method: "POST",
+      body: JSON.stringify({ prefix, action: "rotate" }),
+    });
+    toast(t("Đã xoay {0} exit.", "egress.rotateDone", result.matched));
+    await refreshMonitor();
+    await load();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function stopSurfshark() {
+  const button = $("#surfshark-stop");
+  if (button) button.disabled = true;
+  try {
+    const state = await api("/api/surfshark/stop", { method: "POST", body: "{}", timeoutMs: 60000 });
+    surfsharkState = state;
+    renderSurfsharkState(state);
+    const result = $("#surfshark-result");
+    if (result) result.textContent = t("Đã dừng tunnel Surfshark.", "surfshark.stopped");
+    await refreshMonitor();
+    await load();
+  } catch (error) {
+    toast(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 export default {
   id: "egress",
-  title: "Egress & WARP",
-  sub: "WARP nội bộ, proxy usque, peer và ngân sách /64.",
+  title: "Đường ra & Proxy",
+  sub: "WARP, Surfshark, peer và ngân sách /64 cho model miễn phí.",
   init() {
-    $("#egress-refresh")?.addEventListener("click", load);
     $("#egress-check")?.addEventListener("click", checkProxies);
-    $("#egress-filter")?.addEventListener("change", (event) => {
-      filter = event.target.value === "issues" ? "issues" : "all";
-      renderSources();
-    });
-    $("#egress-search")?.addEventListener("input", (event) => {
-      search = event.target.value || "";
+    $("#egress-rotate")?.addEventListener("click", rotateNow);
+    $("#surfshark-form")?.addEventListener("submit", submitSurfshark);
+    bindCountryMenu();
+    $("#surfshark-stop")?.addEventListener("click", stopSurfshark);
+    $("#egress-issues-only")?.addEventListener("change", (event) => {
+      issuesOnly = !!event.target.checked;
       renderSources();
     });
     store.on("monitor", () => {
@@ -656,6 +862,7 @@ export default {
   show() {
     visible = true;
     renderSources();
+    loadSurfsharkStatus();
     load();
     clearInterval(timer);
     timer = setInterval(load, 10000);
@@ -671,6 +878,10 @@ export default {
     insights = null;
     filter = "all";
     search = "";
+    showOrphans = false;
+    issuesOnly = false;
+    search = "";
+    filter = "all";
     expanded.clear();
     clearInterval(timer);
     timer = null;

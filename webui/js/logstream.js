@@ -8,14 +8,41 @@ let source = null;
 let paused = false;
 let visible = false;
 let renderPending = false;
+let outcome = "all";
+
+function fieldsCell(fields) {
+  const cell = el("span", { class: "log-fields" });
+  const entries = Object.entries(fields);
+  if (!entries.length) return cell;
+  for (const [key, value] of entries.slice(0, 8)) {
+    const text = typeof value === "object" ? JSON.stringify(value) : String(value);
+    cell.append(
+      el("span", { class: "log-field" }, [
+        el("b", { text: key }),
+        document.createTextNode(text.length > 90 ? `${text.slice(0, 90)}…` : text),
+      ]),
+    );
+  }
+  if (entries.length > 8) cell.append(el("span", { class: "log-field muted", text: `+${entries.length - 8}` }));
+  return cell;
+}
 
 function render() {
   const level = $("#log-level").value;
   const component = $("#log-component").value.toLowerCase();
   const query = $("#log-search").value.toLowerCase();
+  const matchOutcome = (item) => {
+    if (outcome === "all") return true;
+    const status = Number(item.fields?.status || 0);
+    if (outcome === "error") return item.level === "error" || status >= 500;
+    if (outcome === "200") return status === 200;
+    if (outcome === "429") return status === 429;
+    return true;
+  };
   const rows = events
     .filter(
       (item) =>
+        matchOutcome(item) &&
         (!level || item.level === level) &&
         (!component || (item.component || "").toLowerCase().includes(component)) &&
         (!query || JSON.stringify(item).toLowerCase().includes(query)),
@@ -32,7 +59,7 @@ function render() {
         el("span", { class: levelClass, text: item.level }),
         el("span", { class: "log-component", text: item.component || "core" }),
         el("span", { class: "log-message", text: item.message }),
-        el("span", { class: "log-fields", text: JSON.stringify(item.fields || {}) }),
+        fieldsCell(item.fields || {}),
       ]),
     );
   });
@@ -76,6 +103,15 @@ export function bind() {
   ["#log-level", "#log-component", "#log-search"].forEach((selector) =>
     $(selector).addEventListener("input", render),
   );
+  document.querySelectorAll("#log-outcome-chips .outcome-chip").forEach((button) => {
+    button.addEventListener("click", () => {
+      outcome = button.dataset.outcome || "all";
+      document.querySelectorAll("#log-outcome-chips .outcome-chip").forEach((chip) =>
+        chip.classList.toggle("active", chip === button),
+      );
+      render();
+    });
+  });
   $("#log-pause").addEventListener("click", () => {
     paused = !paused;
     syncPauseButton();

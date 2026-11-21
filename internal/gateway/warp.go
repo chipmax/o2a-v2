@@ -303,15 +303,19 @@ func (g *Gateway) awaitFreshEgress(ctx context.Context, tried map[string]bool) b
 
 // doWarpAnonymousUpstream is the anonymous lane with WARP as its only egress.
 // It walks the same two upstream gates (v2 /inference first, v1 /zen second)
-// as doAnonymousUpstream, but draws a WARP lease per attempt instead of a
-// proxy. The lane breaker still applies; per-proxy cooldowns and the block
-// cursor do not, because a block is a property of the WARP exit and rotation
-// replaces it.
+// as doStaticAnonymousUpstream, but draws a WARP lease per attempt instead of
+// a proxy. When the proxy fallback is enabled, the shared lane breaker is left
+// to the proxy walk: a WARP-only failure must not close the egress that is
+// about to be tried. Per-proxy cooldowns and the block cursor do not apply,
+// because a block is a property of the WARP exit and rotation replaces it.
 func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Route, bodies map[config.Tier][]byte, ids identity.RequestIDs, attemptOffset int) (*http.Response, error, int) {
-	if !g.anonymous.AllowAttempt() {
-		return nil, errAnonymousLanePaused, 0
+	fallback := g.warpFallbackEnabled()
+	if !fallback {
+		if !g.anonymous.AllowAttempt() {
+			return nil, errAnonymousLanePaused, 0
+		}
+		defer g.anonymous.ReleaseProbe()
 	}
-	defer g.anonymous.ReleaseProbe()
 	// If every exit observed today has already spent this model family's
 	// bucket, walking them again only burns latency and attempt budget. The
 	// caller already forwards a quota verdict to peers/key tiers from this
@@ -458,7 +462,7 @@ func (g *Gateway) doWarpAnonymousUpstream(ctx context.Context, route models.Rout
 				break
 			}
 		}
-		if !leaseBlocked && !quotaSpent && upstreamStatus(lastResponse) != http.StatusTooManyRequests {
+		if !fallback && !leaseBlocked && !quotaSpent && upstreamStatus(lastResponse) != http.StatusTooManyRequests {
 			if pause, tripped := g.anonymous.NoteFailure(); tripped {
 				g.logger.Warn("anonymous lane circuit breaker opened", "component", "upstream", "event", "anonymous_breaker_open", "status", upstreamStatus(lastResponse), "paused_for", pause.String())
 				break

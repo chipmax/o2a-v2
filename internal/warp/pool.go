@@ -773,21 +773,11 @@ func newPool(ctx context.Context, log logger, store *registrationStore, burn *bu
 		burn:           burn,
 		changed:        make(chan struct{}),
 	}
-	// A previous process may have drained an egress for quota. Seed the cooling
-	// map so a fresh device does not immediately land on that same /64.
-	if store != nil {
-		// Quota-drained blocks stay in the lifetime blacklist until the next
-		// 00:00 UTC reset; short cooling entries keep their normal TTL.
-		reset := nextUTCReset(time.Now())
-		for key, drainedAt := range store.DrainedKeys(time.Now(), 48*time.Hour) {
-			until := drainedAt.Add(egressCooldown)
-			if until.After(reset) {
-				until = reset
-			}
-			burn.spentLifetime[key] = until
-			p.cooling[key] = until
-		}
-	}
+	// Do not seed the cooling map from the persisted drain markers: after a
+	// busy day every saved /64 can be marked, and refusing them all leaves the
+	// pool without a first exit (health 503). A drained address is attempted
+	// once more and, if the upstream still refuses it, the runtime lifetime
+	// blacklist records it again.
 	// The first registration gates readiness. Cloudflare can answer it with a
 	// rate limit even when this process has just started (the limit follows the
 	// source address), so wait out that window inside the caller's deadline
@@ -831,6 +821,19 @@ func newPool(ctx context.Context, log logger, store *registrationStore, burn *bu
 			first, err = p.createExit(ctx)
 			continue
 		}
+		// Every known egress can be drained or cooling at once — for example
+		// after a busy day, when the lifetime blacklist holds every saved /64.
+		// That is a free-lane supply problem, not a broken configuration: keep
+		// the gateway serving keyed traffic and let the refill loop look for a
+		// fresh exit when the quota window resets.
+		if errors.Is(err, errDuplicateEgress) || errors.Is(err, errLaneBurnt) {
+			if log != nil {
+				log.Warnf("OpenCode WARP first exit unavailable (%v); starting with an empty pool and retrying in the background", err)
+			}
+			first = nil
+			err = nil
+			break
+		}
 		pause := registrationPause(err)
 		if pause <= 0 {
 			cancel()
@@ -849,9 +852,11 @@ func newPool(ctx context.Context, log logger, store *registrationStore, burn *bu
 		}
 		first, err = p.createExit(ctx)
 	}
-	p.active = []*exit{first}
-	if log != nil {
-		log.Infof("OpenCode WARP/%s pool ready (max %d exits, preloading %d)", first.stack, size, preload)
+	if first != nil {
+		p.active = []*exit{first}
+		if log != nil {
+			log.Infof("OpenCode WARP/%s pool ready (max %d exits, preloading %d)", first.stack, size, preload)
+		}
 	}
 	p.startRefill()
 	p.startAgeSweep()
@@ -1673,6 +1678,18 @@ func (p *Pool) createExit(ctx context.Context) (*exit, error) {
 		p.mu.Lock()
 		p.registering++
 		p.mu.Unlock()
+		// Snapshot the lifetime blacklist before the attempt: the admission
+		// probe writes the candidate's own key into it on a 429, and that
+		// marker must not reject the very exit that produced it.
+		var spentBefore map[string]bool
+		if p.burn != nil {
+			p.burn.mu.Lock()
+			spentBefore = make(map[string]bool, len(p.burn.spentLifetime))
+			for k := range p.burn.spentLifetime {
+				spentBefore[k] = true
+			}
+			p.burn.mu.Unlock()
+		}
 		candidate, err := p.newExit(ctx)
 		p.mu.Lock()
 		p.registering--
@@ -1700,14 +1717,17 @@ func (p *Pool) createExit(ctx context.Context) (*exit, error) {
 				delete(p.cooling, subnet)
 			}
 		}
-		p.burn.mu.Lock()
-		for subnet, until := range p.burn.spentLifetime {
-			if !until.After(now) {
-				delete(p.burn.spentLifetime, subnet)
+		spent := false
+		if p.burn != nil {
+			p.burn.mu.Lock()
+			for subnet, until := range p.burn.spentLifetime {
+				if !until.After(now) {
+					delete(p.burn.spentLifetime, subnet)
+				}
 			}
+			spent = spentBefore[key] && p.burn.spentLifetime[key].After(now)
+			p.burn.mu.Unlock()
 		}
-		spent := p.burn.spentLifetime[key].After(now)
-		p.burn.mu.Unlock()
 		// A block the upstream proved spent stays out until 00:00 UTC even if
 		// the short cooling entry expired. This is the lifetime blacklist.
 		usable := key != "" && !p.reserved[key] && !p.cooling[key].After(now) && !spent

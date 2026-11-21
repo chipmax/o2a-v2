@@ -21,6 +21,7 @@ import (
 	"opencode2api/internal/config"
 	"opencode2api/internal/gateway"
 	"opencode2api/internal/httpx"
+	"opencode2api/internal/surfshark"
 	"opencode2api/internal/telemetry"
 	"opencode2api/webui"
 )
@@ -30,6 +31,7 @@ import (
 // refresh holds it across network calls.
 type Server struct {
 	manager       *gateway.RuntimeController
+	surfshark     *surfshark.Manager
 	monitor       *telemetry.Metrics
 	logs          *telemetry.LogBroker
 	logger        *slog.Logger
@@ -57,6 +59,11 @@ type Server struct {
 	sessionPath string
 }
 
+// SetSurfshark attaches the managed tunnel provisioner.
+func (a *Server) SetSurfshark(manager *surfshark.Manager) {
+	a.surfshark = manager
+}
+
 // SetSessionPath loads sessions saved by an earlier process and writes future
 // ones to path, so a gateway restart no longer logs the operator out.
 func (a *Server) SetSessionPath(path string) {
@@ -70,8 +77,16 @@ func (a *Server) SetSessionPath(path string) {
 // handler blocked in a stream would otherwise make Shutdown wait out its
 // whole deadline and log "graceful shutdown failed".
 func (a *Server) Close() {
-	if a != nil && a.streamCancel != nil {
+	if a == nil {
+		return
+	}
+	if a.streamCancel != nil {
 		a.streamCancel()
+	}
+	if a.surfshark != nil {
+		if _, err := a.surfshark.Stop(); err != nil {
+			a.logger.Warn("surfshark shutdown failed", "component", "surfshark", "event", "tunnel_stop_failed", "error", err)
+		}
 	}
 }
 
@@ -120,6 +135,9 @@ func (a *Server) Handler() http.Handler {
 	mux.Handle("GET /api/diagnostics/gate", a.authenticate(http.HandlerFunc(a.handleGateCheckStatus)))
 	mux.Handle("POST /api/diagnostics/preview", a.authenticate(http.HandlerFunc(a.handlePreview)))
 	mux.Handle("GET /api/egress/insights", a.authenticate(http.HandlerFunc(a.handleEgressInsights)))
+	mux.Handle("GET /api/surfshark/status", a.authenticate(http.HandlerFunc(a.handleSurfsharkStatus)))
+	mux.Handle("POST /api/surfshark/setup", a.authenticate(a.csrf(http.HandlerFunc(a.handleSurfsharkSetup))))
+	mux.Handle("POST /api/surfshark/stop", a.authenticate(a.csrf(http.HandlerFunc(a.handleSurfsharkStop))))
 	mux.Handle("GET /api/agents", a.authenticate(http.HandlerFunc(a.handleAgents)))
 	mux.Handle("POST /api/agents/preview", a.authenticate(a.csrf(http.HandlerFunc(a.handleAgentPreview))))
 	mux.Handle("POST /api/agents/apply", a.authenticate(a.csrf(http.HandlerFunc(a.handleAgentApply))))

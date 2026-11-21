@@ -13,15 +13,41 @@
     <link rel="stylesheet" href="/css/base.css" />
     <link rel="stylesheet" href="/css/components.css" />
     <link rel="stylesheet" href="/css/pages.css" />
+    <link rel="stylesheet" href="/css/refresh.css" />
     <script src="/js/theme-boot.js"></script>
   </head>
   <body>
     <a class="skip-link" href="#main" data-i18n="a11y.skip">Bỏ qua đến nội dung chính</a>
 
+    <svg class="svg-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+      <symbol id="i-egress" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.5 3.6 5.5 3.6 9S14.4 18.5 12 21c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3Z"/></symbol>
+      <symbol id="i-models" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></symbol>
+      <symbol id="i-agents" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 8V4M8 4h8"/><circle cx="9" cy="14" r="1"/><circle cx="15" cy="14" r="1"/><path d="M8 18h8"/></symbol>
+      <symbol id="i-diagnostics" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+      <symbol id="i-key" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8-8M15 5l3 3M17 3l3 3"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+      <symbol id="i-user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.5 16.5 4 4"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    </svg>
+
     <section id="login" class="login-view">
+      <div class="login-glow" aria-hidden="true"></div>
       <form id="login-form" class="login-card">
+        <div class="login-brand-row">
+          <div class="brand-mark brand-mark-lg" aria-hidden="true"><span></span></div>
+          <div class="brand-copy">
+            <span class="brand-name">o2a</span>
+            <span class="brand-sub">v2 · operations</span>
+          </div>
+        </div>
         <div class="login-lang"><select class="lang-switch" data-lang-switch aria-label="Ngôn ngữ"></select></div>
+        <p class="login-eyebrow" data-i18n="login.eyebrow">Quản trị vận hành / 2026</p>
         <h1 class="login-name" data-i18n="login.title">Đăng nhập quản trị</h1>
+        <p class="login-intro" data-i18n="login.intro">Một bảng điều khiển cục bộ để cấu hình, kiểm tra và kết nối Gateway.</p>
         <div class="field">
           <label for="login-user" data-i18n="login.username">Tài khoản</label>
           <input id="login-user" autocomplete="username" required />
@@ -32,29 +58,76 @@
         </div>
         <p id="login-error" class="form-error" role="alert"></p>
         <button class="btn btn-primary btn-block" data-i18n="login.submit">Vào Sổ tay vận hành</button>
+        <p class="login-foot"><span class="live-dot"></span><span data-i18n="login.restricted">Console giới hạn</span></p>
       </form>
     </section>
 
     <div id="app" class="app hidden">
-      <aside class="sidebar">
+      <div id="nav-scrim" class="nav-scrim" hidden></div>
+      <aside id="sidebar" class="sidebar">
         <div class="brand">
-          <span class="brand-name">o2a-v2</span>
+          <div class="brand-mark" aria-hidden="true"><span></span></div>
+          <div class="brand-copy">
+            <span class="brand-name">o2a</span>
+            <span class="brand-sub">v2 · operations</span>
+          </div>
+        </div>
+        <div class="sidebar-health">
+          <span class="live-dot"></span>
+          <div>
+            <strong id="sidebar-health-label">Đang kết nối</strong>
+            <small>Gateway control plane</small>
+          </div>
         </div>
         <nav class="nav" aria-label="Điều hướng">
           <div class="nav-group">
             <div class="nav-group-title" data-i18n="nav.group.runtime">Vận hành</div>
-            <button class="nav-item active" data-page="overview" data-i18n="nav.overview">Tổng quan</button>
-            <button class="nav-item" data-page="model-quotas" data-i18n="nav.model-quotas">Mô hình &amp; Key</button>
-            <button class="nav-item" data-page="egress" data-i18n="nav.egress">Egress &amp; WARP</button>
-            <button class="nav-item" data-page="agents" data-i18n="nav.agents">Agent</button>
-            <button class="nav-item" data-page="diagnostics" data-i18n="nav.diagnostics">Chẩn đoán</button>
+            <button class="nav-item active" data-page="overview">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-overview"></use></svg>
+              <span data-i18n="nav.overview">Tổng quan</span>
+            </button>
+            <button class="nav-item" data-page="egress">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-egress"></use></svg>
+              <span data-i18n="nav.egress">Đường ra &amp; Proxy</span>
+            </button>
+            <button class="nav-item" data-page="model-quotas">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-models"></use></svg>
+              <span data-i18n="nav.model-quotas">Mô hình &amp; hạn mức</span>
+            </button>
+            <button class="nav-item" data-page="agents">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-agents"></use></svg>
+              <span data-i18n="nav.agents">Agent</span>
+            </button>
+          </div>
+          <div class="nav-group">
+            <div class="nav-group-title" data-i18n="nav.group.connections">Kết nối</div>
+            <button class="nav-item" data-page="api-keys">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-key"></use></svg>
+              <span data-i18n="nav.api-keys">API Keys</span>
+            </button>
+            <button class="nav-item" data-page="diagnostics" data-tab="route">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-book"></use></svg>
+              <span data-i18n="nav.access">Hướng dẫn kết nối</span>
+            </button>
           </div>
           <div class="nav-group">
             <div class="nav-group-title" data-i18n="nav.group.system">Hệ thống</div>
-            <button class="nav-item" data-page="config" data-i18n="nav.config">Cài đặt</button>
+            <button class="nav-item" data-page="diagnostics">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-diagnostics"></use></svg>
+              <span data-i18n="nav.diagnostics">Chẩn đoán</span>
+            </button>
+            <button class="nav-item" data-page="config">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-settings"></use></svg>
+              <span data-i18n="nav.config">Cài đặt</span>
+            </button>
+            <button class="nav-item" data-page="config" data-tab="account">
+              <svg class="nav-icon" aria-hidden="true"><use href="#i-user"></use></svg>
+              <span data-i18n="nav.account">Tài khoản &amp; bảo mật</span>
+            </button>
           </div>
         </nav>
         <div class="sidebar-foot">
+          <button id="theme-toggle" class="btn btn-sm btn-ghost" type="button"></button>
           <a
             id="version"
             href="https://github.com/jasonxu114514/opencode2api"
@@ -67,15 +140,26 @@
 
       <div class="content">
         <header class="topbar">
-          <div>
-            <h1 id="page-title" class="page-title"></h1>
-            <p id="page-sub" class="page-sub"></p>
+          <div class="topbar-start">
+            <button id="menu-toggle" class="icon-btn menu-toggle" type="button" aria-label="Mở điều hướng" aria-controls="sidebar" aria-expanded="false">
+              <svg aria-hidden="true"><use href="#i-menu"></use></svg>
+            </button>
+            <div class="page-heading">
+              <div class="page-eyebrow" data-i18n="topbar.eyebrow">Bảng điều khiển</div>
+              <h1 id="page-title" class="page-title"></h1>
+              <p id="page-sub" class="page-sub"></p>
+            </div>
           </div>
           <div class="topbar-actions">
-            <button id="theme-toggle" class="btn btn-sm"></button>
-            <select class="lang-switch" data-lang-switch aria-label="Ngôn ngữ"></select>
-            <button id="refresh-now" class="btn btn-sm" data-i18n="topbar.refresh">Làm mới ngay</button>
-            <button id="logout" class="btn btn-sm btn-ghost" data-i18n="topbar.logout">Đăng xuất</button>
+            <button id="command-open" class="command-trigger" type="button" aria-haspopup="dialog" aria-controls="command-palette">
+              <svg aria-hidden="true"><use href="#i-search"></use></svg>
+              <span data-i18n="command.trigger">Tìm nhanh</span>
+              <kbd>⌘K</kbd>
+            </button>
+            <span id="topbar-health" class="health-pill" role="status" aria-live="polite">
+              <span class="live-dot"></span><span>Live</span>
+            </span>
+
           </div>
         </header>
 
@@ -87,9 +171,44 @@
             <div class="tabs" role="tablist" aria-label="Chế độ xem tổng quan">
               <button class="tab active" data-tab="summary" role="tab" aria-selected="true" data-i18n="overview.tab.summary">Tổng quan</button>
               <button class="tab" data-tab="usage" role="tab" aria-selected="false" data-i18n="overview.tab.usage">Mức dùng</button>
-              <button class="tab" data-tab="egress" role="tab" aria-selected="false" data-i18n="overview.tab.egress">Ngân sách /64</button>
             </div>
             <div data-panel="summary" class="stack" role="tabpanel">
+              <section class="overview-hero" aria-labelledby="overview-hero-title">
+                <div class="hero-copy">
+                  <p class="hero-kicker"><span class="live-dot"></span><span data-i18n="overview.hero.kicker">Tình trạng hiện tại</span></p>
+                  <h2 id="overview-hero-title" class="hero-title">Đang kiểm tra trạng thái…</h2>
+                  <p id="overview-hero-sub" class="hero-sub">Đang tải tín hiệu từ Gateway.</p>
+                  <div id="hero-sparkline" class="hero-sparkline" aria-label="Xu hướng thành công"></div>
+                  <div id="overview-hero-badges" class="hero-badges"></div>
+                  <div id="hero-issues" class="hero-issues" aria-live="polite"></div>
+                  <div class="hero-actions">
+                    <button id="hero-open-egress" class="btn btn-sm btn-primary" type="button" data-i18n="overview.hero.egress">Mở Đường ra &amp; Proxy</button>
+                    <button id="hero-open-logs" class="btn btn-sm btn-ghost" type="button" data-i18n="overview.hero.logs">Xem sự kiện</button>
+                  </div>
+                </div>
+                <div class="hero-side">
+                  <div class="chain" id="egress-chain" aria-label="Chuỗi ưu tiên egress">
+                    <div class="chain-node" data-chain="warp">
+                      <div class="chain-head"><span class="chain-index">01</span><span class="chain-name">WARP</span></div>
+                      <strong id="chain-warp-state">Đang đọc…</strong>
+                      <small id="chain-warp-sub">exit nội bộ</small>
+                    </div>
+                    <span class="chain-arrow" aria-hidden="true">→</span>
+                    <div class="chain-node" data-chain="proxy">
+                      <div class="chain-head"><span class="chain-index">02</span><span class="chain-name">Surfshark</span></div>
+                      <strong id="chain-proxy-state">Đang đọc…</strong>
+                      <small id="chain-proxy-sub">proxy dự phòng</small>
+                    </div>
+                    <span class="chain-arrow" aria-hidden="true">→</span>
+                    <div class="chain-node" data-chain="keys">
+                      <div class="chain-head"><span class="chain-index">03</span><span class="chain-name">Keys</span></div>
+                      <strong id="chain-keys-state">Đang đọc…</strong>
+                      <small id="chain-keys-sub">Zen / Go</small>
+                    </div>
+                  </div>
+                  <p class="chain-note" data-i18n="overview.hero.chainNote">WARP được thử trước; lỗi có thể chuyển sang Surfshark, key là lớp cuối.</p>
+                </div>
+              </section>
               <section id="overview-checklist" class="section hidden">
                 <div class="section-head">
                   <div>
@@ -131,9 +250,9 @@
                   <div id="m-ready-note" class="metric-note" data-i18n="overview.readyNote">Khớp với /healthz</div>
                 </div>
                 <div class="metric">
-                  <div class="metric-label" data-i18n="overview.capacity">IP khả dụng</div>
+                  <div class="metric-label" data-i18n="overview.capacity2">Request hôm nay</div>
                   <div id="m-capacity" class="metric-value">—</div>
-                  <div id="m-capacity-note" class="metric-note" data-i18n="overview.capacityNote">Ước tính theo /64 đã thấy</div>
+                  <div id="m-capacity-note" class="metric-note" data-i18n="overview.capacityNote2">Bắt đầu từ 00:00 UTC</div>
                 </div>
               </div>
               <section class="section" id="overview-ops">
@@ -150,7 +269,7 @@
               <div class="quick-actions" aria-label="Thao tác nhanh">
                 <button id="quick-api-keys" class="btn btn-sm" data-i18n="quick.apiKeys">Quản lý API Key</button>
                 <button id="quick-diagnostics" class="btn btn-sm" data-i18n="quick.diagnostics">Chẩn đoán</button>
-                <button id="quick-egress" class="btn btn-sm" data-i18n="quick.egress">Egress &amp; WARP</button>
+                <button id="quick-egress" class="btn btn-sm" data-i18n="quick.egress">Đường ra &amp; Proxy</button>
               </div>
               <div class="split">
                 <section class="section">
@@ -159,13 +278,14 @@
                       <h2 class="section-title" data-i18n="overview.proxy.title">Nút Proxy</h2>
                     </div>
                   </div>
+                  <p class="section-caption" data-i18n="overview.proxy.caption">Z = số Zen Key đi qua nút này · G = số Go Key · A = kênh ẩn danh có dùng nút này không.</p>
                   <div class="table-wrap">
                     <table class="table">
                       <thead>
                         <tr>
                           <th data-i18n="overview.proxy.col.node">Nút</th>
                           <th data-i18n="overview.proxy.col.health">Sức khoẻ</th>
-                          <th data-i18n="overview.proxy.col.binding">Ràng buộc</th>
+                          <th data-i18n="overview.proxy.col.binding">Key gán / ẩn danh</th>
                         </tr>
                       </thead>
                       <tbody id="proxy-table"></tbody>
@@ -269,7 +389,78 @@
                 </section>
               </div>
             </div>
-            <div data-panel="egress" class="stack hidden" role="tabpanel">
+          </section>
+
+          <section id="page-egress" class="page hidden">
+            <div class="egress-intro">
+              <div class="egress-flow" aria-label="Thứ tự ưu tiên egress">
+                <div class="flow-step is-primary"><span class="flow-index">01</span><strong>WARP</strong><small>Ưu tiên &amp; thử trước</small></div>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <div class="flow-step"><span class="flow-index">02</span><strong>Surfshark</strong><small>Dự phòng khi WARP lỗi</small></div>
+                <span class="flow-arrow" aria-hidden="true">→</span>
+                <div class="flow-step"><span class="flow-index">03</span><strong>Zen / Go keys</strong><small>Lớp cuối, không thoát quota /64</small></div>
+              </div>
+              <p class="section-caption">WARP lỗi tạm thời sẽ được tạm nghỉ và chuyển sang proxy tĩnh; lỗi 4xx xác định không fallback. Ngân sách vẫn tính theo egress /64 + họ model.</p>
+            </div>
+            <div class="stack">
+              <section class="section" id="surfshark-section">
+                <div class="section-head">
+                  <div>
+                    <h2 class="section-title" data-i18n="surfshark.title">Thiết lập Surfshark tự động</h2>
+                    <p class="section-caption" data-i18n="surfshark.caption">Nhập tài khoản Surfshark, số đường ra và quốc gia. Gateway sẽ tạo khoá WireGuard, khởi tạo các tunnel và đăng ký proxy SOCKS — không cần cài đặt thủ công.</p>
+                    <p class="section-caption" data-i18n="surfshark.privacy">Thông tin đăng nhập chỉ dùng cho một lần gọi API và không được lưu lại. Mật khẩu không bao giờ xuất hiện trong log hay cấu hình.</p>
+                  </div>
+                  <span id="surfshark-state" class="status-chip tone-info" role="status">
+                    <span class="status-chip-icon">–</span>
+                    <span class="status-chip-label" data-i18n="surfshark.stateLabel">Trạng thái</span>
+                    <strong class="status-chip-value" id="surfshark-state-value">—</strong>
+                  </span>
+                </div>
+                <form id="surfshark-form">
+                  <div class="form-grid">
+                    <div class="field">
+                      <label for="ss-user" data-i18n="surfshark.username">Tài khoản Surfshark</label>
+                      <input id="ss-user" type="email" autocomplete="username" placeholder="name@example.com" required />
+                    </div>
+                    <div class="field">
+                      <label for="ss-pass" data-i18n="surfshark.password">Mật khẩu Surfshark</label>
+                      <input id="ss-pass" type="password" autocomplete="current-password" required />
+                    </div>
+                    <div class="field">
+                      <label for="ss-count" data-i18n="surfshark.count">Số đường ra</label>
+                      <input id="ss-count" type="number" min="1" max="50" value="10" />
+                    </div>
+                    <div class="field">
+                      <label id="ss-countries-label" data-i18n="surfshark.countries">Quốc gia (chọn nhiều)</label>
+                      <div class="country-select" id="ss-country-select">
+                        <button id="ss-country-trigger" class="country-trigger" type="button" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="ss-countries-label">
+                          <span id="ss-country-summary" data-i18n="surfshark.anyCountry">Mọi quốc gia</span>
+                          <span aria-hidden="true">▾</span>
+                        </button>
+                        <div id="ss-country-menu" class="country-menu hidden" role="listbox" aria-multiselectable="true"></div>
+                      </div>
+                    </div>
+                    <details class="field full surfshark-advanced">
+                      <summary data-i18n="surfshark.advanced">Nâng cao</summary>
+                      <div class="form-grid">
+                        <div class="field">
+                          <label for="ss-key" data-i18n="surfshark.privateKey">Khoá WireGuard có sẵn (bỏ trống để tự tạo)</label>
+                          <input id="ss-key" type="password" autocomplete="off" spellcheck="false" />
+                        </div>
+                        <div class="field">
+                          <label for="ss-port" data-i18n="surfshark.basePort">Cổng SOCKS bắt đầu</label>
+                          <input id="ss-port" type="number" min="1024" max="65000" value="13101" />
+                        </div>
+                      </div>
+                    </details>
+                  </div>
+                  <div class="actions">
+                    <button id="surfshark-stop" class="btn btn-sm" type="button" data-i18n="surfshark.stop">Dừng tunnel</button>
+                    <button id="surfshark-setup" class="btn btn-sm btn-primary" type="submit" data-i18n="surfshark.setup">Thiết lập tự động</button>
+                  </div>
+                  <p id="surfshark-result" class="section-caption" role="status" aria-live="polite"></p>
+                </form>
+              </section>
               <div class="metrics" id="egress-metrics">
                 <div class="metric">
                   <div class="metric-label" data-i18n="egress.metrics.warp">WARP đang chạy</div>
@@ -292,6 +483,13 @@
                   <div class="metric-note" data-i18n="egress.metrics.quota.note">Theo họ model trong cửa sổ hiện tại</div>
                 </div>
               </div>
+              <div class="status-bar" id="egress-proxy-bar" role="status">
+                <div class="status-bar-head">
+                  <span data-i18n="egress.proxyBar.label">Proxy khỏe</span>
+                  <strong id="egress-proxy-bar-value">—</strong>
+                </div>
+                <div class="status-bar-track"><div class="status-bar-fill" id="egress-proxy-bar-fill" style="width:0%"></div></div>
+              </div>
               <section class="section">
                 <div class="section-head">
                   <div>
@@ -300,20 +498,12 @@
                     <p class="section-caption" data-i18n="egress.sources.legend">Chú thích: WARP = exit tunnel nội bộ · Ngoài pool = /64 đã retire, chỉ giữ số liệu tới 00:00 UTC · Sẵn sàng = dùng được ngay · Đang nghỉ = /64 đã cháy, gateway đã xoay sang dải khác ngay; dải này tạm bị loại ~30 phút rồi mới thử lại · Không dùng được = đã cạn hoặc không kết nối được.</p>
                   </div>
                   <div class="actions">
-                    <input
-                      id="egress-search"
-                      type="search"
-                      class="input-sm"
-                      placeholder="Tìm IP, nguồn…"
-                      aria-label="Tìm nguồn ra"
-                      data-i18n-placeholder="egress.sources.search"
-                    />
-                    <select id="egress-filter" aria-label="Lọc nguồn ra">
-                      <option value="all" data-i18n="egress.sources.filter.all">Tất cả nguồn</option>
-                      <option value="issues" data-i18n="egress.sources.filter.issues">Cần chú ý</option>
-                    </select>
-                    <button id="egress-check" class="btn btn-sm btn-primary" data-i18n="egress.check">Kiểm tra proxy</button>
-                    <button id="egress-refresh" class="btn btn-sm" data-i18n="egress.refresh">Làm mới</button>
+                    <label class="check egress-issues-toggle">
+                      <input id="egress-issues-only" type="checkbox" />
+                      <span data-i18n="egress.sources.issuesOnly">Chỉ cần chú ý</span>
+                    </label>
+                    <button id="egress-rotate" class="btn btn-sm btn-primary" data-i18n="egress.rotateNow">Xoay exit ngay</button>
+                    <button id="egress-check" class="btn btn-sm" data-i18n="egress.check">Kiểm tra proxy</button>
                   </div>
                 </div>
                 <div
@@ -353,10 +543,9 @@
           <section id="page-diagnostics" class="page hidden">
             <div class="tabs" role="tablist" aria-label="Chế độ xem chẩn đoán">
               <button class="tab active" data-tab="playground" role="tab" aria-selected="true" data-i18n="diagnostics.tab.playground">Thử request</button>
-              <button class="tab" data-tab="ledger" role="tab" aria-selected="false" data-i18n="diagnostics.tab.ledger">Luồng request</button>
-              <button class="tab" data-tab="logs" role="tab" aria-selected="false" data-i18n="diagnostics.tab.logs">Luồng sự kiện</button>
-              <button class="tab" data-tab="route" role="tab" aria-selected="false" data-i18n="diagnostics.tab.route">Định tuyến và điều kiện</button>
-              <button class="tab" data-tab="access" role="tab" aria-selected="false" data-i18n="diagnostics.tab.access">Hướng dẫn kết nối</button>
+                            <button class="tab" data-tab="logs" role="tab" aria-selected="false" data-i18n="diagnostics.tab.logs">Nhật ký &amp; request</button>
+              <button class="tab" data-tab="route" role="tab" aria-selected="false" data-i18n="diagnostics.tab.route">Định tuyến &amp; kết nối</button>
+              
             </div>
             <div data-panel="playground" class="stack" role="tabpanel">
               <div class="play-layout">
@@ -519,6 +708,12 @@
                 <p id="gate-status" class="section-caption" role="status" aria-live="polite"></p>
                 <pre id="gate-output" class="code-card">—</pre>
               </section>
+              <div class="outcome-chips" id="log-outcome-chips" role="group" aria-label="Lọc kết quả">
+                <button class="outcome-chip active" type="button" data-outcome="all">Tất cả</button>
+                <button class="outcome-chip ok" type="button" data-outcome="200">200</button>
+                <button class="outcome-chip warn" type="button" data-outcome="429">429</button>
+                <button class="outcome-chip bad" type="button" data-outcome="error">Lỗi</button>
+              </div>
               <div class="filters">
                 <select id="log-level" aria-label="Mức log">
                   <option value="" data-i18n="logs.level.all">Tất cả mức</option>
@@ -737,7 +932,6 @@
           <section id="page-model-quotas" class="page hidden">
             <div class="tabs" role="tablist" aria-label="Chế độ xem model">
               <button class="tab active" data-tab="quota" role="tab" aria-selected="true" data-i18n="quotas.tab.quota">Hạn mức gói</button>
-              <button class="tab" data-tab="free" role="tab" aria-selected="false" data-i18n="quotas.tab.free">Mô hình miễn phí</button>
               <button class="tab" data-tab="rotation" role="tab" aria-selected="false" data-i18n="quotas.tab.rotation">Luân chuyển mô hình</button>
             </div>
             <div data-panel="quota" class="stack" role="tabpanel">
@@ -747,7 +941,10 @@
                     <h2 class="section-title" data-i18n="quotas.title">Hạn mức gói OpenCode Go</h2>
                     <p class="section-caption" data-i18n="quotas.caption">Truy vấn trực tiếp từ OpenCode, cache 60 giây. Mọi mô hình dùng chung một cửa sổ gói, phần trăm do upstream làm tròn.</p>
                   </div>
-                  <button id="quota-refresh" class="btn btn-sm" data-i18n="quotas.refresh">Làm mới hạn mức</button>
+                  <div class="actions">
+                    <button id="quota-probe-all" class="btn btn-sm" type="button" data-i18n="quotas.probeAll">Đo trần tất cả</button>
+                    <button id="quota-refresh" class="btn btn-sm" data-i18n="quotas.refresh">Làm mới hạn mức</button>
+                  </div>
                 </div>
                 <div class="field">
                   <label for="quota-account">Go Key</label>
@@ -761,6 +958,7 @@
                   data-i18n="quotas.pending"
                 >Sẽ đọc hạn mức khi mở trang.</div>
                 <div id="quota-cards" class="quota-grid"></div>
+                <p id="quota-total" class="quota-status" role="status"></p>
                 <p id="quota-updated" class="section-caption"></p>
               </section>
               <section class="section">
@@ -788,6 +986,7 @@
                     <thead>
                       <tr>
                         <th data-i18n="quotas.col.model">Tên mô hình</th>
+                        <th data-i18n="quotas.col.source">Nguồn</th>
                         <th data-i18n="quotas.col.protocol">Giao thức upstream</th>
                         <th data-i18n="quotas.col.context">Ngữ cảnh</th>
                         <th class="num" data-i18n="quotas.col.hour">Còn lại 5 giờ · dùng chung</th>
@@ -800,8 +999,6 @@
                   </table>
                 </div>
               </section>
-            </div>
-            <div data-panel="free" class="stack hidden" role="tabpanel">
               <section class="section">
                 <div class="section-head">
                   <div>
@@ -959,10 +1156,9 @@
             <div class="tabs" role="tablist" aria-label="Phần cấu hình">
               <button class="tab active" data-tab="service" role="tab" aria-selected="true" data-i18n="config.tab.service">Dịch vụ</button>
               <button class="tab" data-tab="keys" role="tab" aria-selected="false" data-i18n="config.tab.keys">Khóa và ẩn danh</button>
-              <button class="tab" data-tab="proxies" role="tab" aria-selected="false" data-i18n="config.tab.proxies">Proxy</button>
-              <button class="tab" data-tab="upstream" role="tab" aria-selected="false" data-i18n="config.tab.upstream">Upstream và mô hình</button>
+                            <button class="tab" data-tab="upstream" role="tab" aria-selected="false" data-i18n="config.tab.upstream">Upstream và mô hình</button>
               <button class="tab" data-tab="reasoning" role="tab" aria-selected="false" data-i18n="config.tab.reasoning">Suy luận và hiệu năng</button>
-              <button class="tab" data-tab="logging" role="tab" aria-selected="false" data-i18n="config.tab.logging">Nhật ký</button>
+                            <button class="tab" data-tab="appearance" role="tab" aria-selected="false" data-i18n="config.tab.appearance">Giao diện</button>
               <button class="tab" data-tab="account" role="tab" aria-selected="false" data-i18n="config.tab.account">Tài khoản</button>
             </div>
             <form id="config-form" class="stack">
@@ -986,6 +1182,11 @@
                     <div class="field">
                       <label for="c-session" data-i18n="config.server.session">Session TTL (phút)</label>
                       <input id="c-session" type="number" />
+                    </div>
+                    <div class="field">
+                      <label for="c-proxyfile">Proxy File</label>
+                      <input id="c-proxyfile" placeholder="proxies.txt" />
+                      <p class="section-caption" data-i18n="config.proxyfile.hint">Surfshark ghi danh sách proxy vào đây; không sửa tay trừ khi tự quản lý tunnel.</p>
                     </div>
                     <div class="field full">
                       <label class="check">
@@ -1051,8 +1252,12 @@
                       <h2 class="section-title" data-i18n="config.proxy.title">Nút Proxy</h2>
                     </div>
                   </div>
-                  <div id="proxies-chips" class="chips"></div>
+                  <p class="section-caption" data-i18n="config.proxy.caption">Surfshark được thiết lập trong Đường ra &amp; Proxy. Nhập tay chỉ cần cho proxy tuỳ biến hoặc pool ngoài.</p>
                   <div class="form-grid">
+                  </div>
+                  <details class="advanced-block">
+                    <summary data-i18n="config.proxy.advanced">Nhập proxy thủ công (nâng cao)</summary>
+                    <div id="proxies-chips" class="chips"></div>
                     <div class="field">
                       <label for="proxies-new" data-i18n="config.proxy.add">Thêm Proxy (mỗi dòng một cái)</label>
                       <textarea
@@ -1060,11 +1265,7 @@
                         placeholder="direct&#10;http://user:pass@host:port&#10;http://127.0.0.1:7890#pool"
                       ></textarea>
                     </div>
-                    <div class="field">
-                      <label for="c-proxyfile">Proxy File</label>
-                      <input id="c-proxyfile" placeholder="proxies.txt" />
-                    </div>
-                  </div>
+                  </details>
                 </section>
                 <section class="section">
                   <div class="section-head">
@@ -1303,8 +1504,33 @@
                 </section>
               </div>
 
+              <div data-panel="appearance" class="stack hidden" role="tabpanel">
+                <section class="section">
+                  <div class="section-head">
+                    <div>
+                      <h2 class="section-title" data-i18n="appearance.title">Giao diện</h2>
+                      <p class="section-caption" data-i18n="appearance.caption">Chọn chế độ sáng, tối hoặc theo hệ thống. Lựa chọn được lưu riêng trên trình duyệt này.</p>
+                    </div>
+                  </div>
+                  <div class="theme-options theme-options-two" role="radiogroup" aria-label="Chế độ giao diện">
+                    <label class="theme-option" data-theme-option="light">
+                      <input type="radio" name="theme-mode" value="light" />
+                      <span class="theme-preview theme-preview-light" aria-hidden="true"><i></i><i></i></span>
+                      <strong data-i18n="theme.light">Sáng</strong>
+                      <small data-i18n="theme.lightHint">Luôn dùng nền sáng</small>
+                    </label>
+                    <label class="theme-option" data-theme-option="dark">
+                      <input type="radio" name="theme-mode" value="dark" />
+                      <span class="theme-preview theme-preview-dark" aria-hidden="true"><i></i><i></i></span>
+                      <strong data-i18n="theme.dark">Tối</strong>
+                      <small data-i18n="theme.darkHint">Luôn dùng nền tối</small>
+                    </label>
+                  </div>
+                </section>
+              </div>
+
               <div class="sticky-actions">
-                <button id="reload-config" type="button" class="btn btn-sm btn-ghost" data-i18n="config.reload">Nạp lại từ đĩa</button>
+                <span id="config-dirty" class="config-dirty" role="status">—</span>
                 <button class="btn btn-sm btn-primary" data-i18n="config.save">Kiểm tra, lưu và áp dụng</button>
               </div>
             </form>
@@ -1338,6 +1564,26 @@
       </div>
     </div>
 
+    <div class="hidden-actions" aria-hidden="true">
+      <button id="refresh-now" type="button"></button>
+      <button id="logout" type="button"></button>
+      <button id="reload-config" type="button"></button>
+      <select class="lang-switch" data-lang-switch aria-label="Ngôn ngữ"></select>
+    </div>
+
+    <div id="command-palette" class="command-palette hidden" role="dialog" aria-modal="true" aria-labelledby="command-title">
+      <div class="command-backdrop" data-command-close></div>
+      <div class="command-panel" role="document">
+        <div class="command-search">
+          <svg aria-hidden="true"><use href="#i-search"></use></svg>
+          <input id="command-input" type="search" autocomplete="off" spellcheck="false" placeholder="Tìm trang, hành động…" aria-label="Tìm trang hoặc hành động" />
+          <kbd>Esc</kbd>
+        </div>
+        <div id="command-title" class="command-title">Điều hướng nhanh</div>
+        <div id="command-results" class="command-results" role="listbox" aria-label="Kết quả"></div>
+        <p class="command-foot"><span><kbd>↑</kbd><kbd>↓</kbd> chọn</span><span><kbd>↵</kbd> mở</span><span><kbd>Esc</kbd> đóng</span></p>
+      </div>
+    </div>
     <div id="dialog-host"></div>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 

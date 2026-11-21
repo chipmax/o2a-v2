@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"opencode2api/internal/buildinfo"
 	"opencode2api/internal/config"
 	"opencode2api/internal/gateway"
+	"opencode2api/internal/surfshark"
 	"opencode2api/internal/telemetry"
 )
 
@@ -96,6 +98,16 @@ func main() {
 	var console *adminui.Server
 	if webHandler != nil {
 		console = adminui.New(manager, monitor, hub, logger)
+		console.SetSurfshark(surfshark.New(surfshark.Config{
+			ConfigDir: filepath.Dir(*configPath),
+			ProxyFile: cfg.ProxyFile,
+			BasePort:  13101,
+			Logger:    logger,
+			ReloadConfig: func() error {
+				_, err := manager.Reload()
+				return err
+			},
+		}))
 		console.SetSessionPath(*configPath + ".admin-sessions.json")
 		webHandler.set(console.Handler())
 	}

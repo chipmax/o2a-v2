@@ -2,7 +2,7 @@
 import { api, hasSession } from "../api.js";
 import { loadDebugModels } from "../data.js";
 import { t, onChange } from "../i18n.js";
-import { $, bindTabs, copyText, el, emptyRow, localTime, toast } from "../ui.js";
+import { $, bindTabs, confirmDialog, copyText, el, emptyRow, localTime, toast } from "../ui.js";
 import rotation from "./rotation.js";
 
 const windows = () => [
@@ -41,6 +41,39 @@ const contextCell = (model) => {
     el("div", { class: "metric-note", text: notes.join(" · ") }),
   ]);
 };
+
+async function probeAllContexts(button) {
+  const list = (data?.models || []).filter((model) => !model.context_window);
+  if (!list.length) {
+    toast(t("Không còn mô hình nào cần đo trần.", "quotas.probeAllNothing"));
+    return;
+  }
+  if (!(await confirmDialog({
+    title: t("Đo trần tất cả", "quotas.probeAll"),
+    message: t("Sẽ đo {0} mô hình, có thể tốn hạn mức và thời gian. Tiếp tục?", "quotas.probeAllConfirm", list.length),
+    confirmLabel: t("Đo tất cả", "quotas.probeAll"),
+  }))) return;
+  button.disabled = true;
+  let ok = 0;
+  let failed = 0;
+  for (const model of list) {
+    try {
+      await api("/api/models/context-probe", {
+        method: "POST",
+        body: JSON.stringify({ model: model.id }),
+        timeoutMs: 120000,
+      });
+      ok += 1;
+    } catch {
+      failed += 1;
+    }
+    button.textContent = t("Đang đo {0}/{1}…", "quotas.probeAllProgress", ok + failed, list.length);
+  }
+  await load();
+  button.disabled = false;
+  button.textContent = t("Đo trần tất cả", "quotas.probeAll");
+  toast(t("Đo xong: {0} thành công, {1} bỏ qua.", "quotas.probeAllDone", ok, failed));
+}
 
 async function probeContext(id, button) {
   button.disabled = true;
@@ -166,6 +199,16 @@ function render() {
       ]),
     );
   }
+  const total = $("#quota-total");
+  if (total) {
+    const parts = accounts
+      .filter((item) => !item.error && item.windows?.rolling)
+      .map((item) => `${item.display}: ≈ ${item.windows.rolling.remaining_percent}%`);
+    total.textContent = parts.length
+      ? t("Tổng theo key (không cộng dồn): {0}", "quotas.total", parts.join(" · "))
+      : t("Chưa có dữ liệu hạn mức để tổng hợp.", "quotas.totalEmpty");
+  }
+
   const query = $("#quota-model-search").value.trim().toLowerCase();
   const allModels = data.models || [];
   const models = allModels.filter((model) => model.id.toLowerCase().includes(query));
@@ -198,8 +241,10 @@ function render() {
     const protocol =
       { chat: "Chat Completions", responses: "Responses", anthropic: "Messages" }[model.protocol] ||
       model.protocol;
+    const source = model.tier === "go" ? "OpenCode Go" : model.tier === "zen" ? "OpenCode Zen" : model.free ? "OpenCode free" : "OpenCode";
     const row = el("tr", {}, [
       el("td", { class: "mono", text: model.id }),
+      el("td", { class: `source-tag source-${model.tier || "free"}`, text: source }),
       el("td", {}, [
         el("div", { text: protocol }),
         el("div", {
@@ -366,6 +411,7 @@ export default {
       activeTab = id;
       if (id === "quota") {
         load();
+        loadAvailability();
         startPolling();
         return;
       }
@@ -374,6 +420,8 @@ export default {
       else loadAvailability();
     });
     $("#quota-refresh").addEventListener("click", load);
+  $("#quota-probe-all")?.addEventListener("click", (event) => probeAllContexts(event.currentTarget));
+    $("#quota-probe-all")?.addEventListener("click", (event) => probeAllContexts(event.currentTarget));
     $("#quota-account").addEventListener("change", render);
     $("#quota-model-search").addEventListener("input", render);
     $("#availability-refresh").addEventListener("click", refreshAvailability);
@@ -383,13 +431,16 @@ export default {
       if (!loading) $("#quota-refresh").textContent = t("Làm mới hạn mức", "quotas.refresh");
       const emptyOpt = $("#quota-account")?.querySelector('option[value=""]');
       if (emptyOpt) emptyOpt.textContent = t("Chưa cấu hình Go Key", "quotas.noKey");
-      if (activeTab === "quota") render();
-      else if (activeTab === "free") loadAvailability();
+      if (activeTab === "quota") {
+        render();
+        loadAvailability();
+      }
     });
   },
   show() {
     if (activeTab === "quota") {
       load();
+      loadAvailability();
       startPolling();
     } else if (activeTab === "rotation") {
       rotation.show();

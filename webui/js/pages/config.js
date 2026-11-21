@@ -19,9 +19,18 @@ function renderChips(name) {
   const visible = expanded ? items : items.slice(0, CHIP_RENDER_LIMIT);
   visible.forEach((item) => {
     const remove = el("button", { type: "button", title: t("Gỡ bỏ", "common.remove"), text: "×" });
-    const chip = el("span", { class: "chip", dataset: { id: item.id } });
+    const marker = item.cooling_until || item.quarantined_until ? "warn" : "ok";
+    const chip = el("span", { class: `chip chip-key tone-${marker}`, dataset: { id: item.id } });
     remove.addEventListener("click", () => chip.remove());
-    chip.append(el("span", { text: item.display }), remove);
+    chip.append(
+      el("span", { class: "chip-dot" }),
+      el("span", { text: item.display }),
+      remove,
+    );
+    chip.title =
+      marker === "warn"
+        ? t("Đang nghỉ hoặc bị tạm khoá", "config.key.cooling")
+        : t("Sẵn sàng", "config.key.ready");
     host.append(chip);
   });
   if (items.length > visible.length)
@@ -87,7 +96,8 @@ function fillConfig(value) {
   $("#c-warp-pool").value = warp.pool_size || 2;
   $("#c-warp-stack").value = warp.stack || "ipv6";
   $("#c-warp-source").value = warp.source_ipv6 || "";
-  $("#c-proxyfile").value = value.proxyfile;
+  const proxyFile = $("#c-proxyfile");
+  if (proxyFile) proxyFile.value = value.proxyfile;
   $("#c-up-zen").value = value.upstream.zen;
   $("#c-up-go").value = value.upstream.go;
   const kilo = value.kilo || {};
@@ -118,6 +128,38 @@ function fillConfig(value) {
   $("#c-dump-bodies").checked = !!value.logging.dump_request_bodies;
   ["server_keys", "zen_keys", "go_keys", "proxies"].forEach(renderChips);
   renderRestartNotice(value);
+  captureBaseline();
+}
+
+let baseline = new Map();
+
+function captureBaseline() {
+  baseline = new Map();
+  document.querySelectorAll("#config-form input, #config-form select, #config-form textarea").forEach((node) => {
+    if (!node.id) return;
+    baseline.set(node.id, node.type === "checkbox" ? String(node.checked) : node.value);
+  });
+  updateDirty();
+}
+
+function updateDirty() {
+  const node = $("#config-dirty");
+  if (!node) return;
+  const changed = [];
+  baseline.forEach((value, id) => {
+    const field = document.getElementById(id);
+    if (!field || !field.id) return;
+    const current = field.type === "checkbox" ? String(field.checked) : field.value;
+    if (current !== value) {
+      const label = field.closest(".field")?.querySelector("label")?.textContent?.trim();
+      changed.push(label || id);
+    }
+  });
+  node.textContent = changed.length
+    ? t("{0} thay đổi", "config.dirty", changed.length)
+    : t("Không có thay đổi", "config.clean");
+  node.classList.toggle("dirty", changed.length > 0);
+  node.title = changed.join("\n");
 }
 
 async function save(event) {
@@ -195,6 +237,7 @@ async function save(event) {
       (name) => ($(`#${name}-new`).value = ""),
     );
     await loadDebugModels();
+    captureBaseline();
     toast(
       result.result.restart_required
         ? t(
@@ -276,7 +319,9 @@ export default {
       $("#config-form").classList.toggle("hidden", id === "account");
     });
     $("#config-form").addEventListener("submit", save);
-    $("#reload-config").addEventListener("click", reload);
+    $("#config-form").addEventListener("input", updateDirty);
+    $("#config-form").addEventListener("change", updateDirty);
+    $("#reload-config")?.addEventListener("click", reload);
     $("#reveal").addEventListener("click", reveal);
     onChange(() => {
       const value = store.get("config");

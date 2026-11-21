@@ -2,8 +2,7 @@
 import { api } from "../api.js";
 import * as store from "../store.js";
 import { $, bindTabs, el, emptyRow, formatNumber, timeOnly } from "../ui.js";
-import egress from "./egress.js";
-import { t, onChange } from "../i18n.js";
+import { t, onChange, dateLocale } from "../i18n.js";
 
 function renderChecklist() {
   const config = store.get("config");
@@ -173,20 +172,201 @@ function renderBreakdowns(metrics) {
   });
 }
 
+function setChain(node, state, label, sub) {
+  const host = document.querySelector('[data-chain="' + node + '"]');
+  if (host) {
+    host.classList.remove("is-ok", "is-warn", "is-bad", "is-idle");
+    host.classList.add("is-" + state);
+  }
+  const value = $("#chain-" + node + "-state");
+  const note = $("#chain-" + node + "-sub");
+  if (value) value.textContent = label;
+  if (note) note.textContent = sub;
+}
+
+function renderHero(monitor) {
+  const title = $("#overview-hero-title");
+  if (!title) return;
+  const health = monitor.health;
+  const warp = monitor.warp || monitor.resources?.warp || {};
+  const proxies = monitor.resources?.proxies || [];
+  const keys = monitor.resources?.keys || [];
+  const metrics = monitor.metrics?.last_hour || {};
+  const total = metrics.total || 0;
+  const healthy = proxies.filter((proxy) => proxy.healthy).length;
+  const readyKeys = keys.filter((key) => !key.cooldown_until).length;
+  const hasKeys = !!monitor.resources?.anonymous || keys.length > 0;
+  const ready = !!health?.ready;
+  const issues = Array.isArray(health?.issues) ? health.issues : [];
+
+  title.textContent = ready
+    ? t("Hệ thống đang ổn định", "overview.hero.ready")
+    : health
+      ? t("Cần chú ý", "overview.hero.degraded")
+      : t("Đang kết nối…", "overview.hero.connecting");
+  const sub = $("#overview-hero-sub");
+  if (sub) {
+    sub.textContent = !health
+      ? t("Đang tải tín hiệu từ Gateway.", "overview.hero.loading")
+      : ready
+        ? t(
+            "Gateway sẵn sàng nhận request. {0} request trong giờ qua, {1} proxy khỏe.",
+            "overview.hero.readyNote",
+            formatNumber(total),
+            healthy,
+          )
+        : issues.slice(0, 2).join(", ") ||
+          t("Một số kênh chưa sẵn sàng; xem chi tiết bên dưới.", "overview.hero.degradedNote");
+  }
+
+  const spark = $("#hero-sparkline");
+  if (spark) {
+    const series = (monitor.metrics?.series || []).slice(-60);
+    if (series.length < 2) {
+      spark.replaceChildren();
+    } else {
+      const width = 240;
+      const height = 34;
+      const values = series.map((point) => (point.total ? (point.success || 0) / point.total : 1));
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      const span = Math.max(0.02, max - min);
+      const points = values
+        .map((value, index) => {
+          const x = (index / (values.length - 1)) * width;
+          const y = height - 2 - ((value - min) / span) * (height - 6);
+          return `${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(" ");
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      svg.setAttribute("preserveAspectRatio", "none");
+      svg.setAttribute("aria-hidden", "true");
+      const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+      line.setAttribute("points", points);
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke", "currentColor");
+      line.setAttribute("stroke-width", "1.6");
+      line.setAttribute("stroke-linecap", "round");
+      line.setAttribute("stroke-linejoin", "round");
+      line.setAttribute("vector-effect", "non-scaling-stroke");
+      svg.append(line);
+      spark.replaceChildren(svg);
+      spark.title = t("Tỷ lệ thành công {0} phút gần nhất", "overview.hero.spark", series.length);
+    }
+  }
+
+  const issuesHost = $("#hero-issues");
+  if (issuesHost) {
+    const FIXES = {
+      model_catalog_stale: [
+        t("Danh mục mô hình cũ", "hero.issue.catalog"),
+        t("Làm mới", "hero.issue.refresh"),
+        () => $("#refresh-now")?.click(),
+      ],
+      warp_unavailable: [
+        t("WARP chưa có exit", "hero.issue.warp"),
+        t("Xem đường ra", "hero.issue.open"),
+        () => $("#hero-open-egress")?.click(),
+      ],
+      no_healthy_proxies: [
+        t("Không có proxy khỏe", "hero.issue.proxies"),
+        t("Kiểm tra", "hero.issue.check"),
+        () => $("#hero-open-egress")?.click(),
+      ],
+    };
+    issuesHost.replaceChildren();
+    for (const code of issues) {
+      const fix = FIXES[code] || [code, t("Xem", "hero.issue.open"), () => $("#hero-open-egress")?.click()];
+      const row = el("div", { class: "hero-issue" }, [
+        el("span", { class: "status-chip-icon warn", text: "!" }),
+        el("span", { class: "hero-issue-label", text: fix[0] }),
+        el("button", { class: "btn btn-sm btn-ghost", type: "button", text: fix[1], onclick: fix[2] }),
+      ]);
+      issuesHost.append(row);
+    }
+  }
+
+  const badges = $("#overview-hero-badges");
+  if (badges) {
+    const values = [
+      [formatNumber(total), t("request / giờ", "overview.hero.badge.requests")],
+      [
+        ((metrics.success_rate || 0) * 100).toFixed(1) + "%",
+        t("thành công", "overview.hero.badge.success"),
+      ],
+      [healthy + "/" + (proxies.length || 0), t("proxy khỏe", "overview.hero.badge.proxies")],
+    ];
+    badges.replaceChildren(
+      ...values.map(([value, label]) =>
+        el("span", { class: "hero-badge" }, [
+          el("strong", { text: value }),
+          el("span", { text: label }),
+        ]),
+      ),
+    );
+  }
+
+  if (!warp.enabled) {
+    setChain("warp", "idle", t("Tắt", "overview.hero.chain.off"), t("không cấu hình", "overview.hero.chain.unconfigured"));
+  } else if ((warp.active || 0) > 0) {
+    setChain(
+      "warp",
+      "ok",
+      t("{0}/{1} đang chạy", "overview.hero.chain.warpActive", warp.active || 0, warp.size || 0),
+      t("exit nội bộ", "overview.hero.chain.warpSub"),
+    );
+  } else {
+    setChain(
+      "warp",
+      "warn",
+      t("Đang nghỉ / chờ", "overview.hero.chain.warpPaused"),
+      t("{0}/{1} dự phòng", "overview.hero.chain.warpStandby", warp.standby || 0, warp.size || 0),
+    );
+  }
+
+  if (!proxies.length) {
+    setChain("proxy", "idle", t("Chưa cấu hình", "overview.hero.chain.unconfigured"), t("proxy dự phòng", "overview.hero.chain.proxySub"));
+  } else if (healthy > 0) {
+    setChain(
+      "proxy",
+      "ok",
+      t("{0}/{1} khỏe", "overview.hero.chain.proxyHealthy", healthy, proxies.length),
+      t("dự phòng khi WARP lỗi", "overview.hero.chain.proxySub"),
+    );
+  } else {
+    setChain("proxy", "bad", t("Không có proxy khỏe", "overview.hero.chain.proxyDown"), t("kiểm tra kết nối", "overview.hero.chain.proxyCheck"));
+  }
+
+  if (!hasKeys) {
+    setChain("keys", "idle", t("Chưa có kênh", "overview.hero.chain.unconfigured"), t("Zen / Go", "overview.hero.chain.keysSub"));
+  } else if (readyKeys > 0 || monitor.resources?.anonymous) {
+    setChain(
+      "keys",
+      "ok",
+      t("{0} key sẵn sàng", "overview.hero.chain.keysReady", readyKeys),
+      monitor.resources?.anonymous ? t("anonymous đang bật", "overview.hero.chain.anonOn") : t("Zen / Go", "overview.hero.chain.keysSub"),
+    );
+  } else {
+    setChain("keys", "warn", t("Key đang nghỉ", "overview.hero.chain.keysPaused"), t("chờ cooldown", "overview.hero.chain.keysCooldown"));
+  }
+}
+
 function renderSummary(monitor) {
-  const metrics = monitor.metrics;
-  $("#m-total").textContent = formatNumber(metrics.last_hour.total);
-  $("#m-rate").textContent = `${((metrics.last_hour.success_rate || 0) * 100).toFixed(1)}%`;
-  $("#m-p95").textContent = `${metrics.last_hour.p95_ms || 0} ms`;
+  const metrics = monitor.metrics || {};
+  const lastHour = metrics.last_hour || {};
+  $("#m-total").textContent = formatNumber(lastHour.total);
+  $("#m-rate").textContent = `${((lastHour.success_rate || 0) * 100).toFixed(1)}%`;
+  $("#m-p95").textContent = `${lastHour.p95_ms || 0} ms`;
   $("#m-active").textContent = `${metrics.active_requests || 0} / ${metrics.active_streams || 0}`;
-  const total = metrics.last_hour.total || 0;
+  const total = lastHour.total || 0;
   const quota = Number(metrics.statuses?.["429"] || 0);
   $("#m-429").textContent = total ? `${((quota / total) * 100).toFixed(1)}%` : "—";
   renderStatusStrip(monitor);
   renderReadiness(monitor.health);
   renderCapacity(monitor.capacity);
   renderLane(monitor.warp || monitor.resources?.warp);
-  renderResources(monitor.resources);
+  renderResources(monitor.resources || {});
   renderBreakdowns(metrics);
 }
 
@@ -202,39 +382,68 @@ function renderStatusStrip(monitor) {
   const metrics = monitor.metrics || {};
   const total = metrics.last_hour?.total || 0;
   const quota = Number(metrics.statuses?.["429"] || 0);
-  const quotaText = total ? `${((quota / total) * 100).toFixed(1)}%` : t("—", "status.unknown");
+  const quotaText = total ? `${((quota / total) * 100).toFixed(1)}%` : "—";
   const ready = !!health?.ready;
   const observed = Number(capacity?.ips_observed || 0);
   const usable = Number(capacity?.ips_usable || 0);
-  const capacityText = observed ? `${usable}/${observed}` : t("—", "status.unknown");
-  const gated = !!warp?.lane_gated || !!warp?.lane_until && new Date(warp.lane_until) > new Date();
+  const capacityRatio = observed ? usable / observed : 0;
+  const capacityTone = !observed ? "info" : capacityRatio < 0.2 ? "bad" : capacityRatio < 0.5 ? "warn" : "ok";
+  const gated = !!warp?.lane_gated || (!!warp?.lane_until && new Date(warp.lane_until) > new Date());
   const chips = [
-    ["status.ready", ready ? t("Sẵn sàng", "status.ready") : t("Suy giảm", "status.degraded"), ready ? "ok" : "bad"],
-    ["status.quota", quotaText, quota > 0 ? "warn" : "ok"],
-    ["status.capacity", capacityText, observed && usable / observed < 0.2 ? "bad" : observed && usable / observed < 0.5 ? "warn" : "ok"],
-    ["status.lane", gated ? t("Đang khóa", "status.lane.gated") : t("Mở", "status.lane.ok"), gated ? "warn" : "ok"],
+    {
+      label: t("Hệ thống", "status.system.label"),
+      value: ready
+        ? t("OK", "status.ok")
+        : health
+          ? t("Suy giảm", "status.degraded")
+          : t("Chưa rõ", "status.unknown"),
+      tone: ready ? "ok" : "bad",
+      icon: ready ? "✓" : "!",
+    },
+    {
+      label: t("Tỷ lệ 429", "status.quota"),
+      value: quotaText,
+      tone: !total ? "info" : quota > 0 ? "warn" : "ok",
+      icon: !total ? "–" : quota > 0 ? "!" : "✓",
+    },
+    {
+      label: t("IP khả dụng", "status.capacity"),
+      value: observed ? `${usable}/${observed}` : "—",
+      tone: capacityTone,
+      icon: capacityTone === "bad" ? "!" : capacityTone === "warn" ? "~" : capacityTone === "ok" ? "✓" : "–",
+    },
+    {
+      label: t("Lane miễn phí", "status.lane"),
+      value: gated ? t("Tạm dừng", "status.lane.gated") : t("Mở", "status.lane.ok"),
+      tone: gated ? "warn" : "ok",
+      icon: gated ? "!" : "✓",
+    },
   ];
   if (capacity?.key_exhausted) {
-    chips.push([
-      "status.key",
-      `${t("Key cạn", "status.key.exhausted")} ${capacity.key_id || ""}`,
-      "bad",
-    ]);
+    chips.push({
+      label: t("Key", "status.key"),
+      value: t("Cạn", "status.key.exhausted"),
+      tone: "bad",
+      icon: "!",
+    });
   }
-  strip.replaceChildren(...chips.map(([key, value, state]) => {
-    const chip = document.createElement("span");
-    chip.className = `chip status ${state}`;
-    const labels = {
-      "status.ready": "Sẵn sàng", "status.quota": "Tỷ lệ 429",
-      "status.capacity": "IP khả dụng", "status.lane": "Lane miễn phí",
-      "status.key": "Key",
-    };
-    chip.append(document.createTextNode(`${t(labels[key] || key, key)}: `));
-    const strong = document.createElement("strong");
-    strong.textContent = value;
-    chip.append(strong);
-    return chip;
-  }));
+  strip.replaceChildren(
+    ...chips.map((chip) => {
+      const node = document.createElement("span");
+      node.className = `status-chip tone-${chip.tone}`;
+      const icon = document.createElement("span");
+      icon.className = "status-chip-icon";
+      icon.textContent = chip.icon;
+      const label = document.createElement("span");
+      label.className = "status-chip-label";
+      label.textContent = chip.label;
+      const value = document.createElement("strong");
+      value.className = "status-chip-value";
+      value.textContent = chip.value;
+      node.append(icon, label, value);
+      return node;
+    }),
+  );
 }
 
 // renderCapacity shows the rough egress-budget estimate. It is a planning aid,
@@ -249,20 +458,20 @@ function renderCapacity(capacity) {
     if (note) note.textContent = t("Chưa có ước tính", "overview.capacity.unknown");
     return;
   }
-  const usable = capacity.ips_usable || 0;
-  const observed = capacity.ips_observed || 0;
-  value.textContent = `${usable} / ${observed}`;
-  const ratio = observed ? usable / observed : 0;
-  const cls = ratio < 0.2 ? "bad" : ratio < 0.5 ? "warn" : "ok";
+  const used = Number(capacity.requests_today || 0);
+  const hits = Number(capacity.quota_hits || 0);
+  value.textContent = formatNumber(used);
+  const cls = hits > 0 ? "warn" : "ok";
   value.classList.remove("ok", "warn", "bad");
   value.classList.add(cls);
   if (note) {
-    const spent = capacity.ips_spent || 0;
+    const reset = parseStamp(capacity.reset_at);
+    const minutes = reset ? Math.max(0, Math.ceil((reset.getTime() - Date.now()) / 60000)) : 0;
     note.textContent = t(
-      "đã spent {0} · reset {1}",
-      "overview.capacity.detail",
-      spent,
-      capacity.reset_at ? new Date(capacity.reset_at).toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" }) : "—",
+      "{0} lần 429 hôm nay · reset sau ~{1} phút",
+      "overview.capacity.detail2",
+      hits,
+      minutes,
     );
   }
 }
@@ -432,24 +641,18 @@ function render() {
   renderChecklist();
   const monitor = store.get("monitor");
   if (!monitor) return;
-  renderStatusStrip(monitor);
+  renderHero(monitor);
   renderSummary(monitor);
   renderUsage(monitor);
 }
 
-let activeTab = "summary";
-
 export default {
   id: "overview",
   title: "Tổng quan",
-  sub: "Chỉ số vận hành, token, tài nguyên và ngân sách egress.",
+  sub: "Sức khỏe, lưu lượng và tài nguyên theo thời gian thực.",
   renderStatusStrip,
   init() {
-    bindTabs($("#page-overview"), (id) => {
-      activeTab = id;
-      if (id === "egress") egress.show();
-      else egress.hide();
-    });
+    bindTabs($("#page-overview"));
     store.on("monitor", render);
     store.on("config", renderChecklist);
     onChange(render);
@@ -459,12 +662,9 @@ export default {
     loadEvents();
     clearInterval(eventsTimer);
     eventsTimer = setInterval(loadEvents, 15000);
-    if (activeTab === "egress") egress.show();
-    else egress.hide();
   },
   hide() {
     clearInterval(eventsTimer);
     eventsTimer = null;
-    egress.hide();
   },
 };

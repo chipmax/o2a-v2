@@ -515,22 +515,19 @@ func (g *Gateway) maxAnonymousExits() int {
 	return defaultMaxAnonymousExits
 }
 
-// doAnonymousUpstream walks the session's anonymous proxy cursor. Each static
-// proxy is tried at most once, up to performance.max_anonymous_exits proxies;
-// rotating #pool proxies may be drawn again until Retry.MaxAttempts proxies
-// were used. For each proxy it tries the upstreams in anonymousUpstreams
-// order: the configured v2 /inference upstream (Upstream.Anonymous) only, since
-// the v1 lane fallback is retired and commented out there. Any failure,
-// including an HTTP error response, advances to the next upstream or proxy; a
-// proxy-route failure, or a proxy marked unhealthy, skips that proxy's
-// remaining upstreams. Only a successful response ends the anonymous phase;
-// exhausting the proxy cursor returns control to the preferred authenticated
-// tiers. It returns the last response (body still open), else the last error,
-// plus the number of attempts made.
-func (g *Gateway) doAnonymousUpstream(ctx context.Context, route models.Route, bodies map[config.Tier][]byte, ids identity.RequestIDs, attemptOffset int) (*http.Response, error, int) {
-	if g.usesWARP(route.ID, config.TierZen, true) {
-		return g.doWarpAnonymousUpstream(ctx, route, bodies, ids, attemptOffset)
-	}
+// doStaticAnonymousUpstream walks the session's anonymous proxy cursor. Each
+// static proxy is tried at most once, up to performance.max_anonymous_exits
+// proxies; rotating #pool proxies may be drawn again until Retry.MaxAttempts
+// proxies were used. For each proxy it tries the upstreams in
+// anonymousUpstreams order: the configured v2 /inference upstream
+// (Upstream.Anonymous) only, since the v1 lane fallback is retired and
+// commented out there. Any failure, including an HTTP error response, advances
+// to the next upstream or proxy; a proxy-route failure, or a proxy marked
+// unhealthy, skips that proxy's remaining upstreams. Only a successful
+// response ends the anonymous phase; exhausting the proxy cursor returns
+// control to the preferred authenticated tiers. It returns the last response
+// (body still open), else the last error, plus the number of attempts made.
+func (g *Gateway) doStaticAnonymousUpstream(ctx context.Context, route models.Route, bodies map[config.Tier][]byte, ids identity.RequestIDs, attemptOffset int) (*http.Response, error, int) {
 	// The breaker holds the lane shut for an hour-scale window after repeated
 	// failures: poking a flagged upstream again would only extend the block.
 	if !g.anonymous.AllowAttempt() {

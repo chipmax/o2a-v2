@@ -104,6 +104,19 @@ type WarpConfig struct {
 	// spent free-tier quota, so the key tiers are not sent through the same
 	// slow, quota-walled exits.
 	PauseAfterQuotaSeconds int `json:"pause_after_quota_seconds,omitempty"`
+	// FallbackToProxies lets the anonymous lane use the configured static
+	// proxies after WARP is exhausted or temporarily limited. WARP still gets
+	// the first attempt; the proxies are only a second egress.
+	FallbackToProxies bool `json:"fallback_to_proxies,omitempty"`
+	// FallbackCooldownSeconds parks WARP after a retryable WARP failure (429,
+	// IP block, transport error, no exit) so the next requests go straight to
+	// the proxies instead of paying the same WARP latency. Zero uses the
+	// default. A Retry-After longer than this value wins, up to one hour.
+	FallbackCooldownSeconds int `json:"fallback_cooldown_seconds,omitempty"`
+	// FallbackBudgetSeconds bounds the WARP phase before the proxy fallback.
+	// Zero disables the separate WARP budget and leaves the request deadline
+	// in charge.
+	FallbackBudgetSeconds int `json:"fallback_budget_seconds,omitempty"`
 	// RotateAfterMinutes retires an idle exit once it has served this long, so
 	// a working address is not kept for a whole day. The replacement registers
 	// in the background and only idle exits are taken, so requests are not
@@ -170,6 +183,15 @@ func (w *WarpConfig) Normalize() error {
 	}
 	if w.PauseAfterQuotaSeconds < 0 || w.PauseAfterQuotaSeconds > 86400 {
 		return errors.New("warp.pause_after_quota_seconds must be between 0 and 86400")
+	}
+	if w.FallbackCooldownSeconds == 0 {
+		w.FallbackCooldownSeconds = 60
+	}
+	if w.FallbackCooldownSeconds < 1 || w.FallbackCooldownSeconds > 86400 {
+		return errors.New("warp.fallback_cooldown_seconds must be between 1 and 86400")
+	}
+	if w.FallbackBudgetSeconds < 0 || w.FallbackBudgetSeconds > 300 {
+		return errors.New("warp.fallback_budget_seconds must be between 0 and 300")
 	}
 	if w.RotateAfterMinutes < 0 || w.RotateAfterMinutes > 1440 {
 		return errors.New("warp.rotate_after_minutes must be between 0 and 1440")

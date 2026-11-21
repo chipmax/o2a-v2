@@ -380,8 +380,12 @@ func resolveEndpoints(ctx context.Context, candidates []string, fallback string)
 	}
 	// Cloudflare's registration response can contain only IPv6 endpoints.
 	// Keep the static IPv4 endpoints as a fallback so a host without IPv6
-	// routing (WSL, NAT-only VPS) can still establish the tunnel.
-	candidates = append(candidates, fallbackEndpoints...)
+	// routing (WSL, NAT-only VPS) can still establish the tunnel. The first
+	// static IPv4 endpoint goes first so the probe-candidate limit below
+	// cannot drop every IPv4 candidate when the response lists many IPv6
+	// ports.
+	candidates = append([]string{fallbackEndpoints[0]}, candidates...)
+	candidates = append(candidates, fallbackEndpoints[1:]...)
 	seen := make(map[string]bool)
 	var endpoints []string
 	for _, candidate := range candidates {

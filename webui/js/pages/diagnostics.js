@@ -536,13 +536,17 @@ export default {
     bindTabs($("#page-diagnostics"), (id) => {
       activeTab = id;
       logstream.setVisible(id === "logs");
+      $("#page-diagnostics [data-panel=ledger]")?.classList.toggle("hidden", id !== "logs");
+      $("#page-diagnostics [data-panel=access]")?.classList.toggle("hidden", id !== "route");
       if (id === "playground") {
         if (!store.get("debug")) loadDebugModels();
         renderModels();
       }
-      if (id === "ledger") renderLedger();
-      if (id === "route") renderRoute();
-      if (id === "access") access.show();
+      if (id === "logs") renderLedger();
+      if (id === "route") {
+        renderRoute();
+        access.show();
+      }
     });
     logstream.bind();
     $("#gate-run")?.addEventListener("click", runGate);
@@ -612,8 +616,14 @@ export default {
     renderModels();
     renderLedger();
     renderRoute();
-    if (activeTab === "logs") logstream.setVisible(true);
-    if (activeTab === "access") access.show();
+    if (activeTab === "logs") {
+      logstream.setVisible(true);
+      renderLedger();
+    }
+    if (activeTab === "route") {
+      renderRoute();
+      access.show();
+    }
   },
   hide() {
     logstream.setVisible(false);

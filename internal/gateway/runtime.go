@@ -505,6 +505,9 @@ func (m *RuntimeController) applyLocked(candidate config.Config, persist bool) (
 	return result, nil
 }
 
+// ConfigPath returns the path of the configuration file this controller owns.
+func (m *RuntimeController) ConfigPath() string { return m.configPath }
+
 // Reload re-reads the config file and applies it without rewriting it, unless
 // it holds a plaintext WebUI password: that is hashed and saved, and the
 // backup holding the plaintext is removed.

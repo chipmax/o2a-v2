@@ -183,6 +183,21 @@ function render(keys) {
       });
       if (ok) mutate(key.id, "DELETE", null, remove);
     });
+    const menu = el("details", { class: "action-menu" }, [
+      el("summary", {
+        class: "btn btn-sm btn-ghost",
+        title: t("Thao tác", "apikeys.menu"),
+        "aria-label": t("Thao tác", "apikeys.menu"),
+        text: "⋯",
+      }),
+      el("div", { class: "action-menu-pop" }, [rename, policy, toggle, remove]),
+    ]);
+    menu.addEventListener("toggle", () => {
+      if (!menu.open) return;
+      document.querySelectorAll("details.action-menu[open]").forEach((other) => {
+        if (other !== menu) other.open = false;
+      });
+    });
     host.append(
       el("tr", {}, [
         el("td", { text: key.name }),
@@ -194,7 +209,7 @@ function render(keys) {
         el("td", { text: `${summary(usage.last_hour)} / ${summary(usage.lifetime)}` }),
         el("td", { text: policySummary(key) }),
         el("td", { text: key.created_at ? localTime(key.created_at) : t("Đã có trong cấu hình", "apikeys.col.legacy") }),
-        el("td", {}, [el("div", { class: "key-actions" }, [rename, policy, toggle, remove])]),
+        el("td", {}, [menu]),
       ]),
     );
   }
